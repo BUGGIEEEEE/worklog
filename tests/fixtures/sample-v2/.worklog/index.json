@@ -1,0 +1,19 @@
+{
+ "format": "worklog/2",
+ "works": {
+  "reading-log": {
+   "title": "Reading Log",
+   "status": "PAUSED",
+   "created_at": "2026-10-06T14:47:25Z",
+   "updated_at": "2026-10-06T14:47:26Z",
+   "last_seq": 3
+  },
+  "garden-plan": {
+   "title": "Garden Plan",
+   "status": "ACTIVE",
+   "created_at": "2026-10-06T14:47:26Z",
+   "updated_at": "2026-10-06T14:47:26Z",
+   "last_seq": 2
+  }
+ }
+}

@@ -137,7 +137,7 @@ def plan(root, tool, worklog_dir, when):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
     ap.add_argument("--tool", choices=["claude", "codex", "pi"], required=True)
     ap.add_argument("--root", required=True)
     ap.add_argument("--dry-run", action="store_true")
@@ -155,7 +155,8 @@ def main():
             write(path, text, backup)
         if worklog:
             worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
-    print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes}, ensure_ascii=False, indent=1))
+    print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes,
+                      "next": "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"}, ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 .worklog/
+!tests/fixtures/*/.worklog/
 *.bak-*
 .DS_Store

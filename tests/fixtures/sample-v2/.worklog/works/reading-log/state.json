@@ -1,0 +1,47 @@
+{
+ "format": "worklog/2",
+ "seq": 3,
+ "goal": "Write a one-page guide for a 10-minute evening reading log",
+ "status": "PAUSED",
+ "decisions": [
+  {
+   "id": "D2",
+   "text": "Log for 15 minutes after dinner",
+   "event": "E0002",
+   "replaces": "D1"
+  }
+ ],
+ "constraints": [
+  {
+   "id": "C1",
+   "text": "Do not add reminders or notifications",
+   "event": "E0001"
+  },
+  {
+   "id": "C2",
+   "text": "Keep the guide under one page",
+   "event": "E0002"
+  }
+ ],
+ "waiting": [],
+ "next_action": "Wait for user review",
+ "artifacts": [
+  {
+   "path": "guide.md",
+   "sha256": "910b31ff1c58ea70fa3b44fed5989ff4e2d3b8e2c8404c40e39c729e87af0098",
+   "event": "E0003"
+  }
+ ],
+ "superseded": [
+  {
+   "id": "D1",
+   "by_event": "E0002"
+  }
+ ],
+ "removed_constraints": [],
+ "updated_at": "2026-10-06T14:47:26Z",
+ "updated_by": {
+  "tool": "claude",
+  "session_id": "sample-session"
+ }
+}

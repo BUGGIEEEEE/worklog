@@ -1,0 +1,30 @@
+{
+ "format": "worklog/2",
+ "seq": 2,
+ "goal": "Plan what to plant on the balcony this spring",
+ "status": "ACTIVE",
+ "decisions": [
+  {
+   "id": "D1",
+   "text": "Use only containers under 40 cm",
+   "event": "E0001"
+  }
+ ],
+ "constraints": [
+  {
+   "id": "C1",
+   "text": "Do not order seeds or supplies",
+   "event": "E0001"
+  }
+ ],
+ "waiting": [],
+ "next_action": "Ask the user which herbs to keep",
+ "artifacts": [],
+ "superseded": [],
+ "removed_constraints": [],
+ "updated_at": "2026-10-06T14:47:26Z",
+ "updated_by": {
+  "tool": "claude",
+  "session_id": "sample-session"
+ }
+}

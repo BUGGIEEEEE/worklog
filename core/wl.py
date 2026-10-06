@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Worklog shared core: one save per turn, state rebuilt from an append-only event log.
+"""Worklog shared core (format 2): several works per project, one append-only event log per work.
 
-Commands:  show | save | skip | verify | help | hook | turn-start | stop-hook
-Storage:   <root>/.worklog/{events.jsonl, state.json, state.md, writer.json, sessions/<tool>_<session>.json}
+Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | help | hook | turn-start | stop-hook
+Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
+           sessions/<tool>_<session>.json, .lock}
 Standard library only. Never runs business commands.
 """
 import argparse, datetime, fcntl, hashlib, json, os, re, shlex, sys, uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-FORMAT = "worklog/1"
+FORMAT = "worklog/2"
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -17,9 +18,16 @@ USER_TYPES = {"REQUEST", "APPROVAL", "D_USER"}
 REMOVE_TYPES = {"D_USER", "APPROVAL", "CORRECTION"}
 STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"]
 TOOL_ENV = [("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID"), ("pi", "PI_SESSION_ID")]
+WORK_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+ID_MAX = 40
+PROJECT_MAX = 4000
+LIST_MAX = 10
+NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
+                 "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
 
 SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  예) python3 -B wl.py save <<'EOF' ... EOF
 {
+  "work": "habit-plan",                    # 선택. 생략하면 이 세션의 현재 작업(use/new-work로 정함)
   "type": "REQUEST",                       # REQUEST APPROVAL D_USER D_AGENT ASSUMPTION RESULT VERIFICATION BLOCKER CORRECTION CHECKPOINT HANDOFF CHANGE Q
   "summary": "이번 턴에 일어난 일 한두 문장",
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 제약 해제에 필수
@@ -40,7 +48,17 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 }
 필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
 "기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
-읽기 전용 턴(저장할 것이 없음): python3 -B wl.py skip "이유" — 원장에는 아무것도 쓰지 않는다."""
+읽기 전용 턴(저장할 것이 없음): python3 -B wl.py skip "이유" — 원장에는 아무것도 쓰지 않는다.
+
+작업 선택 — 사용자가 지정한다. 모델이 임의로 고르거나 만들지 않는다.
+  python3 -B wl.py works                                         작업 목록(JSON)
+  python3 -B wl.py use habit-plan --quote "habit-plan 이어서 해"   기존 작업을 이 세션의 현재 작업으로(현황 출력, show 불필요)
+  python3 -B wl.py new-work "습관 계획 habit-plan" --quote "새 작업: 습관 계획"
+                                       새 작업을 만들고 현재 작업으로(id 반환: 제목의 영문·숫자 → habit-plan, 한글만이면 work, work-2…)
+  python3 -B wl.py show [--work <id>]                            현황 읽기(현재 작업이 없으면 목록)
+  python3 -B wl.py verify [--work <id> | --all]
+  python3 -B wl.py archive <id> / reopen <id>                    COMPLETED ↔ ACTIVE
+현재 작업이 없고 사용자 지정도 없으면 한 번 묻고 skip으로 마친다. 작업이 하나뿐이고 "이어서"면 그 작업을 use한다."""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -81,27 +99,49 @@ def identity(args):
     return tool, sid
 
 
+def try_identity(args):
+    try:
+        return identity(args)
+    except Reject:
+        return None
+
+
+@contextmanager
+def locked(d):
+    """The one .worklog/.lock: ledger appends, index updates and every session-file read→update→write happen inside it.
+    Not re-entrant: never call a locking command handler (show, verify, …) while holding it."""
+    if (d / ".lock").is_symlink():  # open(..., "w")는 링크를 따라가 밖의 파일을 비운다
+        raise Reject(f"{d / '.lock'}는 심볼릭 링크입니다. 사용자에게 보고하세요.")
+    with open(d / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_atomic(path, text):
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+# --- 세션 보조 파일 (원장 아님) ---
+
 def session_path(d, tool, sid):
     return d / "sessions" / re.sub(r"[^A-Za-z0-9._-]", "_", f"{tool}_{sid}.json")
 
 
-SESSION_KEYS = ("last_seen_seq", "turn", "saved_turn", "skipped_turn")
+SESSION_TURNS = ("turn", "saved_turn", "skipped_turn", "selected_turn")
 
 
 class SessionCorrupt(Exception):
     pass
 
 
-@contextmanager
-def locked(d):
-    """The one .worklog/.lock: ledger appends and every session-file read→update→write happen inside it."""
-    with open(d / ".lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+def new_session():
+    return {"current_work": None, "last_seen": {}, **dict.fromkeys(SESSION_TURNS, 0)}
 
 
 def load_session(d, tool, sid):
-    """Session side file (not part of the ledger). Missing keys are 0; None if absent; SessionCorrupt if unreadable."""
+    """Missing keys get defaults; None if absent; SessionCorrupt if unreadable."""
     path = session_path(d, tool, sid)
     try:
         data = json.loads(path.read_text())
@@ -111,40 +151,144 @@ def load_session(d, tool, sid):
         raise SessionCorrupt(path)
     if not isinstance(data, dict):
         raise SessionCorrupt(path)
-    s = {k: data.get(k, 0) for k in SESSION_KEYS}
-    if any(type(v) is not int for v in s.values()):
+    s = new_session()
+    s.update({k: data[k] for k in s if k in data})
+    if (any(type(s[k]) is not int for k in SESSION_TURNS)
+            or not (s["current_work"] is None or isinstance(s["current_work"], str))
+            or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())):
         raise SessionCorrupt(path)
     return s
 
 
 def session_or_new(d, tool, sid):
     try:
-        return load_session(d, tool, sid) or dict.fromkeys(SESSION_KEYS, 0)
+        return load_session(d, tool, sid) or new_session()
     except SessionCorrupt:
-        return dict.fromkeys(SESSION_KEYS, 0)  # 손상 파일은 새로 만든다
+        return new_session()  # 손상 파일은 새로 만든다
 
 
-def update_session(d, tool, sid, **changes):
-    """Call inside locked(d)."""
+def update_session(d, tool, sid, seen=None, **changes):
+    """Call inside locked(d). seen=(work id, seq) records what this session has read of that work."""
     s = session_or_new(d, tool, sid)
     s.update(changes)
+    if seen:
+        s["last_seen"][seen[0]] = seen[1]
     path = session_path(d, tool, sid)
     path.parent.mkdir(exist_ok=True)
-    write_atomic(path, json.dumps(s) + "\n")
+    write_atomic(path, json.dumps(s, ensure_ascii=False) + "\n")
     return s
 
 
-def read_events(d):
-    path = d / "events.jsonl"
+# --- 작업 목록 (index.json) ---
+
+def load_index(d):
+    """index.json or None when absent. A format-1 ledger at the top of .worklog is refused (migrate first)."""
+    if (d / "events.jsonl").exists():
+        raise Reject("형식 1 기록(.worklog/events.jsonl)이 있습니다. tools/migrate_v1_to_v2.py로 먼저 이전하세요. 사용자에게 보고하세요.")
+    try:
+        data = json.loads((d / "index.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise Reject(f"index.json을 읽을 수 없습니다({e}). 고치지 말고 사용자에게 보고하세요.")
+    if not (isinstance(data, dict) and data.get("format") == FORMAT and isinstance(data.get("works"), dict)):
+        raise Reject(f"index.json이 {FORMAT} 형식이 아닙니다. 고치지 말고 사용자에게 보고하세요.")
+    for wid, w in data["works"].items():
+        problem = entry_problem(wid, w)
+        if problem:
+            raise Reject(f"index.json의 작업 {wid} 항목이 손상됨: {problem}. 고치지 말고 사용자에게 보고하세요.")
+    return data
+
+
+def entry_problem(wid, w):
+    """What is wrong with one index entry, or None."""
+    if not (len(wid) <= ID_MAX and WORK_ID.fullmatch(wid)):
+        return "작업 id 형식이 아님"
+    if not isinstance(w, dict):
+        return "객체가 아님"
+    for key in ("title", "created_at", "updated_at"):
+        if not isinstance(w.get(key), str) or not w[key]:
+            return f"{key}가 비어 있지 않은 문자열이 아님"
+    if w.get("status") not in STATUSES:
+        return f"status가 {STATUSES} 중 하나가 아님"
+    if type(w.get("last_seq")) is not int or w["last_seq"] < 0:
+        return "last_seq가 0 이상의 정수가 아님"
+    return None
+
+
+def index_or_new(d):
+    return load_index(d) or {"format": FORMAT, "works": {}}
+
+
+def write_index(d, index):
+    """Call inside locked(d)."""
+    write_atomic(d / "index.json", json.dumps(index, ensure_ascii=False, indent=1) + "\n")
+
+
+def contained(path, parent):
+    """Refuse a link, or an existing path that resolves outside parent (works/ and works/<id>, also before creation)."""
+    if path.is_symlink() or (os.path.lexists(path) and not path.resolve().is_relative_to(parent.resolve())):
+        raise Reject(f"{path}가 심볼릭 링크이거나 {parent} 밖을 가리킵니다. 쓰지 않고 중단합니다. 사용자에게 보고하세요.")
+    return path
+
+
+def works_root(d):
+    return contained(d / "works", d)
+
+
+def work_dir(d, wid):
+    if not (isinstance(wid, str) and len(wid) <= ID_MAX and WORK_ID.fullmatch(wid)):
+        raise Reject(f"작업 id 형식이 아닙니다: {wid!r}")
+    return contained(works_root(d) / wid, d / "works")
+
+
+def make_id(title, taken):
+    """Title → ASCII slug (a-z, 0-9, '-', ≤40); 'work' when nothing ASCII is left; '-2', '-3' on collision."""
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-") or "work"
+    wid, n = base, 1
+    while wid in taken:
+        n += 1
+        wid = base[:ID_MAX - len(f"-{n}")].strip("-") + f"-{n}"
+    return wid
+
+
+def sorted_works(works):
+    """ACTIVE … CANCELLED, newest update first within a status."""
+    items = sorted(works.items(), key=lambda x: x[1].get("updated_at") or "", reverse=True)
+    return sorted(items, key=lambda x: STATUSES.index(x[1].get("status")) if x[1].get("status") in STATUSES else len(STATUSES))
+
+
+def work_list(index):
+    return "; ".join(f"{i} · {w.get('title')} · {w.get('status')}" for i, w in sorted_works(index["works"])) or "(없음)"
+
+
+def no_work_msg(index):
+    return ("현재 작업이 없습니다. 사용자가 지정한 작업으로 use <id> --quote 또는 new-work \"제목\" --quote 후 저장하세요. "
+            f"작업 목록: {work_list(index)}")
+
+
+def entry(index, wid):
+    if not isinstance(wid, str) or wid not in index["works"]:
+        raise Reject(f"없는 작업입니다: {wid}. 작업 목록: {work_list(index)}")
+    return index["works"][wid]
+
+
+# --- 원장과 투영 (형식 1과 같은 사건 구조) ---
+
+def read_events(wd):
+    path = wd / "events.jsonl"
     if not path.exists():
         return [], None
     events, prev = [], None
     for n, raw in enumerate(path.read_bytes().splitlines(), 1):
         if not raw.strip():
             continue
-        ev = json.loads(raw)
-        if ev.get("prev") != prev or ev.get("seq") != len(events) + 1:
-            raise Reject(f"events.jsonl {n}행의 연결(seq/prev)이 맞지 않습니다. 고치지 말고 사용자에게 보고하세요.")
+        try:
+            ev = json.loads(raw)
+        except ValueError:
+            ev = None
+        if not isinstance(ev, dict) or ev.get("prev") != prev or ev.get("seq") != len(events) + 1:
+            raise Reject(f"{wd.name}/events.jsonl {n}행의 연결(seq/prev)이 맞지 않습니다. 고치지 말고 사용자에게 보고하세요.")
         events.append(ev)
         prev = sha(raw)
     return events, prev
@@ -207,9 +351,9 @@ def fold(events):
     return s, counters
 
 
-def render(s):
+def render(s, wid, title):
     by = s["updated_by"] or {}
-    out = [f"# Worklog 현재 상태 (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
+    out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
            f"최초 목표(원문): {s['goal'] or '(미정)'}",
            "※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
            f"상태: {s['status']}", "", "## 유효 결정"]
@@ -225,21 +369,64 @@ def render(s):
     return "\n".join(out) + "\n"
 
 
-def write_atomic(path, text):
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+def project(wd, state, wid, title):
+    write_atomic(wd / "state.json", json.dumps(state, ensure_ascii=False, indent=1) + "\n")
+    write_atomic(wd / "state.md", render(state, wid, title))
 
 
-def project(d, state):
-    write_atomic(d / "state.json", json.dumps(state, ensure_ascii=False, indent=1) + "\n")
-    write_atomic(d / "state.md", render(state))
+def projection_ok(wd, state, wid, title, events):
+    """(state.json ok, state.md ok). A work without events may have no projection yet."""
+    def same(name, want, parse):
+        try:
+            return parse((wd / name).read_text(encoding="utf-8")) == want
+        except FileNotFoundError:
+            return not events
+        except (OSError, ValueError):
+            return False
+    return same("state.json", state, json.loads), same("state.md", render(state, wid, title), str)
 
+
+def commit(d, index, wid, ev):
+    """Inside locked(d): append → reread → rebuild projection → compare → index update. Returns the new state."""
+    wd = work_dir(d, wid)
+    wd.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+    with open(wd / "events.jsonl", "ab") as f:
+        f.write(line + b"\n")
+        f.flush()
+        os.fsync(f.fileno())
+    reread, _ = read_events(wd)
+    if reread[-1] != json.loads(line):
+        raise Reject("저장한 사건을 다시 읽은 값이 다릅니다. 사용자에게 보고하세요.")
+    rebuilt, _ = fold(reread)
+    project(wd, rebuilt, wid, index["works"][wid]["title"])
+    if json.loads((wd / "state.json").read_text()) != rebuilt or rebuilt["seq"] != ev["seq"]:
+        raise Reject("현재 상태 파일 대조 실패(원장은 저장됨). `wl.py show`로 복원하세요.")
+    index["works"][wid].update(updated_at=ev["at"], last_seq=ev["seq"], status=rebuilt["status"])
+    write_index(d, index)
+    return rebuilt
+
+
+def read_writer(path):
+    """writer.json (last writer, information only) or None when absent or unreadable."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def new_event(events, prev, kind, tool, sid, summary, quote, refs, changes):
+    return {"v": 1, "seq": len(events) + 1, "id": f"E{len(events) + 1:04d}", "type": kind, "at": now(),
+            "tool": tool, "session_id": sid, "summary": summary, "quote": quote,
+            "refs": refs, "changes": changes, "prev": prev}
+
+
+# --- 저장 ---
 
 def validate(p, root, state):
     if not isinstance(p, dict):
         raise Reject("입력은 JSON 객체여야 합니다. `wl.py help` 참고.")
-    unknown = set(p) - {"type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
+    unknown = set(p) - {"work", "type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
                         "waiting", "next_action", "status", "artifacts", "check", "refs", "takeover",
                         "occurred_at", "source"}
     if unknown:
@@ -300,23 +487,34 @@ def cmd_save(args):
     except json.JSONDecodeError as e:
         raise Reject(f"JSON 해석 실패: {e}. `wl.py help` 참고.")
     d = store(root)
-    d.mkdir(exist_ok=True)
+    if not d.is_dir():
+        raise Reject(no_work_msg({"works": {}}))
     with locked(d):
-        events, prev = read_events(d)
-        state, counters = fold(events)
-        arts, bodies = validate(p, root, state)
-        # 신선도: 이 세션이 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
+        index = index_or_new(d)
         try:
             sess = load_session(d, tool, sid)
         except SessionCorrupt:
             sess = None  # 손상: 무엇을 읽었는지 알 수 없으므로 없는 것으로 보고, 성공 시 새로 만든다
-        if sess is None and events:
-            raise Reject("show 먼저 실행하세요. 이 세션은 아직 현재 기록을 읽지 않았습니다.")
-        if sess and sess["last_seen_seq"] < len(events):
-            raise Reject(f"기록이 바뀌었습니다(seq {sess['last_seen_seq']}→{len(events)}). show 후 다시 저장하세요.")
+        explicit = isinstance(p, dict) and "work" in p
+        if explicit and not (isinstance(p["work"], str) and p["work"].strip()):
+            raise Reject(f'work는 비어 있지 않은 문자열(작업 id)이어야 합니다. 예: "work": "habit-plan". 받은 값: {json.dumps(p["work"], ensure_ascii=False)}')
+        wid = p["work"] if explicit else (sess or {}).get("current_work")
+        if not wid:
+            raise Reject(no_work_msg(index))
+        title = entry(index, wid)["title"]
+        wd = work_dir(d, wid)
+        events, prev = read_events(wd)
+        state, counters = fold(events)
+        arts, bodies = validate(p, root, state)
+        # 신선도: 이 세션이 이 작업에서 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
+        seen = (sess or {}).get("last_seen", {}).get(wid)
+        if seen is None and events:
+            raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다.")
+        if seen is not None and seen < len(events):
+            raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요.")
         # writer.json은 마지막 작성자 정보. takeover는 선택(사용자가 명시적으로 넘길 때 기록)
-        wpath = d / "writer.json"
-        writer = json.loads(wpath.read_text()) if wpath.exists() else None
+        wpath = wd / "writer.json"
+        writer = read_writer(wpath)  # 정보용: 읽을 수 없으면 없는 것으로 보고 저장 성공 시 덮어쓴다
         acquired = {"from": writer, "reason": p["takeover"]} if p.get("takeover") else None
         changes = {k: p[k] for k in ("goal", "decisions", "constraints", "constraints_remove", "waiting",
                                      "next_action", "status") if k in p}
@@ -337,9 +535,7 @@ def cmd_save(args):
             changes["decisions"] = keep
         if arts:
             changes["artifacts"] = arts
-        ev = {"v": 1, "seq": len(events) + 1, "id": f"E{len(events) + 1:04d}", "type": p["type"], "at": now(),
-              "tool": tool, "session_id": sid, "summary": p["summary"], "quote": p.get("quote"),
-              "refs": p.get("refs", []), "changes": changes, "prev": prev}
+        ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
         for k in ("occurred_at", "source"):
             if k in p:
                 ev[k] = p[k]
@@ -347,7 +543,7 @@ def cmd_save(args):
             ev["writer_acquired"] = acquired
         try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다
             new_state = apply(state, dict(ev, **counters))
-            render(new_state)
+            render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
         unreflected = []
@@ -373,51 +569,195 @@ def cmd_save(args):
                     raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
                                  "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
             ev["check"] = {i: check[i] for i in need}
-        line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
-        with open(d / "events.jsonl", "ab") as f:
-            f.write(line + b"\n")
-            f.flush()
-            os.fsync(f.fileno())
-        # 저장 → 재읽기 → 상태 갱신 → 대조
-        reread, _ = read_events(d)
-        if reread[-1] != json.loads(line):
-            raise Reject("저장한 사건을 다시 읽은 값이 다릅니다. 사용자에게 보고하세요.")
-        rebuilt, _ = fold(reread)
-        project(d, rebuilt)
-        if json.loads((d / "state.json").read_text()) != rebuilt or rebuilt["seq"] != ev["seq"]:
-            raise Reject("현재 상태 파일 대조 실패(원장은 저장됨). `wl.py show`로 복원하세요.")
+        rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
-        turn = (sess or {}).get("turn", 0)
-        update_session(d, tool, sid, last_seen_seq=ev["seq"], saved_turn=turn)
-    print(json.dumps({"ok": True, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
+        update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
+    print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
                       "decisions": [f"{x['id']}: {x['text']}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}" for x in rebuilt["constraints"]],
                       "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"]}, ensure_ascii=False))
 
 
+# --- 작업 선택 ---
+
+def need_quote(args, usage):
+    if not str(args.quote or "").strip():
+        raise Reject(f"사용자 원문이 필요합니다: {usage}. 사용자가 작업을 지정한 말을 그대로 --quote에 넣으세요.")
+
+
+def cmd_works(args):
+    d = store(args.root)
+    index = (load_index(d) if d.is_dir() else None) or {"works": {}}
+    who, current = try_identity(args), None
+    if who and d.is_dir():
+        try:
+            current = (load_session(d, *who) or {}).get("current_work")
+        except SessionCorrupt:
+            pass
+    print(json.dumps({"ok": True, "current_work": current,
+                      "works": [dict(id=i, **w) for i, w in sorted_works(index["works"])]}, ensure_ascii=False))
+
+
+def cmd_use(args):
+    if not args.arg:
+        raise Reject('use <id> --quote "<사용자 원문>" 형식입니다.')
+    tool, sid = identity(args)
+    need_quote(args, f'use {args.arg} --quote "<사용자 원문>"')
+    d = store(args.root)
+    if not d.is_dir():
+        raise Reject(f"없는 작업입니다: {args.arg}. 작업 목록: (없음)")
+    with locked(d):
+        w = entry(index_or_new(d), args.arg)
+        # use는 show처럼 현황을 보여 주고 읽은 것으로 친다: use 직후 save가 "show 먼저"로 막히지 않는다
+        text = read_work(d, args.arg, w["title"], (tool, sid), current_work=args.arg,
+                         selected_turn=session_or_new(d, tool, sid)["turn"])
+    print(f"[use] 현재 작업: {args.arg} · {w['title']} · {w['status']}\n" + text, end="")
+
+
+def cmd_new_work(args):
+    title = str(args.arg or "").strip()
+    if not title:
+        raise Reject('new-work "<제목>" --quote "<사용자 원문>" 형식입니다.')
+    tool, sid = identity(args)
+    need_quote(args, f'new-work "{title}" --quote "<사용자 원문>"')
+    d = store(args.root)
+    d.mkdir(exist_ok=True)
+    with locked(d):
+        index = index_or_new(d)
+        works = works_root(d)
+        wid = make_id(title, set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set()))
+        at = now()
+        index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
+        work_dir(d, wid).mkdir(parents=True)
+        write_index(d, index)
+        update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"])
+    print(json.dumps({"ok": True, "id": wid, "title": title, "current_work": wid}, ensure_ascii=False))
+
+
+def set_status(args, status, summary):
+    """archive/reopen: CHECKPOINT event with the status change + index status. No quote needed."""
+    wid = args.arg
+    tool, sid = identity(args)
+    d = store(args.root)
+    if not d.is_dir():
+        raise Reject(f"없는 작업입니다: {wid}. 작업 목록: (없음)")
+    with locked(d):
+        index = index_or_new(d)
+        if entry(index, wid)["status"] == status:
+            raise Reject(f"작업 {wid}는 이미 {status}입니다.")
+        events, prev = read_events(work_dir(d, wid))
+        ev = new_event(events, prev, "CHECKPOINT", tool, sid, summary, None, [], {"status": status})
+        commit(d, index, wid, ev)
+        if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == len(events):  # 최신을 보던 세션은 자기 사건 뒤도 최신
+            update_session(d, tool, sid, seen=(wid, ev["seq"]))
+    print(json.dumps({"ok": True, "work": wid, "status": status, "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
+
+
+def cmd_archive(args):
+    set_status(args, "COMPLETED", "작업 보관")
+
+
+def cmd_reopen(args):
+    set_status(args, "ACTIVE", "작업 재개")
+
+
+# --- 읽기 ---
+
+def current_work(d, who, index):
+    """This session's current work id if it is still in the index, else None."""
+    if not who:
+        return None
+    try:
+        cur = (load_session(d, *who) or {}).get("current_work")
+    except SessionCorrupt:
+        return None
+    return cur if cur in index["works"] else None
+
+
 def cmd_show(args):
     d = store(args.root)
-    if not (d / "events.jsonl").exists():
-        print("Worklog 기록 없음(.worklog/events.jsonl). 첫 save가 기록을 만든다.")
+    index = load_index(d) if d.is_dir() else None
+    if not index or not index["works"]:
+        print('Worklog 작업 없음. 사용자가 새 작업을 지정하면 new-work "<제목>" --quote "<사용자 원문>"으로 만든다.')
         return
-    note = ""
+    who = try_identity(args)
+    wid = args.work or current_work(d, who, index)
+    if not wid:
+        print("현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
+              + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in sorted_works(index["works"])))
+        return
+    title = entry(index, wid)["title"]
     with locked(d):  # 잠금 뒤에 읽어야 동시 저장 이후의 투영을 과거 seq로 되돌리지 않는다
-        events, _ = read_events(d)
-        state, _ = fold(events)
-        try:  # state.json·state.md 중 하나라도 다르거나 없으면 둘 다 다시 만든다
-            if (json.loads((d / "state.json").read_text()) != state
-                    or (d / "state.md").read_text(encoding="utf-8") != render(state)):
-                raise ValueError
-        except (OSError, ValueError):
-            project(d, state)
-            note = "(현재 상태가 원장과 달라 원장에서 다시 만들었다)\n"
-        try:
-            update_session(d, *identity(args), last_seen_seq=len(events))
-        except Reject:
-            pass  # 세션을 모르는 사람의 show는 읽기만 한다
-    print(note + render(state), end="")
+        text = read_work(d, wid, title, who)
+    print(text, end="")
 
+
+def read_work(d, wid, title, who, **session_changes):
+    """Inside locked(d): one work's state text (projection repaired from the ledger if stale) and, when the
+    session is known, mark it as seen (plus session_changes). Shared by show and use."""
+    wd = work_dir(d, wid)
+    events, _ = read_events(wd)
+    state, _ = fold(events)
+    note = ""
+    if events and not all(projection_ok(wd, state, wid, title, events)):  # 하나라도 다르거나 없으면 둘 다 다시 만든다
+        project(wd, state, wid, title)
+        note = "(현재 상태가 원장과 달라 원장에서 다시 만들었다)\n"
+    if who:  # 세션을 모르는 사람의 show는 읽기만 한다
+        update_session(d, *who, seen=(wid, len(events)), **session_changes)
+    return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n")
+
+
+def check_work(d, wid, title):
+    wd = work_dir(d, wid)
+    events, _ = read_events(wd)
+    state, _ = fold(events)
+    ok_json, ok_md = projection_ok(wd, state, wid, title, events)
+    return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
+            "state_json": ok_json, "state_md": ok_md}
+
+
+def cmd_verify(args):
+    d = store(args.root)
+    if not d.is_dir():
+        result = verify_result(d, args, {"works": {}})
+    else:
+        with locked(d):  # index·원장·투영을 저장 도중이 아닌 한 시점에서 함께 읽는다
+            result = verify_result(d, args, load_index(d) or {"works": {}})
+    print(json.dumps(result, ensure_ascii=False))
+    if not result["ok"]:
+        sys.exit(1)
+
+
+def verify_result(d, args, index):
+    if not args.all:
+        wid = args.work or current_work(d, try_identity(args), index)
+        if not wid:
+            raise Reject("현재 작업이 없습니다. verify --work <id> 또는 verify --all로 지정하세요.")
+        r = check_work(d, wid, entry(index, wid)["title"])
+        del r["status"]
+        return r
+    results, mismatched, warnings = [], [], []
+    for wid, w in sorted(index["works"].items()):
+        try:
+            r = check_work(d, wid, w["title"])
+            if (w["last_seq"], w["status"]) != (r["events"], r["status"]):
+                mismatched.append(wid)
+            writer = work_dir(d, wid) / "writer.json"
+            if os.path.lexists(writer) and read_writer(writer) is None:
+                warnings.append(f"{wid}: writer.json 읽기 불가")
+        except Reject as e:
+            r = {"work": wid, "ok": False, "error": str(e)}
+        results.append(r)
+    works = works_root(d)
+    folders = {p.name for p in works.iterdir() if p.is_dir()} if works.is_dir() else set()
+    idx = {"missing_folders": sorted(set(index["works"]) - folders), "unindexed_folders": sorted(folders - set(index["works"])),
+           "mismatched": mismatched}
+    idx["ok"] = not any(idx.values())
+    return {"ok": idx["ok"] and all(r["ok"] for r in results), "works": results, "index": idx, "warnings": warnings}
+
+
+# --- Hook ---
 
 def hook_input(args):
     """Hook event from stdin → (store dir, (tool, session) or None, event).
@@ -435,30 +775,58 @@ def hook_input(args):
     sid = event.get("session_id")
     if isinstance(sid, str) and sid:
         args.session = sid
+    return d, try_identity(args), event
+
+
+def list_line(d, wid, w):
     try:
-        who = identity(args)
-    except Reject:
-        who = None
-    return d, who, event
+        nxt = fold(read_events(work_dir(d, wid))[0])[0]["next_action"] or "(미정)"
+    except (Reject, OSError, ValueError):
+        nxt = "(읽기 실패)"
+    nxt = nxt if len(nxt) <= 60 else nxt[:60] + "…"
+    return f"- {wid} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')} · 다음: {nxt}"
+
+
+def injection(d, who):
+    """SessionStart text → (status, body). Marks the current work as seen by this session."""
+    index = load_index(d) or {"works": {}}
+    works, out = index["works"], []
+    pm = d / "project.md"
+    if pm.is_file():
+        text = pm.read_text(encoding="utf-8", errors="replace").strip()
+        out += ["## 프로젝트 공통 (project.md)",
+                text[:PROJECT_MAX] + (f"\n…({PROJECT_MAX:,}자에서 잘림)" if len(text) > PROJECT_MAX else "")]
+    live = sorted(((i, w) for i, w in works.items() if w.get("status") in ("ACTIVE", "PAUSED")),
+                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
+    out.append(f"## 작업 목록 (ACTIVE·PAUSED, 최근 갱신순 최대 {LIST_MAX}개 / 전체 {len(works)}개)")
+    out += [list_line(d, i, w) for i, w in live[:LIST_MAX]] or ["- (없음)"]
+    cur = None
+    if who:
+        with locked(d):
+            cur = current_work(d, who, index)
+            if cur:
+                events, _ = read_events(work_dir(d, cur))
+                update_session(d, *who, seen=(cur, len(events)))
+    if cur:
+        title = works[cur]["title"]
+        out += [f"## 현재 작업: {cur} · {title}",
+                render(fold(events)[0], cur, title).rstrip("\n") if events else "기록 없음. 첫 save가 기록을 만든다."]
+    else:
+        out += ["## 현재 작업 없음", NO_WORK_GUIDE]
+    return ("EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"), "\n".join(out) + "\n"
 
 
 def cmd_hook(args):
-    """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": state.md}} and marks the state as seen.
-    The injection is valid without a session ID; then no session file is touched."""
+    """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection()).
+    Valid without a session ID; then no session file is touched and there is no current work."""
     d, who, _ = hook_input(args)
     if not d:
         return
     try:
-        with locked(d):
-            events, _ = read_events(d)
-            if who:
-                update_session(d, *who, last_seen_seq=len(events))
-        text = (render(fold(events)[0]) if events else "Worklog 기록 없음. 첫 save가 기록을 만든다.\n")
-        status = "PROVIDED" if events else "EMPTY"
+        status, text = injection(d, who)
     except (Reject, OSError, ValueError) as e:
         text, status = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE"
-    root = d.parent
-    head = f"[Worklog {FORMAT} SessionStart | {status} | root={root}]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
+    head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
                      ensure_ascii=False))
 
@@ -472,27 +840,27 @@ def cmd_turn_start(args):
 
 
 def cmd_stop_hook(args):
-    """Stop hook: block once if this turn has neither save nor skip."""
+    """Stop hook: block once if this turn has no save, skip or work selection."""
     d, who, event = hook_input(args)
     if not (d and who) or event.get("stop_hook_active") is True:
         return
     try:
-        s = load_session(d, *who) or dict.fromkeys(SESSION_KEYS, 0)
+        s = load_session(d, *who) or new_session()
     except SessionCorrupt as e:
         print(json.dumps({"decision": "block", "reason": f"Worklog: 세션 파일을 읽을 수 없습니다({e}). "
                           "save 또는 skip으로 다시 만든 뒤 마치세요."}, ensure_ascii=False))
         return
-    if s["turn"] in (s["saved_turn"], s["skipped_turn"]):
+    if s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]):
         return
     q = shlex.quote
     skip = f'python3 -B {q(str(Path(__file__).resolve()))} skip "이유" --tool {q(who[0])} --session {q(who[1])} --root {q(str(d.parent))}'
     print(json.dumps({"decision": "block", "reason": "Worklog: 이번 턴에 save가 없습니다. 기록할 것이 있으면 save, "
-                      f"읽기 전용 턴이면 `{skip}`를 실행한 뒤 마치세요."}, ensure_ascii=False))
+                      f"읽기 전용 턴이거나 작업이 지정되지 않았으면 `{skip}`를 실행한 뒤 마치세요."}, ensure_ascii=False))
 
 
 def cmd_skip(args):
     """Read-only turn: skipped_turn = turn. Writes nothing to the ledger."""
-    if not str(args.reason or "").strip():
+    if not str(args.arg or "").strip():
         raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
     d = store(args.root)
     tool, sid = identity(args)
@@ -505,35 +873,34 @@ def cmd_skip(args):
     print(json.dumps({"ok": True, "turn": turn}))
 
 
-def cmd_verify(args):
-    d = store(args.root)
-    events, _ = read_events(d)
-    state, _ = fold(events)
-    ok_json = (d / "state.json").exists() and json.loads((d / "state.json").read_text()) == state
-    ok_md = (d / "state.md").exists() and (d / "state.md").read_text() == render(state)
-    print(json.dumps({"ok": ok_json and ok_md, "events": len(events), "state_json": ok_json, "state_md": ok_md}))
-    if not (ok_json and ok_md):
-        sys.exit(1)
-
-
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어")
-    commands = {"show": cmd_show, "save": cmd_save, "skip": cmd_skip, "verify": cmd_verify, "hook": cmd_hook,
-                "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook}
+    ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어 (형식 2)")
+    commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
+                "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
+                "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook}
     ap.add_argument("command", choices=[*commands, "help"])
-    ap.add_argument("reason", nargs="?", help="skip의 이유")
+    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목")
     ap.add_argument("--root")
     ap.add_argument("--tool")
     ap.add_argument("--session")
+    ap.add_argument("--quote", help="use·new-work: 사용자가 작업을 지정한 원문")
+    ap.add_argument("--work", help="show·verify: 대상 작업 id")
+    ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     args = ap.parse_args(argv)
     args.root = args.root or os.getcwd()
     if args.command == "help":
         print(SAVE_HELP)
         return
     try:
+        if args.command in ("archive", "reopen") and not args.arg:
+            raise Reject(f"{args.command} <id> 형식입니다.")
         commands[args.command](args)
-    except Reject as e:
-        print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+    except (Reject, OSError, ValueError) as e:  # traceback 대신 구조화된 거부
+        error = str(e) if isinstance(e, Reject) else f"{type(e).__name__}: {e}. 사용자에게 보고하세요."
+        if args.command in ("hook", "turn-start", "stop-hook"):  # Hook은 도구를 멈추지 않는다
+            print(f"Worklog {args.command}: {error}", file=sys.stderr)
+            return
+        print(json.dumps({"ok": False, "error": error}, ensure_ascii=False))
         sys.exit(2)
 
 
