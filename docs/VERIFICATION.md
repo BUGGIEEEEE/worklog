@@ -1,44 +1,59 @@
 # Verification / 검증 결과
 
-## Format 2 — multi-work scenario
+## Format 2 — multi-work scenario (2026-10-06/07, 12 runs)
 
 ### English
 
-Claude Code (Opus 5.5, high effort) and Codex (`gpt-6.1-sol`, high effort), one run each. Before the session, the project already holds two works: `habit-plan` (the work the scenario continues) and `recipe-note` (an unrelated work with its own goal and decision). The model starts a new session with no current work. Turn T0 says only "이어서 해 줘" ("continue") without naming a work. Then T1 starts with "habit-plan 이어서. " ("continue habit-plan") followed by the same 3-turn scenario as Format 1 (goal, decisions and constraints → change one decision → two-sentence `note-guide.md`), with 2 compactions and one read-only Stop-hook observation turn.
+Claude Code (fable / opus / sonnet × medium / high effort) and Codex (astra / sol / luna × medium / high), one run per condition. Before the session, the project already holds two works: `habit-plan` (the work the scenario continues) and `recipe-note` (an unrelated work with its own goal and decision). The model starts a new session with no current work. Turn T0 says only "이어서 해 줘" ("continue") without naming a work. Then T1 starts with "habit-plan 이어서. " ("continue habit-plan") followed by the same 3-turn scenario as Format 1 (goal, decisions and constraints → change one decision → two-sentence `note-guide.md`), with 2 compactions and one read-only Stop-hook observation turn.
 
-| Criterion | Claude | Codex | Result |
-|---|---|---|---|
-| 1. Goal, active decisions, constraints, waiting item and next action restored after both compactions | PASS | PASS | 2/2 |
-| 2. No artifact before it was requested; the changed value (11 minutes) is the valid one; exactly two sentences, re-read and compared | PASS | PASS | 2/2 |
-| 3. Decisions and constraints quoted from the artifact body; `wl.py verify` passed | PASS | PASS | 2/2 |
-| 4. With no work named (T0): asked which work, saved nothing, the other work's ledger unchanged (SHA-256 equal before and after every step) | PASS | PASS | 2/2 |
-| 5. After each compaction the injected context contained `## 현재 작업: habit-plan` (current work) and the session kept `habit-plan` | PASS | PASS | 2/2 |
+| Criterion | Result |
+|---|---|
+| 1. Goal, active decisions, constraints, waiting item and next action restored after both compactions | 12/12 |
+| 2. No artifact before it was requested; the changed value (11 minutes) is the valid one; exactly two sentences, re-read and compared | 12/12 |
+| 3a. Every content decision and constraint quoted from the artifact body; artifact-body keyword check passed | 12/12 |
+| 3b. Strict: no `미반영` ("not reflected") entry at all in the model's `check` | 9/12 |
+| 4. With no work named (T0): asked which work, saved nothing, the other work's ledger unchanged (SHA-256 equal before and after every step), session kept no current work | 12/12 |
+| 5. After each compaction the injected context contained `## 현재 작업: habit-plan` (current work) and the session kept `habit-plan` | 12/12 |
+| SessionStart hook injection (3 per run) and Stop hook blocked a turn without save | 12/12 |
+| Within cost caps (tools ≤ 18, ≤ 195 s work + compaction, ≤ 884K tokens) | 10/12 |
 
-| Tool | Tool calls | Work + compaction s | Tokens | Within caps (≤ 18 / ≤ 195 s / ≤ 884K) |
-|---|---:|---:|---:|---|
-| Claude Code | 6 | 137 | 497K | ✓ |
-| Codex | 6 | 146 | 271K | ✓ |
+The three `미반영` entries in 3b were all items that cannot be quoted as a phrase: the "exactly two sentences" format condition (opus-medium, sonnet-medium), a decision scoped to one turn's working method (sonnet-medium), and a waiting item recorded as a constraint that the artifact request itself ended (luna-medium). No content constraint was omitted in any run. Both cap misses were on the time cap only, both on Fable 5.1, where each compaction took 57–69 s.
 
-Costs cover T1–T3 and the two compactions; T0 and the Stop-observation turn are excluded. The Claude token count is from assistant-message usage and does not include the compaction calls, which the transcript does not expose. In T0 Codex asked through its native question UI rather than in plain text. Some runs were repeated because of defects in the test harness (harness retries, not model failures).
+| Tool | Model | Effort | Crit. 4 | Crit. 5 | Crit. 1·2·3a | Unreflected IDs | Tool calls | Work + compaction s | Tokens | Caps (tools/time/tokens) |
+|---|---|---|---|---|---|---|---:|---:|---:|---|
+| claude | Opus 5.5 | high | PASS | PASS | PASS | - | 6 | 137.0 | 497,267 | ✓/✓/✓ |
+| claude | Opus 5.5 | medium | PASS | PASS | PASS | D4 (format) | 7 | 126.8 | 546,873 | ✓/✓/✓ |
+| claude | Sonnet 5.5 | high | PASS | PASS | PASS | - | 10 | 122.2 | 568,640 | ✓/✓/✓ |
+| claude | Sonnet 5.5 | medium | PASS | PASS | PASS | D2 (format), D3 (turn-scoped) | 6 | 109.3 | 493,711 | ✓/✓/✓ |
+| claude | Fable 5.1 | high | PASS | PASS | PASS | - | 18 | 293.5 | 846,053 | ✓/✗/✓ |
+| claude | Fable 5.1 | medium | PASS | PASS | PASS | - | 9 | 318.5 | 625,365 | ✓/✗/✓ |
+| codex | gpt-6.1-sol | high | PASS | PASS | PASS | - | 6 | 146.4 | 270,821 | ✓/✓/✓ |
+| codex | gpt-6.1-sol | medium | PASS | PASS | PASS | - | 7 | 138.9 | 293,506 | ✓/✓/✓ |
+| codex | gpt-6-astra | high | PASS | PASS | PASS | - | 6 | 151.7 | 266,984 | ✓/✓/✓ |
+| codex | gpt-6-astra | medium | PASS | PASS | PASS | - | 6 | 148.8 | 263,747 | ✓/✓/✓ |
+| codex | gpt-6-luna | high | PASS | PASS | PASS | - | 6 | 104.0 | 255,544 | ✓/✓/✓ |
+| codex | gpt-6-luna | medium | PASS | PASS | PASS | C3 (ended waiting item) | 17 | 131.8 | 578,063 | ✓/✓/✓ |
+
+Costs cover T1–T3 and the two compactions; T0 and the Stop-observation turn are excluded. Claude token counts are from assistant-message usage and do not include the compaction calls, which the transcript does not expose. In T0 Codex asked through its native question UI rather than in plain text. The first two rows (opus-high, sol-high) were run before the other ten, during tool development; some of those early runs were repeated because of defects in the test harness (harness retries, not model failures). The other ten runs each completed on the first attempt. Each condition was run once, so per-model reproducibility is not established.
 
 ### 한국어
 
-Claude Code(Opus 5.5, high)와 Codex(`gpt-6.1-sol`, high)를 각 1회 실행했습니다. 세션 전에 프로젝트에는 작업 2개가 있습니다: `habit-plan`(시나리오가 이어 갈 작업)과 `recipe-note`(목표·결정이 따로 있는 관련 없는 작업). 모델은 현재 작업이 없는 새 세션에서 시작합니다. T0는 작업을 지정하지 않고 "이어서 해 줘"라고만 말합니다. 이어서 T1은 "habit-plan 이어서. "로 시작하고 형식 1과 같은 3턴 시나리오(목표·결정·제약 → 결정 하나 변경 → 두 문장짜리 `note-guide.md`)를 압축 2회, 읽기 전용 Stop Hook 관찰 턴 1회와 함께 진행합니다.
+Claude Code(fable/opus/sonnet × medium/high), Codex(astra/sol/luna × medium/high), 조건마다 1회. 세션 전에 프로젝트에는 작업 2개가 있습니다: `habit-plan`(시나리오가 이어 갈 작업)과 `recipe-note`(목표·결정이 따로 있는 관련 없는 작업). 모델은 현재 작업이 없는 새 세션에서 시작합니다. T0는 작업을 지정하지 않고 "이어서 해 줘"라고만 말합니다. 이어서 T1은 "habit-plan 이어서. "로 시작하고 형식 1과 같은 3턴 시나리오(목표·결정·제약 → 결정 하나 변경 → 두 문장짜리 `note-guide.md`)를 압축 2회, 읽기 전용 Stop Hook 관찰 턴 1회와 함께 진행합니다.
 
-| 기준 | Claude | Codex | 결과 |
-|---|---|---|---|
-| 1. 두 번의 압축 뒤 목표·유효 결정·제약·대기·다음 행동 복원 | PASS | PASS | 2/2 |
-| 2. 요청 전 산출물 없음, 바꾼 값(11분)이 유효, 정확히 두 문장·저장본 재확인 | PASS | PASS | 2/2 |
-| 3. 결정·제약을 산출물 본문에서 인용, `wl.py verify` 통과 | PASS | PASS | 2/2 |
-| 4. 작업 지정 없음(T0): 어느 작업인지 질문, 저장 0, 다른 작업 원장 불변(단계마다 SHA-256 동일) | PASS | PASS | 2/2 |
-| 5. 압축마다 주입 내용에 `## 현재 작업: habit-plan` 포함, 세션의 현재 작업 유지 | PASS | PASS | 2/2 |
+| 기준 | 결과 |
+|---|---|
+| 1. 두 번의 압축 뒤 목표·유효 결정·제약·대기·다음 행동 복원 | 12/12 |
+| 2. 요청 전 산출물 없음, 바꾼 값(11분)이 유효, 정확히 두 문장·저장본 재확인 | 12/12 |
+| 3a. 내용 결정·제약을 모두 산출물 본문에서 인용, 본문 키워드 검사 통과 | 12/12 |
+| 3b. 엄격: 모델의 `check`에 `미반영` 항목이 하나도 없음 | 9/12 |
+| 4. 작업 지정 없음(T0): 어느 작업인지 질문, 저장 0, 다른 작업 원장 불변(단계마다 SHA-256 동일), 현재 작업 없음 유지 | 12/12 |
+| 5. 압축마다 주입 내용에 `## 현재 작업: habit-plan` 포함, 세션의 현재 작업 유지 | 12/12 |
+| SessionStart Hook 주입(회차마다 3회), save 없는 턴의 Stop 차단 | 12/12 |
+| 비용 상한 이내(도구 ≤18회, 업무+압축 ≤195초, ≤884K 토큰) | 10/12 |
 
-| 도구 | 도구 호출 | 업무+압축 초 | 토큰 | 상한 이내(≤18 / ≤195초 / ≤884K) |
-|---|---:|---:|---:|---|
-| Claude Code | 6 | 137 | 497K | ✓ |
-| Codex | 6 | 146 | 271K | ✓ |
+3b의 `미반영` 3건은 모두 구절로 인용할 수 없는 항목이었습니다: "정확히 두 문장" 형식 조건(opus-medium, sonnet-medium), 한 턴의 작업 방식에 한정된 결정(sonnet-medium), 산출물 요청으로 소멸한 대기 항목을 제약으로 적은 것(luna-medium). 내용 제약이 빠진 회차는 없습니다. 상한 초과 2건은 둘 다 Fable 5.1의 시간 상한만이며, 압축 1회에 57~69초가 걸렸습니다. 회차별 수치는 위 영어 절의 표를 봅니다.
 
-비용은 T1~T3와 압축 2회 기준이며 T0와 Stop 관찰 턴은 제외했습니다. Claude 토큰은 assistant 메시지 사용량 합계이며, 전사에 드러나지 않는 압축 호출 사용량은 빠져 있습니다. T0에서 Codex는 일반 텍스트 대신 네이티브 질문 UI로 물었습니다. 일부 실행은 시험 도구 결함으로 다시 실행했습니다(harness retries, not model failures).
+비용은 T1~T3와 압축 2회 기준이며 T0와 Stop 관찰 턴은 제외했습니다. Claude 토큰은 assistant 메시지 사용량 합계이며, 전사에 드러나지 않는 압축 호출 사용량은 빠져 있습니다. T0에서 Codex는 일반 텍스트 대신 네이티브 질문 UI로 물었습니다. 처음 2회(opus-high, sol-high)는 도구 개발 중에 먼저 실행했고, 그중 일부는 시험 도구 결함으로 다시 실행했습니다(harness retries, not model failures). 나머지 10회는 모두 1회에 완주했습니다. 조건마다 1회라서 모델별 재현성은 확인되지 않았습니다.
 
 ## Format 1 (2026-10-06)
 
