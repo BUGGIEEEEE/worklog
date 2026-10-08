@@ -1,19 +1,19 @@
 # worklog
 
-[한국어](README.ko.md)
+[한국어](README.ko.md) · AI agent asked to install or update this? Read [AGENT.md](AGENT.md).
 
-**Install it once per project. After that there is nothing to do.** Claude Code and Codex write what matters about the work — goal, decisions, constraints, next action — into `.worklog/` in the project folder, and read it back automatically when a session starts or the conversation is compacted.
+**Claude Code and Codex forget what was decided when a conversation is compacted or a new session starts. worklog makes them write it down and read it back.** Install it once per project. After that there is nothing to do.
 
 ## What it does
 
-- **Keeps context across compaction and new sessions.** The current state is injected into the model at session start and after every compaction, so the model continues from the record instead of guessing.
-- **Does not let a turn end without a record.** If the model ends a turn without saving (or declaring the turn read-only), a Stop hook sends it back to save.
-- **Keeps separate works apart.** One project can hold several works. At session start the model shows the list, and you pick one with `<id> 이어서` ("continue <id>") or `새 작업: <title>` ("new work: <title>"). Nothing is saved before you pick; if you don't, the model asks.
-- **Lets several tools share one record.** Claude Code and Codex can work on the same project in turn; each reads the other's entries before writing.
+- The model writes the goal, decisions, constraints and next action of each work into `.worklog/` in the project folder, and reads it back automatically at session start and after every compaction.
+- It cannot end a turn without saving (or saying the turn was read-only). A hook sends it back.
+- One project can hold several works. You say which one: `<id> 이어서` ("continue <id>") or `새 작업: <title>` ("new work: <title>"). The model never guesses.
+- Claude Code and Codex share the same record.
 
 ## Install
 
-Requirements: Python 3 (standard library only; developed and tested on 3.14, expected to work on 3.10+), macOS or Linux. Checked with Claude Code 2.1.x and Codex CLI 0.15x.
+Requirements: Python 3 (standard library only; tested on 3.14, expected to work on 3.10+), macOS or Linux. Checked with Claude Code 2.1.x and Codex CLI 0.15x.
 
 ```sh
 git clone https://github.com/BUGGIEEEEE/worklog.git
@@ -26,32 +26,32 @@ Then, once per project:
 - **Codex:** trust the project, then trust the three Worklog hooks in `/hooks`.
 - **Claude Code:** if the project is a git repository, accept the folder-trust dialog on first start.
 
-The installer writes only inside the project (a rules block in `CLAUDE.md`/`AGENTS.md`, three hooks, a skill, an empty `.worklog/`), backs up every file it changes, and can be re-run safely. Keep the clone where it is — the hooks call it by absolute path. Per-tool details, Pi, and recovery: [docs/ADAPTERS.md](docs/ADAPTERS.md).
+Keep the clone where it is: the hooks call it by its path. The installer writes only inside the project and backs up every file it changes. You can also give this page's address to Claude Code or Codex and ask it to install; it follows [AGENT.md](AGENT.md).
 
-## After install
+## Using it
 
-Work as usual.
+- **First session:** say `새 작업: <title>`. Later sessions show the list of works; say `<id> 이어서`.
+- **Where things stand:** open `.worklog/works/<id>/state.md`.
+- **Pause it in a project:** say `워크로그 꺼` ("worklog off"); the whole project pauses, and the time it was off is not recorded. Say `워크로그 켜` ("worklog on") to resume. Projects where you did not run the installer are not affected at all.
 
-- **In the first session:** say `새 작업: <title>` to create your first work.
-- **To see where things stand:** open `.worklog/works/<id>/state.md` (goal, active decisions, constraints, next action).
-- **To change a decision or lift a constraint:** say so in the conversation. The model records your words; a constraint is lifted only on your say-so.
-- **To pause it:** say `워크로그 꺼 <reason>` ("worklog off"; Claude `/worklog off <reason>`, Codex `$worklog off <reason>`; the reason is optional). To resume, say `워크로그 켜` (`/worklog on`, `$worklog on`). It is on after install; turning it off pauses the whole project, and the time it was off is not recorded.
-- **If something looks wrong:** run `python3 -B worklog/core/wl.py verify --all` in the project folder. The state files are projections of each work's ledger (`.worklog/works/<id>/events.jsonl`) and `show` rebuilds them from it.
-- **Coming from `worklog/1`:** run `python3 -B worklog/tools/migrate_v1_to_v2.py --project /path/to/project --work-id <id>` to preview, add `--apply` to migrate, then re-run the installer.
-
-## Limits — read before relying on it
-
-- **Whether a constraint ends up inside a produced file is still the model's judgment.** In the 12 format-2 verification runs every content constraint was quoted from the produced file, but each condition was run only once, and in 3 runs the model marked a non-quotable item (such as a sentence-count rule) as not reflected. If it matters, say "put the constraints in the file too".
-- **The ledger detects accidental edits to past entries, not deliberate tampering.** Each entry is hash-chained to the previous one, but the last entry has no independent anchor.
-- Pi: rules only, no hooks, untested. Each verification condition was run once. Interaction with your own user-level hooks was not checked.
-
-Verification results: [docs/VERIFICATION.md](docs/VERIFICATION.md). Record format `worklog/2` (stable; a format change means re-migrating existing ledgers): [docs/FORMAT.md](docs/FORMAT.md). The model-facing rules and CLI messages are written in Korean.
-
-## Tests
+## Update
 
 ```sh
-python3 -B -m unittest discover -s tests
+cd worklog && git pull
+python3 -B worklog/tools/install_project.py --tool claude --root /path/to/project   # again, per project
+python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project
 ```
+
+`git pull` updates the core. Re-running the installer updates the rules inside each project. Hooks are left unchanged, so Codex does not ask you to trust them again.
+
+## Limits
+
+- Whether a constraint ends up inside a produced file is still the model's judgment. In 12 verification runs every content constraint was reflected, but each condition was run only once. If it matters, say "put the constraints in the file too".
+- The record detects accidental edits to past entries, not deliberate tampering.
+- Pi: rules only, no hooks, untested.
+- The model-facing rules and messages are written in Korean.
+
+Details: [docs/ADAPTERS.md](docs/ADAPTERS.md) (per-tool setup, recovery, migration from `worklog/1`), [docs/FORMAT.md](docs/FORMAT.md) (record format), [docs/VERIFICATION.md](docs/VERIFICATION.md) (test results).
 
 ## License
 
