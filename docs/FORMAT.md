@@ -18,6 +18,7 @@
     state.md
   sessions/<tool>_<session>.json
   .lock
+  off                                # 있으면 Worklog 꺼짐
 ```
 
 | 파일 | 역할 | 쓰는 주체 |
@@ -30,6 +31,7 @@
 | `works/<id>/writer.json` | 마지막 작성자 정보 `{tool, session_id, seq}`, 원장·선택·독점권의 근거 아님 | 코어 |
 | `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, turn, saved_turn, skipped_turn, selected_turn}` | 코어, 원장·해시 연결 대상 아님 |
 | `.lock` | 프로젝트 내 동시 변경을 flock으로 직렬화 | 코어 |
+| `off` | `{at, reason, by, quote}` JSON(reason·by는 없으면 null). 있으면 이 프로젝트 전체의 Worklog가 꺼짐, 원장 아님 | 코어 off·on, `.lock` 안에서 생성·삭제 |
 
 작업 ID는 제목에서 만든 ASCII 슬러그(소문자·숫자·`-`, 40자 이내)다. 비ASCII만 남으면 `work`이며 중복은 `-2`, `-3`으로 구분한다. 한글 원제목은 index의 title에 보관한다. 사건 ID와 결정·제약 ID는 작업별이다.
 
@@ -108,6 +110,8 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 | `skip "<이유>"` | 원장에 쓰지 않고 skipped_turn 기록 |
 | `verify [--work <id> \| --all]` | 잠금 안에서 투영 검증, --all은 전체와 index↔폴더 일관성 검증·writer 손상 등의 warnings 출력 |
 | `archive <id>` / `reopen <id>` | CHECKPOINT("작업 보관/재개", COMPLETED/ACTIVE) 추가와 index 상태 갱신, quote 불필요 |
+| `off --quote "<원문>" [--reason "<이유>"]` | `.worklog/off` 생성, 원장에 쓰지 않음. 사용자 원문 필수·이유 선택. 이미 꺼져 있으면 표식 유지·"이미 꺼짐"(시각·이유) |
+| `on` | `.worklog/off` 삭제·꺼져 있던 기간 출력. 이미 켜져 있으면 "이미 켜짐"(오류 아님). off·on 모두 `.worklog/` 없거나 표식이 링크면 거부 |
 | `hook` | SessionStart 주입, 현재 작업의 last_seen 갱신 |
 | `turn-start` | UserPromptSubmit, turn 증가 |
 | `stop-hook` | 이번 턴 save·skip·선택 확인 |
@@ -118,7 +122,7 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 세 Hook은 stdin의 cwd·세션 ID를 받는다. `.worklog/`가 없으면 빈 출력·exit 0이다. 디렉터리가 비어 있어도 연결된다. `hook` 출력 계약은 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`다.
 
 ```text
-[Worklog worklog/2 SessionStart | <PROVIDED|NO_CURRENT_WORK|EMPTY|UNAVAILABLE> | root=…]
+[Worklog worklog/2 SessionStart | <PROVIDED|NO_CURRENT_WORK|EMPTY|UNAVAILABLE|OFF> | root=…]
 이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.
 ## 프로젝트 공통 (project.md)
 … 선택 파일이 있을 때만, 최대 4,000자 …
@@ -128,7 +132,7 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 … 이 세션 현재 작업의 state.md 전체 …
 ```
 
-현재 작업이 없으면 마지막 부분은 아래와 같다. EMPTY는 index가 없거나 작업 0개, NO_CURRENT_WORK는 작업이 있지만 현재 선택 없음, PROVIDED는 현재 작업 상태 제공이다. UNAVAILABLE은 원장·index 읽기 실패나 형식 1 루트 원장 잔존으로 주입을 만들 수 없는 상태다.
+현재 작업이 없으면 마지막 부분은 아래와 같다. EMPTY는 index가 없거나 작업 0개, NO_CURRENT_WORK는 작업이 있지만 현재 선택 없음, PROVIDED는 현재 작업 상태 제공이다. UNAVAILABLE은 원장·index 읽기 실패나 형식 1 루트 원장 잔존으로 주입을 만들 수 없는 상태다. OFF는 `.worklog/off`가 있는 상태로, 다른 내용 없이 한 줄 `[Worklog worklog/2 SessionStart | OFF | root=…] Worklog가 꺼져 있다(이유: …, 시각: …). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.`만 주입하고 세션 파일을 만들거나 갱신하지 않는다. 꺼진 동안 turn-start·stop-hook은 아무것도 하지 않는다(차단 없음). save·skip·use·new-work·show·works는 평소대로 동작하며 JSON 결과 최상위에 `"off": true`, show·use 본문 앞에 `[Worklog OFF]` 줄을 더한다.
 
 ```text
 ## 현재 작업 없음
@@ -154,5 +158,6 @@ stop-hook은 saved_turn·skipped_turn·selected_turn 중 하나가 turn과 같�
 - 작업 분할·병합 전용 사건은 없다. 새 작업·refs·CHECKPOINT 메모로 연결한다.
 - 프로젝트 전체 시간순 원장은 없다. 작업별 해시 체인이며 index.updated_at로 최근 작업을 찾는다.
 - 세션↔작업 인계 사건은 없다. 선택은 세션 파일에만 남는다.
+- 꺼진 기간(`.worklog/off`)은 원장에 남지 않는다. 켠 뒤 그동안 바뀐 것이 있으면 다음 save에 적는다. 세션·작업 단위 off는 없다.
 - 목록은 ACTIVE·PAUSED 최대 10개다. 전체 목록은 works로 확인한다.
 - 모델의 질문·선택 준수와 압축 뒤 실제 복원은 별도 대화형 시험이 필요하다. 주입만으로 실제 복원을 입증하지 않는다. 시험 결과와 측정 한계는 `docs/VERIFICATION.md`에 있다.

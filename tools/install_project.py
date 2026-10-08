@@ -34,9 +34,18 @@ def rules(tool):
     return body.replace("{TOOL}", tool).replace("{FORMAT}", "save 입력 형식:\n```\n" + fmt.strip() + "\n```")
 
 
+SKILL_ARGS = """## 인자: on / off [이유]
+인자와 함께 호출되면(예: `/worklog off 회의 중`, `$worklog on`) 아래 명령만 실행하고 그 턴은 skip으로 마친다.
+- `on` → `on`
+- `off [이유]` → `off --quote "<호출 원문>"`, 이유가 있으면 `--reason "<이유>"`를 붙인다. 이유가 없어도 묻지 않는다.
+
+"""
+
+
 def skill(tool):
     return ("---\nname: worklog\ndescription: 이 프로젝트의 작업 기록(.worklog)을 읽고 턴마다 저장해, 압축·새 세션 뒤에도 "
-            "목표·결정·제약·대기·다음 행동을 이어간다.\n---\n\n" + rules(tool))
+            "목표·결정·제약·대기·다음 행동을 이어간다. 인자 on/off로 이 프로젝트의 Worklog를 켜고 끈다.\n---\n\n"
+            + SKILL_ARGS + rules(tool))
 
 
 def inside(root, path):

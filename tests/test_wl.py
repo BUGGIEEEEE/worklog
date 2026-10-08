@@ -1116,5 +1116,102 @@ class FixTest(Base):
         self.assertEqual((self.d / "works" / works[0] / "events.jsonl").read_bytes(), ledger)
 
 
+class OnOffTest(Base):
+    """프로젝트 단위 on/off: .worklog/off 표식. 원장·index·세션 파일 구조는 그대로."""
+    def off(self, *extra, quote="워크로그 꺼"):
+        return run(self.root, "off", extra=(["--quote", quote] if quote is not None else []) + list(extra))
+
+    def test_off_hooks_do_nothing_and_inject_one_line(self):
+        self.ok(new_work(self.root, "Habit Plan", tool="claude"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "h", "quote": "q"}, tool="claude"))
+        hook(self.root, "turn-start")  # 끄는 턴: 아직 저장 없음
+        out = self.ok(self.off("--reason", "실험 중", quote="워크로그 꺼 실험 중"))
+        self.assertEqual((out["off"], out["reason"]), (True, "실험 중"))
+        marker = json.loads((self.d / "off").read_text())
+        self.assertEqual(marker, {"at": marker["at"], "reason": "실험 중", "by": "codex:s1", "quote": "워크로그 꺼 실험 중"})
+        before = self.snapshot()
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))  # 끈 턴도 차단하지 않음
+        self.assertEqual(hook(self.root, "turn-start"), (0, ""))
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
+        line = (f"[Worklog worklog/2 SessionStart | OFF | root={self.root.resolve()}] Worklog가 꺼져 있다(이유: 실험 중, "
+                f"시각: {marker['at']}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
+        self.assertEqual(self.ctx(), line)  # 현재 작업이 있는 세션도 한 줄
+        self.assertEqual(self.ctx(session="fresh"), line)
+        self.assertEqual(self.snapshot(), before)  # 세 Hook은 세션 파일을 포함해 아무것도 바꾸지 않음
+        self.assertFalse(session_file(self.root, "claude_fresh").exists())
+
+    def test_on_restores_normal_path(self):
+        self.ok(new_work(self.root, "Habit Plan", tool="claude"))
+        hook(self.root, "turn-start")
+        self.ok(self.off())
+        hook(self.root, "turn-start")  # 꺼진 동안의 턴은 세지 않음
+        out = self.ok(run(self.root, "on"))
+        self.assertIs(out["off"], False)
+        self.assertIsInstance(out["off_seconds"], int)
+        self.assertIn("꺼져 있던 기간: ", out["message"])
+        self.assertIn("다음 save에 적는다", out["message"])
+        self.assertFalse(os.path.lexists(self.d / "off"))
+        self.assertNotIn("off", self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "h", "quote": "q"}, tool="claude")))
+        self.assertIn("| PROVIDED |", self.ctx())
+        hook(self.root, "turn-start")
+        self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
+        self.assertNotIn("off", self.ok(run(self.root, "skip", extra=["읽기"], tool="claude")))
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
+        self.assertEqual(json.loads(session_file(self.root).read_text())["turn"], 2)
+        self.assertEqual(len((self.d / "works/habit-plan/events.jsonl").read_text().splitlines()), 1)  # off·on은 원장에 쓰지 않음
+
+    def test_commands_work_while_off_with_warning(self):
+        self.ok(new_work(self.root, "Habit Plan"))
+        self.ok(self.off())  # 이유는 선택
+        self.assertIsNone(json.loads((self.d / "off").read_text())["reason"])
+        out = self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "h", "quote": "q"}))
+        self.assertEqual((out["off"], out["seq"]), (True, 1))
+        self.assertIs(self.ok(run(self.root, "skip", extra=["읽기"]))["off"], True)
+        self.assertIs(self.ok(new_work(self.root, "Recipe"))["off"], True)
+        self.assertIs(self.ok(run(self.root, "works"))["off"], True)
+        self.assertIn("\n[Worklog OFF] ", self.used(use(self.root, "habit-plan"), "habit-plan"))
+        r, out = run(self.root, "show")
+        self.assertEqual(r, 0, out)
+        self.assertTrue(out.startswith("[Worklog OFF] "), out)
+        self.assertEqual(sorted(p.name for p in self.d.iterdir()), [".lock", "index.json", "off", "sessions", "works"])
+
+    def test_off_needs_quote(self):
+        self.ok(new_work(self.root, "t"))
+        self.refused(self.off("--reason", "이유", quote=None), "사용자 원문이 필요합니다")
+        self.refused(self.off(quote="  "), "사용자 원문이 필요합니다")
+        self.refused(run(self.root, "off", extra=["이유", "--quote", "꺼"]), "--reason")
+        self.assertFalse(os.path.lexists(self.d / "off"))
+
+    def test_not_installed_and_repeats(self):
+        self.refused(self.off(), "설치되지 않았습니다")
+        self.refused(run(self.root, "on"), "설치되지 않았습니다")
+        self.assertFalse(self.d.exists())
+        self.d.mkdir()
+        out = self.ok(run(self.root, "on"))
+        self.assertTrue(out["already"])
+        self.assertIn("이미 켜져", out["message"])
+        self.ok(self.off("--reason", "첫 이유"))
+        first = (self.d / "off").read_bytes()
+        out = self.ok(self.off("--reason", "둘째 이유"))
+        self.assertEqual((out["already"], out["reason"]), (True, "첫 이유"))
+        self.assertIn("이미 꺼져", out["message"])
+        self.assertEqual((self.d / "off").read_bytes(), first)  # 기존 표식 유지
+        self.assertNotIn("already", self.ok(run(self.root, "on")))
+        self.assertTrue(self.ok(run(self.root, "on"))["already"])
+
+    def test_marker_link_refused(self):
+        self.d.mkdir()
+        outside = Path(tempfile.mkdtemp()) / "x"
+        outside.write_text("keep")
+        (self.d / "off").symlink_to(outside)
+        self.refused(self.off(), "심볼릭 링크")
+        self.refused(run(self.root, "on"), "심볼릭 링크")
+        self.assertEqual(outside.read_text(), "keep")
+        self.assertTrue((self.d / "off").is_symlink())
+        ctx = self.ctx()  # 링크는 따라가지 않고 꺼진 것으로 본다
+        self.assertIn("| OFF |", ctx)
+        self.assertIn("이유: 없음", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ Work as usual.
 - **In the first session:** say `새 작업: <title>` to create your first work.
 - **To see where things stand:** open `.worklog/works/<id>/state.md` (goal, active decisions, constraints, next action).
 - **To change a decision or lift a constraint:** say so in the conversation. The model records your words; a constraint is lifted only on your say-so.
+- **To pause it:** say `워크로그 꺼 <reason>` ("worklog off"; Claude `/worklog off <reason>`, Codex `$worklog off <reason>`; the reason is optional). To resume, say `워크로그 켜` (`/worklog on`, `$worklog on`). It is on after install; turning it off pauses the whole project, and the time it was off is not recorded.
 - **If something looks wrong:** run `python3 -B worklog/core/wl.py verify --all` in the project folder. The state files are projections of each work's ledger (`.worklog/works/<id>/events.jsonl`) and `show` rebuilds them from it.
 - **Coming from `worklog/1`:** run `python3 -B worklog/tools/migrate_v1_to_v2.py --project /path/to/project --work-id <id>` to preview, add `--apply` to migrate, then re-run the installer.
 

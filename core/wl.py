@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Worklog shared core (format 2): several works per project, one append-only event log per work.
 
-Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | help | hook | turn-start | stop-hook
+Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | off | on | help | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
-           sessions/<tool>_<session>.json, .lock}
+           sessions/<tool>_<session>.json, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
 Standard library only. Never runs business commands.
 """
 import argparse, datetime, fcntl, hashlib, json, os, re, shlex, sys, uuid
@@ -58,7 +58,11 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   python3 -B wl.py show [--work <id>]                            현황 읽기(현재 작업이 없으면 목록)
   python3 -B wl.py verify [--work <id> | --all]
   python3 -B wl.py archive <id> / reopen <id>                    COMPLETED ↔ ACTIVE
-현재 작업이 없고 사용자 지정도 없으면 한 번 묻고 skip으로 마친다. 작업이 하나뿐이고 "이어서"면 그 작업을 use한다."""
+현재 작업이 없고 사용자 지정도 없으면 한 번 묻고 skip으로 마친다. 작업이 하나뿐이고 "이어서"면 그 작업을 use한다.
+
+켜고 끄기 — 사용자가 말할 때만. 원장에는 쓰지 않는다(꺼진 기간은 기록에 남지 않는다).
+  python3 -B wl.py off --quote "워크로그 꺼" [--reason "이유"]    이 프로젝트 전체를 끈다(.worklog/off)
+  python3 -B wl.py on                                           다시 켠다"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -576,14 +580,14 @@ def cmd_save(args):
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
                       "decisions": [f"{x['id']}: {x['text']}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}" for x in rebuilt["constraints"]],
-                      "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"]}, ensure_ascii=False))
+                      "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d)}, ensure_ascii=False))
 
 
 # --- 작업 선택 ---
 
-def need_quote(args, usage):
+def need_quote(args, usage, said="작업을 지정한"):
     if not str(args.quote or "").strip():
-        raise Reject(f"사용자 원문이 필요합니다: {usage}. 사용자가 작업을 지정한 말을 그대로 --quote에 넣으세요.")
+        raise Reject(f"사용자 원문이 필요합니다: {usage}. 사용자가 {said} 말을 그대로 --quote에 넣으세요.")
 
 
 def cmd_works(args):
@@ -596,7 +600,7 @@ def cmd_works(args):
         except SessionCorrupt:
             pass
     print(json.dumps({"ok": True, "current_work": current,
-                      "works": [dict(id=i, **w) for i, w in sorted_works(index["works"])]}, ensure_ascii=False))
+                      "works": [dict(id=i, **w) for i, w in sorted_works(index["works"])], **off_flag(d)}, ensure_ascii=False))
 
 
 def cmd_use(args):
@@ -612,7 +616,7 @@ def cmd_use(args):
         # use는 show처럼 현황을 보여 주고 읽은 것으로 친다: use 직후 save가 "show 먼저"로 막히지 않는다
         text = read_work(d, args.arg, w["title"], (tool, sid), current_work=args.arg,
                          selected_turn=session_or_new(d, tool, sid)["turn"])
-    print(f"[use] 현재 작업: {args.arg} · {w['title']} · {w['status']}\n" + text, end="")
+    print(f"[use] 현재 작업: {args.arg} · {w['title']} · {w['status']}\n" + off_note(d) + text, end="")
 
 
 def cmd_new_work(args):
@@ -632,7 +636,7 @@ def cmd_new_work(args):
         work_dir(d, wid).mkdir(parents=True)
         write_index(d, index)
         update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"])
-    print(json.dumps({"ok": True, "id": wid, "title": title, "current_work": wid}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "id": wid, "title": title, "current_work": wid, **off_flag(d)}, ensure_ascii=False))
 
 
 def set_status(args, status, summary):
@@ -679,18 +683,18 @@ def cmd_show(args):
     d = store(args.root)
     index = load_index(d) if d.is_dir() else None
     if not index or not index["works"]:
-        print('Worklog 작업 없음. 사용자가 새 작업을 지정하면 new-work "<제목>" --quote "<사용자 원문>"으로 만든다.')
+        print(off_note(d) + 'Worklog 작업 없음. 사용자가 새 작업을 지정하면 new-work "<제목>" --quote "<사용자 원문>"으로 만든다.')
         return
     who = try_identity(args)
     wid = args.work or current_work(d, who, index)
     if not wid:
-        print("현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
+        print(off_note(d) + "현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
               + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in sorted_works(index["works"])))
         return
     title = entry(index, wid)["title"]
     with locked(d):  # 잠금 뒤에 읽어야 동시 저장 이후의 투영을 과거 seq로 되돌리지 않는다
         text = read_work(d, wid, title, who)
-    print(text, end="")
+    print(off_note(d) + text, end="")
 
 
 def read_work(d, wid, title, who, **session_changes):
@@ -755,6 +759,93 @@ def verify_result(d, args, index):
            "mismatched": mismatched}
     idx["ok"] = not any(idx.values())
     return {"ok": idx["ok"] and all(r["ok"] for r in results), "works": results, "index": idx, "warnings": warnings}
+
+
+# --- 켜고 끄기 (.worklog/off 표식, 원장 아님) ---
+
+OFF_NOTE = "[Worklog OFF] 이 프로젝트의 Worklog가 꺼져 있다(.worklog/off). 켜려면 사용자가 요청한 뒤 `wl.py on`.\n"
+
+
+def is_off(d):
+    return os.path.lexists(d / "off")
+
+
+def off_flag(d):
+    """Top-level JSON warning for save·skip·new-work·works while off."""
+    return {"off": True} if is_off(d) else {}
+
+
+def off_note(d):
+    """Text warning line for show·use while off."""
+    return OFF_NOTE if is_off(d) else ""
+
+
+def off_marker(d):
+    """.worklog/off as a dict ({} when unreadable or a link — never followed), or None when Worklog is on."""
+    path = d / "off"
+    if not os.path.lexists(path):
+        return None
+    if path.is_symlink():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def installed(args):
+    d = store(args.root)
+    if not d.is_dir():
+        raise Reject(f"Worklog가 설치되지 않았습니다({d} 없음). 켜거나 끌 대상이 없습니다.")
+    return d
+
+
+def cmd_off(args):
+    """Turn Worklog off for the whole project. The user's words (--quote) are required so a model cannot turn it off
+    by itself; the reason is optional. An existing marker is kept."""
+    usage = 'off --quote "<사용자 원문>" [--reason "<이유>"]'
+    if args.arg:
+        raise Reject(f"이유는 --reason으로 넣습니다: {usage}")
+    need_quote(args, usage, said="끄라고 한")
+    d = installed(args)
+    with locked(d):
+        path = contained(d / "off", d)
+        old = off_marker(d)
+        if old is None:
+            who = try_identity(args)
+            marker = {"at": now(), "reason": str(args.reason or "").strip() or None,
+                      "by": f"{who[0]}:{who[1]}" if who else None, "quote": args.quote}
+            write_atomic(path, json.dumps(marker, ensure_ascii=False) + "\n")
+    if old is not None:
+        print(json.dumps({"ok": True, "off": True, "already": True, "at": old.get("at"), "reason": old.get("reason"),
+                          "message": f"이미 꺼져 있습니다(시각: {old.get('at')}, 이유: {old.get('reason') or '없음'}). 기존 표식을 유지합니다."},
+                         ensure_ascii=False))
+        return
+    print(json.dumps({"ok": True, "off": True, "at": marker["at"], "reason": marker["reason"],
+                      "message": "Worklog를 껐습니다(이 프로젝트 전체). 꺼진 기간은 기록에 남지 않습니다. 켜려면 on."}, ensure_ascii=False))
+
+
+def cmd_on(args):
+    """Remove the marker and report how long Worklog was off. Already on is not an error."""
+    d = installed(args)
+    with locked(d):
+        path = contained(d / "off", d)
+        old = off_marker(d)
+        if old is not None:
+            path.unlink()
+    if old is None:
+        print(json.dumps({"ok": True, "off": False, "already": True, "message": "이미 켜져 있습니다."}, ensure_ascii=False))
+        return
+    try:
+        seconds = max(0, int((datetime.datetime.now(datetime.timezone.utc)
+                              - datetime.datetime.fromisoformat(str(old.get("at")).replace("Z", "+00:00"))).total_seconds()))
+        span = f"{seconds}초" if seconds < 120 else f"{seconds // 60}분"
+    except (ValueError, TypeError):
+        seconds, span = None, "알 수 없음"
+    print(json.dumps({"ok": True, "off": False, "off_since": old.get("at"), "off_seconds": seconds,
+                      "message": f"Worklog를 켰습니다. 꺼져 있던 기간: {span}. 그동안 바뀐 것이 있으면 다음 save에 적는다."},
+                     ensure_ascii=False))
 
 
 # --- Hook ---
@@ -822,6 +913,12 @@ def cmd_hook(args):
     d, who, _ = hook_input(args)
     if not d:
         return
+    off = off_marker(d)
+    if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
+        line = (f"[Worklog {FORMAT} SessionStart | OFF | root={d.parent}] Worklog가 꺼져 있다(이유: {norm(off.get('reason') or '') or '없음'}, "
+                f"시각: {norm(off.get('at') or '') or '알 수 없음'}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}}, ensure_ascii=False))
+        return
     try:
         status, text = injection(d, who)
     except (Reject, OSError, ValueError) as e:
@@ -832,17 +929,17 @@ def cmd_hook(args):
 
 
 def cmd_turn_start(args):
-    """UserPromptSubmit hook: turn += 1. No output."""
+    """UserPromptSubmit hook: turn += 1. No output. Does nothing while off."""
     d, who, _ = hook_input(args)
-    if d and who:
+    if d and who and not is_off(d):
         with locked(d):
             update_session(d, *who, turn=session_or_new(d, *who)["turn"] + 1)
 
 
 def cmd_stop_hook(args):
-    """Stop hook: block once if this turn has no save, skip or work selection."""
+    """Stop hook: block once if this turn has no save, skip or work selection. Does nothing while off."""
     d, who, event = hook_input(args)
-    if not (d and who) or event.get("stop_hook_active") is True:
+    if not (d and who) or is_off(d) or event.get("stop_hook_active") is True:
         return
     try:
         s = load_session(d, *who) or new_session()
@@ -870,20 +967,21 @@ def cmd_skip(args):
     with locked(d):
         turn = session_or_new(d, tool, sid)["turn"]
         update_session(d, tool, sid, skipped_turn=turn)
-    print(json.dumps({"ok": True, "turn": turn}))
+    print(json.dumps({"ok": True, "turn": turn, **off_flag(d)}))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어 (형식 2)")
     commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
                 "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
-                "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook}
+                "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook}
     ap.add_argument("command", choices=[*commands, "help"])
     ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목")
     ap.add_argument("--root")
     ap.add_argument("--tool")
     ap.add_argument("--session")
-    ap.add_argument("--quote", help="use·new-work: 사용자가 작업을 지정한 원문")
+    ap.add_argument("--quote", help="use·new-work: 사용자가 작업을 지정한 원문 / off: 사용자가 끄라고 한 원문")
+    ap.add_argument("--reason", help="off: 끄는 이유(선택)")
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     args = ap.parse_args(argv)

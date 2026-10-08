@@ -45,6 +45,10 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 
 `save`가 "현재 작업이 없습니다"로 거부되면 사용자에게 지정을 요청합니다. `use`·`new-work`는 사용자 원문 quote가 필수입니다. 다만 그 원문이 실제 사용자 발언인지까지 기계가 검증하지는 못합니다.
 
+## 켜고 끄기
+
+설치하면 켜진 상태이고 사용자가 끌 때만 꺼집니다. `.worklog/off` 표식 하나로 그 프로젝트 전체(모든 세션·작업)가 꺼집니다. 세 경로가 같은 명령으로 이어집니다: 자연어 `워크로그 꺼 <이유>`·`워크로그 켜`(지침 블록, 두 도구 공통), Skill 인자(Claude `/worklog off <이유>`·`/worklog on`, Codex `$worklog off <이유>`·`$worklog on`), 터미널의 `wl.py off --quote "<사용자 원문>" [--reason "<이유>"]`·`wl.py on`. off는 사용자 원문 `--quote`가 없으면 거부되고 이유는 선택입니다. 꺼진 동안 SessionStart는 `| OFF |` 한 줄만 주입하고, turn-start·stop-hook은 아무것도 하지 않습니다(Stop 차단 없음). Hook 명령은 그대로이므로 Codex 재신뢰가 필요 없습니다. 꺼진 기간은 기록에 남지 않으며, 켠 뒤 그동안 바뀐 것이 있으면 다음 save에 적습니다.
+
 ## 형식 1에서 올라오기
 
 `worklog/1`로 기록 중인 프로젝트는 코어가 저장을 거부하고 SessionStart 주입에 이전 안내를 넣습니다. 먼저 dry-run으로 확인한 뒤 `--apply`로 이전합니다. 원장 바이트는 그대로 `works/<id>/`로 옮겨지고 해시를 대조합니다. 자세한 조건: [FORMAT.md](FORMAT.md)의 "이전: 형식 1 → 2".

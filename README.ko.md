@@ -35,6 +35,7 @@ python3 -B worklog/tools/install_project.py --tool codex  --root /프로젝트/�
 - **첫 세션에서:** `새 작업: <제목>`이라고 말해 첫 작업을 만듭니다.
 - **지금 상태가 궁금하면:** `.worklog/works/<id>/state.md`를 엽니다(목표·유효 결정·제약·다음 할 일).
 - **결정을 바꾸거나 제약을 풀고 싶으면:** 대화로 말하면 됩니다. 모델이 그 말을 인용해 기록하며, 제약은 사용자의 말이 있을 때만 해제됩니다.
+- **잠시 끄려면:** `워크로그 꺼 <이유>`라고 말합니다(Claude `/worklog off <이유>`, Codex `$worklog off <이유>`. 이유는 생략 가능). 켜려면 `워크로그 켜`(`/worklog on`, `$worklog on`)라고 말합니다. 설치하면 켜진 상태이고, 끄면 그 프로젝트 전체가 꺼지며 꺼진 기간은 기록에 남지 않습니다.
 - **뭔가 이상하면:** 프로젝트 폴더에서 `python3 -B worklog/core/wl.py verify --all`을 실행합니다. 상태 파일은 작업별 원장(`.worklog/works/<id>/events.jsonl`)의 투영이며 `show`가 원장에서 다시 만듭니다.
 - **`worklog/1`을 쓰던 프로젝트면:** `python3 -B worklog/tools/migrate_v1_to_v2.py --project /프로젝트/경로 --work-id <id>`로 미리 보고, `--apply`를 붙여 이전한 뒤 설치기를 다시 실행합니다.
 
