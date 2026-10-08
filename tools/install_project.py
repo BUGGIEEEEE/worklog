@@ -83,6 +83,16 @@ def is_worklog_hook(command):
     return bool(WL_HOOK.fullmatch(command))
 
 
+def is_current_hook(hook, command, tool):
+    """Same install (this wl.py, this subcommand, this tool) in any quoting style."""
+    try:
+        argv = shlex.split(hook.get("command", ""))
+    except ValueError:
+        return False
+    return hook.get("type") == "command" and hook.get("timeout") == 10 and \
+        argv == ["python3", "-B", str(WL), command, "--tool", tool]
+
+
 def hook_settings(path, tool):
     try:
         settings = json.loads(path.read_text()) if path.exists() else {}
@@ -92,20 +102,32 @@ def hook_settings(path, tool):
         raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위와 hooks는 JSON 객체). 고친 뒤 다시 설치하세요.")
     hooks = settings.setdefault("hooks", {})
     for event, command in (("SessionStart", "hook"), ("UserPromptSubmit", "turn-start"), ("Stop", "stop-hook")):
-        groups = []
+        matcher = None
+        if event == "SessionStart":
+            matcher = "startup|resume|clear|compact" if tool == "claude" else "^(startup|resume|compact)$"
+        groups, kept = [], False
         try:
             for group in hooks.get(event, []):
+                ours = [h for h in group.get("hooks", []) if is_worklog_hook(h.get("command", ""))]
+                # An equivalent install is kept byte-for-byte: a rewritten command would change the file hash
+                # and make Codex ask the user to trust the hooks again.
+                if ours and not kept and group.get("matcher") == matcher and \
+                        all(is_current_hook(h, command, tool) for h in ours):
+                    groups.append(group)
+                    kept = True
+                    continue
                 # Keep unrelated commands even when they shared a group with an old Worklog hook.
-                remaining = [h for h in group.get("hooks", []) if not is_worklog_hook(h.get("command", ""))]
+                remaining = [h for h in group.get("hooks", []) if h not in ours]
                 if remaining:
                     groups.append({**group, "hooks": remaining})
         except (AttributeError, TypeError):
             raise Refuse(f"{path}의 {event} Hook 형식이 예상과 다릅니다. 고친 뒤 다시 설치하세요.")
-        hook = {"type": "command", "command": f"{WL_CMD} {command} --tool {tool}", "timeout": 10}
-        group = {"hooks": [hook]}
-        if event == "SessionStart":
-            group["matcher"] = "startup|resume|clear|compact" if tool == "claude" else "^(startup|resume|compact)$"
-        groups.append(group)
+        if not kept:
+            hook = {"type": "command", "command": f"{WL_CMD} {command} --tool {tool}", "timeout": 10}
+            group = {"hooks": [hook]}
+            if matcher:
+                group["matcher"] = matcher
+            groups.append(group)
         hooks[event] = groups
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
 

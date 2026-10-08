@@ -541,6 +541,26 @@ class CoreTest(unittest.TestCase):
             self.assertIn(shlex.quote(str(new.resolve() / "core" / "wl.py")), cmds[0])
         self.assertIn("python3 /helpers/owl.py --check", [h["command"] for g in hooks["Stop"] for h in g["hooks"]])
 
+    def test_installer_keeps_equivalent_hooks_unchanged(self):
+        """같은 설치의 Hook은 인용 형식이 달라도 그대로 둔다(파일 바이트 유지 → Codex Hook 재신뢰 불필요)."""
+        wl = str(INST.parents[1] / "core" / "wl.py")
+
+        def group(cmd, matcher=None):
+            g = {"hooks": [{"type": "command", "command": f'python3 -B "{wl}" {cmd} --tool claude', "timeout": 10}]}
+            if matcher:
+                g["matcher"] = matcher
+            return g
+        sp = self.root / ".claude/settings.local.json"
+        sp.parent.mkdir()
+        text = json.dumps({"hooks": {"SessionStart": [group("hook", "startup|resume|clear|compact")],
+                                     "UserPromptSubmit": [group("turn-start")], "Stop": [group("stop-hook")]}},
+                          ensure_ascii=False, indent=2) + "\n"
+        sp.write_bytes(text.encode())
+        r, out = self.install()
+        self.assertEqual(r, 0, out)
+        self.assertEqual(sp.read_bytes(), text.encode())
+        self.assertNotIn(str(sp), json.loads(out)["changed"])
+
     def test_installer_refuses_backup_link(self):
         (self.root / "CLAUDE.md").write_text("# 기존 내용\n")
         outside = Path(tempfile.mkdtemp()) / "backup-outside.md"

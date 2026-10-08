@@ -40,7 +40,7 @@ Work as usual.
 
 ## Limits — read before relying on it
 
-- **Whether a constraint ends up inside a produced file is still the model's judgment.** In 12 verification runs the model reported every constraint as reflected in 8; a keyword check of the produced files found 7. If it matters, say "put the constraints in the file too".
+- **Whether a constraint ends up inside a produced file is still the model's judgment.** In the 12 format-2 verification runs every content constraint was quoted from the produced file, but each condition was run only once, and in 3 runs the model marked a non-quotable item (such as a sentence-count rule) as not reflected. If it matters, say "put the constraints in the file too".
 - **The ledger detects accidental edits to past entries, not deliberate tampering.** Each entry is hash-chained to the previous one, but the last entry has no independent anchor.
 - Pi: rules only, no hooks, untested. Each verification condition was run once. Interaction with your own user-level hooks was not checked.
 
