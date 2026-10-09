@@ -1,5 +1,9 @@
 # Verification / 검증 결과
 
+> **Criterion change (2026-10-09).** From the next run on, criterion 3b is replaced: *no `self_quoted` entry, and every `미반영` entry has a reason*. The old 3b ("no `미반영` at all") rewarded writing the rule text into the artifact and quoting it back, which `wl.py` now reports as `self_quoted`. The results below were measured under the old criterion.
+>
+> **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
+
 ## Format 2 — multi-work scenario (2026-10-06/07, 12 runs)
 
 ### English

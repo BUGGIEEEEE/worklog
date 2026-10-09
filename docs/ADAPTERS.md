@@ -33,6 +33,7 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 - 세 Hook은 stdin 이벤트의 `cwd`와 세션 ID를 씁니다. `--tool`은 그 도구의 세션 환경변수만 고르는 데 씁니다.
 - `.worklog` 폴더가 없으면 빈 출력으로 통과합니다. 폴더만 있어도(작업이 아직 없어도) 세 Hook이 연결됩니다.
 - SessionStart 주입이 있으면 턴 시작 `show`를 생략할 수 있고, 없으면 지침대로 `show`를 한 번 실행합니다. 두 경로 모두 같은 작업별 `works/<id>/state.md` 내용입니다.
+- 세 Hook은 돌 때마다 세션 파일에 `hooks_seen`을 남깁니다. save·skip 결과의 `hooks`와 `warning`(Hook 미작동 의심), `verify --all --tool … --session …`의 `hooks`로 Hook이 실제로 도는지 확인합니다. Codex에서 `/hooks` 신뢰를 빠뜨리면 첫 턴의 결과에서 바로 드러납니다.
 - Stop Hook은 save도 skip도 작업 지정(`selected_turn`)도 없는 턴을 한 번 막습니다. 읽기 전용 턴의 예외는 모델이 `skip "이유" --tool <도구>`를 실행하는 데 의존합니다. 막힌 뒤에는 save 또는 skip으로 마칩니다.
 
 ## 작업 선택 흐름

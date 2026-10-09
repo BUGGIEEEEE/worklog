@@ -7,14 +7,16 @@
   {
    "id": "D1",
    "text": "Use only containers under 40 cm",
-   "event": "E0001"
+   "event": "E0001",
+   "source": "user"
   }
  ],
  "constraints": [
   {
    "id": "C1",
    "text": "Do not order seeds or supplies",
-   "event": "E0001"
+   "event": "E0001",
+   "source": "user"
   }
  ],
  "waiting": [],

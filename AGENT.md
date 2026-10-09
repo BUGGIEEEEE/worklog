@@ -13,7 +13,7 @@ You are reading this because a user gave you this repository and asked you to in
 
 ## Install
 
-1. Check: `python3 --version` is 3.10 or newer, macOS or Linux.
+1. Check: `python3 --version` is 3.9 or newer (the macOS Command Line Tools python3 is 3.9.6 and works), macOS or Linux.
 2. Clone to a permanent location. The hooks call `core/wl.py` by absolute path, so moving the clone later breaks them until the installer is re-run.
    ```sh
    git clone https://github.com/BUGGIEEEEE/worklog.git
@@ -27,6 +27,7 @@ You are reading this because a user gave you this repository and asked you to in
    The output is JSON: `changed` lists the files it wrote. A refusal (exit 2, `error`) means nothing was written; show it to the user. `--no-worklog-dir` installs rules and hooks only, for a parent folder whose subfolders each keep their own `.worklog/`.
 4. If the project already has `.worklog/events.jsonl` at its root, it uses the old format `worklog/1`. Migrate first: `python3 -B worklog/tools/migrate_v1_to_v2.py --project /path/to/project --work-id <id>` to preview, `--apply` to migrate, then run the installer.
 5. Tell the user the trust steps above, and that the first session starts with `새 작업: <title>`.
+6. After the first turn, check that the hooks really run: the JSON result of `save`/`skip` (or `wl.py verify --all --tool <tool> --session <id>`) has `hooks` with `turn_start: true`. A `warning` "Hook 미작동 의심" means the hooks are not trusted, not installed, or run under another session ID; report it to the user instead of working around it.
 
 ## Update
 
@@ -38,10 +39,12 @@ python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/projec
 
 `git pull` updates the core, which the hooks run directly. Re-running the installer refreshes the rules block and the skill in each project. An unchanged hook is left byte-for-byte, so Codex does not ask for trust again; only if the clone was moved are the hooks rewritten, and then the user must re-trust them in `/hooks`.
 
+When an update changes how `state.md`/`state.json` are rendered (2026-10-09 did: source tags, current scope line, artifact summary), `verify` reports the old projections as mismatched until the next `show`, `use` or save rebuilds them from the ledger. The ledgers themselves are untouched; run `python3 -B worklog/core/wl.py show --work <id> --root /path/to/project` once per work if you want `verify --all` clean right away.
+
 ## Verify
 
-- In the clone: `python3 -B -m unittest discover -s tests` (66 tests, all must pass).
-- In a project: `python3 -B worklog/core/wl.py verify --all` checks every ledger's hash chain and the index.
+- In the clone: `python3 -B -m unittest discover -s tests` (74 tests, all must pass; verified on Python 3.9.6 and 3.14).
+- In a project: `python3 -B worklog/core/wl.py verify --all` checks every ledger's hash chain and the index. With `--tool <tool> --session <id>` it also reports `hooks` (which of the three hooks ran in that session).
 - A dry-run of the installer right after installing lists no `changed` files.
 
 ## Rules while you do this

@@ -22,6 +22,11 @@ WORK_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 ID_MAX = 40
 PROJECT_MAX = 4000
 LIST_MAX = 10
+DONE_MAX = 3      # SessionStart 목록 뒤에 보여 주는 최근 COMPLETED 작업 수
+ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
+NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
+HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 UserPromptSubmit Hook 기록이 없습니다. Hook이 꺼져 있거나 신뢰되지 않았거나 "
+                "세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
 NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
                  "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
 
@@ -30,21 +35,21 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "work": "habit-plan",                    # 선택. 생략하면 이 세션의 현재 작업(use/new-work로 정함)
   "type": "REQUEST",                       # REQUEST APPROVAL D_USER D_AGENT ASSUMPTION RESULT VERIFICATION BLOCKER CORRECTION CHECKPOINT HANDOFF CHANGE Q
   "summary": "이번 턴에 일어난 일 한두 문장",
-  "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 제약 해제에 필수
-  "goal": "최초 목표",                     # 처음 한 번만, 원문 그대로. 이후 값 변경은 decisions(replaces)로 — 결정이 목표 문장보다 우선
-  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"}],   # replaces 생략 가능
-  "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],  # 계속 지킬 금지·범위만. 해제는 constraints_remove
+  "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
+  "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
+  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"}],   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
+  "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],  # 계속 지킬 금지·자료 범위만. 작업량·목표 범위는 decisions에. 해제는 constraints_remove
                                            # "다음 요청까지 작성 보류"처럼 요청이 오면 끝나는 것은 waiting에
-  "constraints_remove": {"C2": "해제 근거"},   # 사용자가 바꾼 경우만: type D_USER/APPROVAL/CORRECTION + quote. 같은 제약 재입력은 자동 무시
-  "refs": [{"kind": "block", "id": "B03"}],   # 선택. 블록·계획 등 외부 ID(의미 미확정)
-  "waiting": ["note-guide.md는 다음 요청까지 작성 보류"],  # 전체 교체. 생략하면 유지, []면 비움
+  "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
+  "waiting": ["note-guide.md는 다음 요청까지 작성 보류", "확인 필요: 2화는 원작 282행부터라고 가정"],  # 전체 교체. 생략하면 유지, []면 비움. 확인 안 된 가정도 여기에
   "next_action": "다음 행동",
-  "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED
+  "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
   "artifacts": [{"path": "note-guide.md"}],
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
-                                           # artifacts가 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
-                                           # ① 산출물 본문에 그대로 있는 문장(4자 이상)을 따옴표로 인용(첫 인용을 본문에서 대조, 공백 무시)
-                                           # ② "미반영: <이유>" — 이유 필수. 통과하지만 결과의 unreflected에 표시된다
+                                           # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
+                                           # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
+                                           # ② "미반영: <이유>" — 작업 방식 제약이나 그림·압축 파일처럼 인용할 수 없는 것. 정상이며 결과의 unreflected에 표시
+                                           # 규칙 문장을 본문에 써 넣고 그대로 인용하지 않는다. 그런 인용은 결과의 self_quoted에 표시된다
 }
 필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
 "기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
@@ -54,7 +59,8 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   python3 -B wl.py works                                         작업 목록(JSON)
   python3 -B wl.py use habit-plan --quote "habit-plan 이어서 해"   기존 작업을 이 세션의 현재 작업으로(현황 출력, show 불필요)
   python3 -B wl.py new-work "습관 계획 habit-plan" --quote "새 작업: 습관 계획"
-                                       새 작업을 만들고 현재 작업으로(id 반환: 제목의 영문·숫자 → habit-plan, 한글만이면 work, work-2…)
+                                       새 작업을 만들고 현재 작업으로(id 반환: 제목의 영문·숫자 → habit-plan, 한글만·숫자만이면 work, work-2…)
+                                       결과의 notice: 다른 작업의 제약은 새 작업에 적용되지 않는다. 이어받을 것은 사용자에게 확인한다
   python3 -B wl.py show [--work <id>]                            현황 읽기(현재 작업이 없으면 목록)
   python3 -B wl.py verify [--work <id> | --all]
   python3 -B wl.py archive <id> / reopen <id>                    COMPLETED ↔ ACTIVE
@@ -141,7 +147,7 @@ class SessionCorrupt(Exception):
 
 
 def new_session():
-    return {"current_work": None, "last_seen": {}, **dict.fromkeys(SESSION_TURNS, 0)}
+    return {"current_work": None, "last_seen": {}, "hooks_seen": {}, **dict.fromkeys(SESSION_TURNS, 0)}
 
 
 def load_session(d, tool, sid):
@@ -159,7 +165,8 @@ def load_session(d, tool, sid):
     s.update({k: data[k] for k in s if k in data})
     if (any(type(s[k]) is not int for k in SESSION_TURNS)
             or not (s["current_work"] is None or isinstance(s["current_work"], str))
-            or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())):
+            or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())
+            or not isinstance(s["hooks_seen"], dict) or any(not isinstance(v, str) for v in s["hooks_seen"].values())):
         raise SessionCorrupt(path)
     return s
 
@@ -181,6 +188,33 @@ def update_session(d, tool, sid, seen=None, **changes):
     path.parent.mkdir(exist_ok=True)
     write_atomic(path, json.dumps(s, ensure_ascii=False) + "\n")
     return s
+
+
+def mark_hook(d, who, name):
+    """Inside locked(d): record that hook `name` ran for this session (self-diagnosis shown by save·skip·verify)."""
+    seen = dict(session_or_new(d, *who)["hooks_seen"], **{name: now()})
+    update_session(d, *who, hooks_seen=seen)
+
+
+def hooks_report(d, tool, sid):
+    """{"hooks": {...}} for JSON results, plus "warning" when this session has no UserPromptSubmit hook record.
+    Pi has no hooks, so nothing is reported for it."""
+    if tool == "pi":
+        return {}
+    try:
+        s = load_session(d, tool, sid) or new_session()
+    except SessionCorrupt:
+        s = new_session()
+    seen = s["hooks_seen"]
+    out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
+    if "UserPromptSubmit" not in seen:
+        out["warning"] = HOOK_WARNING
+    return out
+
+
+def hooks_note(d, who):
+    """Text warning line for use (text output) when hooks look inactive."""
+    return f"[Worklog Hook 경고] {HOOK_WARNING}\n" if who and "warning" in hooks_report(d, *who) else ""
 
 
 # --- 작업 목록 (index.json) ---
@@ -247,8 +281,11 @@ def work_dir(d, wid):
 
 
 def make_id(title, taken):
-    """Title → ASCII slug (a-z, 0-9, '-', ≤40); 'work' when nothing ASCII is left; '-2', '-3' on collision."""
-    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-") or "work"
+    """Title → ASCII slug (a-z, 0-9, '-', ≤40); 'work' when nothing ASCII or only digits is left ("던전디펜스 1화" → "1" is
+    not a usable id); '-2', '-3' on collision."""
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-")
+    if not base or base.replace("-", "").isdigit():
+        base = "work"
     wid, n = base, 1
     while wid in taken:
         n += 1
@@ -305,9 +342,11 @@ def empty_state():
 
 
 def apply(state, ev):
-    """Pure fold of one event into state. Raises Reject on invalid references."""
+    """Pure fold of one event into state. Raises Reject on invalid references.
+    Decisions and constraints carry source = "user" (event type REQUEST/APPROVAL/D_USER) or "model" (any other type)."""
     s = json.loads(json.dumps(state))
     c, eid = ev.get("changes", {}), ev["id"]
+    source = "user" if ev.get("type") in USER_TYPES else "model"
     if c.get("goal") is not None:
         if s["goal"]:
             raise Reject("목표는 처음 한 번만 정합니다. 바뀐 목표는 decisions로 남기세요.")
@@ -323,7 +362,7 @@ def apply(state, ev):
             ids.discard(rep)
         nid = f"D{ev['next_d']}"
         ev["next_d"] += 1
-        item = {"id": nid, "text": d["text"], "event": eid}
+        item = {"id": nid, "text": d["text"], "event": eid, "source": source}
         if rep:
             item["replaces"] = rep
         s["decisions"].append(item)
@@ -335,7 +374,7 @@ def apply(state, ev):
         s["constraints"] = [x for x in s["constraints"] if x["id"] != cid]
         s["removed_constraints"].append({"id": cid, "reason": why, "by_event": eid})
     for text in c.get("constraints", []):
-        s["constraints"].append({"id": f"C{ev['next_c']}", "text": text, "event": eid})
+        s["constraints"].append({"id": f"C{ev['next_c']}", "text": text, "event": eid, "source": source})
         ev["next_c"] += 1
     for key in ("waiting", "next_action", "status"):
         if key in c:
@@ -355,18 +394,34 @@ def fold(events):
     return s, counters
 
 
+def tag(item):
+    """' [사용자]' / ' [모델]' from an item's source (older state files without source show nothing)."""
+    return {"user": " [사용자]", "model": " [모델]"}.get(item.get("source"), "")
+
+
 def render(s, wid, title):
     by = s["updated_by"] or {}
     out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
-           f"최초 목표(원문): {s['goal'] or '(미정)'}",
-           "※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
-           f"상태: {s['status']}", "", "## 유효 결정"]
-    out += [f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") for d in s["decisions"]] or ["- (없음)"]
-    out += ["", "## 유지 제약 — 사용자가 바꾸기 전까지 유지"]
-    out += [f"- {c['id']}: {c['text']}" for c in s["constraints"]] or ["- (없음)"]
+           f"최초 목표(원문): {s['goal'] or '(미정)'}"]
+    if s["decisions"]:
+        last = s["decisions"][-1]
+        out.append(f"현재 범위(최신 결정): {last['id']}: {last['text']}")
+    out += ["※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
+            f"상태: {s['status']}", "", "## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
+    out += [f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d) for d in s["decisions"]] or ["- (없음)"]
+    out += ["", "## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
+    out += [f"- {c['id']}: {c['text']}{tag(c)}" for c in s["constraints"]] or ["- (없음)"]
     out += ["", "## 대기"] + ([f"- {w}" for w in s["waiting"]] or ["- (없음)"])
     out += ["", f"## 다음 행동", s["next_action"] or "(미정)"]
-    if s["artifacts"]:
+    if len(s["artifacts"]) > ART_MAX:  # 긴 작업: 폴더별 개수와 최근 사건만. 전체 목록은 state.json
+        groups = {}
+        for a in s["artifacts"]:
+            g = groups.setdefault(os.path.dirname(a["path"]) or ".", {"n": 0, "event": ""})
+            g["n"] += 1
+            g["event"] = max(g["event"], a["event"])
+        out += ["", f"## 산출물 — {len(s['artifacts'])}개, 폴더별 요약(전체 목록·해시는 state.json)"]
+        out += [f"- {folder}/ · {g['n']}개 · 최근 {g['event']}" for folder, g in groups.items()]
+    elif s["artifacts"]:
         out += ["", "## 산출물"] + [f"- {a['path']} sha256:{a['sha256'][:12]} ({a['event']})" for a in s["artifacts"]]
     if s["superseded"] or s["removed_constraints"]:
         out += ["", f"대체된 결정 {len(s['superseded'])}개·해제된 제약 {len(s['removed_constraints'])}개는 events.jsonl에 보존."]
@@ -453,12 +508,15 @@ def validate(p, root, state):
     arts_in = p.get("artifacts", [])
     if not isinstance(arts_in, list) or any(not isinstance(a, dict) or not isinstance(a.get("path"), str) for a in arts_in):
         raise Reject('artifacts는 [{"path": "note-guide.md"}] 형식이어야 합니다.')
-    needs_quote = p["type"] in USER_TYPES or p.get("goal") or p.get("constraints_remove") or p.get("takeover")
+    # 제약 해제 권한은 출처별: [사용자] 제약은 사용자 출처 사건 + quote, [모델] 제약은 사유만으로 (모르는 ID는 apply가 거부)
+    sources = {x["id"]: x.get("source", "user") for x in state["constraints"]}
+    user_removed = [cid for cid in (remove or {}) if sources.get(cid, "user") == "user"]
+    if user_removed and p["type"] not in REMOVE_TYPES:
+        raise Reject(f"사용자 제약 {user_removed}의 해제는 사용자가 바꾼 경우에만 합니다. type을 {sorted(REMOVE_TYPES)} 중 하나로, "
+                     "quote에 해제를 말한 사용자 원문을 넣으세요. 같은 제약이 다시 들어오는 것은 자동으로 무시되므로 해제할 필요가 없습니다.")
+    needs_quote = p["type"] in USER_TYPES or p.get("goal") or user_removed or p.get("takeover")
     if needs_quote and not str(p.get("quote") or "").strip():
         raise Reject("이 저장에는 사용자 원문 일부 quote가 필요합니다.")
-    if p.get("constraints_remove") and p["type"] not in REMOVE_TYPES:
-        raise Reject(f"제약 해제는 사용자가 바꾼 경우에만 합니다. type을 {sorted(REMOVE_TYPES)} 중 하나로, quote에 해제를 말한 사용자 원문을 넣으세요. "
-                     "같은 제약이 다시 들어오는 것은 자동으로 무시되므로 해제할 필요가 없습니다.")
     refs = p.get("refs", [])
     if not isinstance(refs, list) or any(not isinstance(r, dict) or not all(isinstance(v, str) for v in r.values()) for r in refs):
         raise Reject('refs는 [{"kind": "block", "id": "B03"}]처럼 문자열 값만 가진 객체 목록입니다.')
@@ -478,7 +536,11 @@ def validate(p, root, state):
             raise Reject(f"산출물 파일이 없습니다: {a.get('path')}")
         data = path.read_bytes()  # 한 번만 읽어 해시와 check 대조에 같은 바이트를 쓴다
         arts.append({"path": a["path"], "sha256": sha(data)})
-        bodies.append(norm(data.decode("utf-8", "replace")))
+        try:  # 그림·압축 파일 같은 비텍스트 산출물은 해시만 남기고 인용 대조에서 뺀다
+            if b"\x00" not in data:
+                bodies.append(norm(data.decode("utf-8")))
+        except UnicodeDecodeError:
+            pass
     return arts, bodies
 
 
@@ -522,6 +584,10 @@ def cmd_save(args):
         acquired = {"from": writer, "reason": p["takeover"]} if p.get("takeover") else None
         changes = {k: p[k] for k in ("goal", "decisions", "constraints", "constraints_remove", "waiting",
                                      "next_action", "status") if k in p}
+        if changes.get("goal"):  # "새 작업: 제목" 명령문이 그대로 목표가 되지 않게
+            changes["goal"] = NEW_WORK_PREFIX.sub("", changes["goal"]).strip() or changes["goal"]
+        elif not events and "goal" not in changes:  # 첫 저장에 목표가 없으면 작업 제목
+            changes["goal"] = title
         ignored = []
         if "constraints" in changes:
             have = {norm(x["text"]) for x in state["constraints"]}
@@ -550,37 +616,52 @@ def cmd_save(args):
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
-        unreflected = []
-        if arts:  # 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
-            need = [x["id"] for x in new_state["decisions"] + new_state["constraints"]]
-            check = p.get("check") or {}
+        unreflected, self_quoted = [], []
+        rules = new_state["decisions"] + new_state["constraints"]
+        check = p.get("check") or {}
+        if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
+            need = [x["id"] for x in rules]
             missing = [i for i in need if not str(check.get(i) or "").strip()]
             if missing:
                 raise Reject(f"산출물 대조 누락: {missing}. 각 결정·제약마다 산출물 본문의 인용('...') 또는 \"미반영: 이유\"를 check에 적으세요. "
-                             f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in new_state["decisions"] + new_state["constraints"]))
-            for i in need:
-                value = norm(check[i])
-                if value.startswith("미반영:"):
-                    if not value[len("미반영:"):].strip():
-                        raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
-                    unreflected.append(i)
-                    continue
-                m = QUOTE.search(value)
-                quote = norm(next(g for g in m.groups() if g) if m else value)
-                if len(quote) < MIN_QUOTE:
-                    raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
-                if not any(quote in b for b in bodies):
-                    raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
-                                 "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
+                             f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in rules))
+        elif arts:  # 비텍스트 산출물만: 인용할 본문이 없으므로 check는 선택이고 미반영만 받는다
+            need = [i for i in check if i in {x["id"] for x in rules}]
+        else:
+            need = []
+        texts = {x["id"]: norm(x["text"]) for x in rules}
+        for i in need:
+            value = norm(check[i])
+            if value.startswith("미반영:"):
+                if not value[len("미반영:"):].strip():
+                    raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
+                unreflected.append(i)
+                continue
+            if not bodies:
+                raise Reject(f"check {i}: 산출물이 모두 비텍스트(그림·압축 등)라 인용할 본문이 없습니다. \"미반영: 이유\"로 적거나 check를 생략하세요.")
+            m = QUOTE.search(value)
+            quote = norm(next(g for g in m.groups() if g) if m else value)
+            if len(quote) < MIN_QUOTE:
+                raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
+            if not any(quote in b for b in bodies):
+                raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
+                             "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
+            if quote == texts[i] or quote.rstrip(".") == texts[i].rstrip("."):  # 규칙 문장을 본문에 써 넣고 그대로 인용한 것: 증거가 아니다
+                self_quoted.append(i)
+        if need:
             ev["check"] = {i: check[i] for i in need}
+        if self_quoted:
+            ev["self_quoted"] = self_quoted
         rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
         update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
+                      "self_quoted": self_quoted,
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
-                      "decisions": [f"{x['id']}: {x['text']}" for x in rebuilt["decisions"]],
-                      "constraints": [f"{x['id']}: {x['text']}" for x in rebuilt["constraints"]],
-                      "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d)}, ensure_ascii=False))
+                      "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
+                      "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]],
+                      "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d),
+                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 # --- 작업 선택 ---
@@ -616,11 +697,26 @@ def cmd_use(args):
         # use는 show처럼 현황을 보여 주고 읽은 것으로 친다: use 직후 save가 "show 먼저"로 막히지 않는다
         text = read_work(d, args.arg, w["title"], (tool, sid), current_work=args.arg,
                          selected_turn=session_or_new(d, tool, sid)["turn"])
-    print(f"[use] 현재 작업: {args.arg} · {w['title']} · {w['status']}\n" + off_note(d) + text, end="")
+    print(f"[use] 현재 작업: {args.arg} · {w['title']} · {w['status']}\n" + off_note(d) + hooks_note(d, (tool, sid)) + text, end="")
+
+
+def other_constraints(d, index, wid):
+    """Active constraints of the other works, as "id N개" parts — a new work inherits none of them."""
+    parts = []
+    for other in sorted(index["works"]):
+        if other == wid:
+            continue
+        try:
+            n = len(fold(read_events(work_dir(d, other))[0])[0]["constraints"])
+        except (Reject, OSError, ValueError):
+            continue
+        if n:
+            parts.append(f"{other} {n}개")
+    return parts
 
 
 def cmd_new_work(args):
-    title = str(args.arg or "").strip()
+    title = NEW_WORK_PREFIX.sub("", str(args.arg or "")).strip()  # "새 작업: 제목"을 그대로 넣어도 제목만 남긴다
     if not title:
         raise Reject('new-work "<제목>" --quote "<사용자 원문>" 형식입니다.')
     tool, sid = identity(args)
@@ -636,7 +732,12 @@ def cmd_new_work(args):
         work_dir(d, wid).mkdir(parents=True)
         write_index(d, index)
         update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"])
-    print(json.dumps({"ok": True, "id": wid, "title": title, "current_work": wid, **off_flag(d)}, ensure_ascii=False))
+        others = other_constraints(d, index, wid)
+    result = {"ok": True, "id": wid, "title": title, "current_work": wid}
+    if others:
+        result["notice"] = ("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
+                            + ". 이어받을 제약이 있으면 사용자에게 확인한 뒤 이 작업에 다시 저장하세요.")
+    print(json.dumps({**result, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 def set_status(args, status, summary):
@@ -758,7 +859,15 @@ def verify_result(d, args, index):
     idx = {"missing_folders": sorted(set(index["works"]) - folders), "unindexed_folders": sorted(folders - set(index["works"])),
            "mismatched": mismatched}
     idx["ok"] = not any(idx.values())
-    return {"ok": idx["ok"] and all(r["ok"] for r in results), "works": results, "index": idx, "warnings": warnings}
+    result = {"ok": idx["ok"] and all(r["ok"] for r in results), "works": results, "index": idx, "warnings": warnings}
+    who = try_identity(args)
+    if who:  # 이 세션에서 Hook 3개가 실제로 돌았는지(세션 파일의 hooks_seen). 미작동이면 warning
+        report = hooks_report(d, *who)
+        if report:
+            result["hooks"] = {"session": f"{who[0]}:{who[1]}", **report["hooks"]}
+            if "warning" in report:
+                result["hooks"]["warning"] = report["warning"]
+    return result
 
 
 # --- 켜고 끄기 (.worklog/off 표식, 원장 아님) ---
@@ -891,6 +1000,11 @@ def injection(d, who):
                   key=lambda x: x[1].get("updated_at") or "", reverse=True)
     out.append(f"## 작업 목록 (ACTIVE·PAUSED, 최근 갱신순 최대 {LIST_MAX}개 / 전체 {len(works)}개)")
     out += [list_line(d, i, w) for i, w in live[:LIST_MAX]] or ["- (없음)"]
+    done = sorted(((i, w) for i, w in works.items() if w.get("status") == "COMPLETED"),
+                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
+    if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
+        out.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
+                                                              for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
     cur = None
     if who:
         with locked(d):
@@ -898,6 +1012,7 @@ def injection(d, who):
             if cur:
                 events, _ = read_events(work_dir(d, cur))
                 update_session(d, *who, seen=(cur, len(events)))
+            mark_hook(d, who, "SessionStart")
     if cur:
         title = works[cur]["title"]
         out += [f"## 현재 작업: {cur} · {title}",
@@ -933,7 +1048,8 @@ def cmd_turn_start(args):
     d, who, _ = hook_input(args)
     if d and who and not is_off(d):
         with locked(d):
-            update_session(d, *who, turn=session_or_new(d, *who)["turn"] + 1)
+            s = session_or_new(d, *who)
+            update_session(d, *who, turn=s["turn"] + 1, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()))
 
 
 def cmd_stop_hook(args):
@@ -943,6 +1059,8 @@ def cmd_stop_hook(args):
         return
     try:
         s = load_session(d, *who) or new_session()
+        with locked(d):
+            mark_hook(d, who, "Stop")
     except SessionCorrupt as e:
         print(json.dumps({"decision": "block", "reason": f"Worklog: 세션 파일을 읽을 수 없습니다({e}). "
                           "save 또는 skip으로 다시 만든 뒤 마치세요."}, ensure_ascii=False))
@@ -967,7 +1085,7 @@ def cmd_skip(args):
     with locked(d):
         turn = session_or_new(d, tool, sid)["turn"]
         update_session(d, tool, sid, skipped_turn=turn)
-    print(json.dumps({"ok": True, "turn": turn, **off_flag(d)}))
+    print(json.dumps({"ok": True, "turn": turn, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 def main(argv=None):
@@ -984,7 +1102,7 @@ def main(argv=None):
     ap.add_argument("--reason", help="off: 끄는 이유(선택)")
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
-    args = ap.parse_args(argv)
+    args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root = args.root or os.getcwd()
     if args.command == "help":
         print(SAVE_HELP)

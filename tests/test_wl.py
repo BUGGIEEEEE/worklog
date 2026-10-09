@@ -254,7 +254,8 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
         self.assertEqual(run(self.root, "skip", tool="claude")[0], 2)  # 이유 필수
         r, out = run(self.root, "skip", tool="claude", extra=["읽기 전용: 질문에 답만 함"])
-        self.assertEqual((r, json.loads(out)), (0, {"ok": True, "turn": 2}))
+        self.assertEqual((r, json.loads(out)), (0, {"ok": True, "turn": 2,  # 이 세션에서 돈 Hook: turn-start·stop-hook
+                                                    "hooks": {"session_start": False, "turn_start": True, "stop": True}}))
         self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
         self.assertEqual(len((self.wd / "events.jsonl").read_text().splitlines()), 2)  # skip은 원장에 안 씀
         self.assertEqual(json.loads(hook(self.root, "stop-hook", session="other")[1] or "{}"), {})  # 턴 시작 없는 세션은 통과
@@ -855,7 +856,8 @@ class WorksTest(Base):
         self.assertIn("다음: " + "가" * 60 + "…", ctx)
         self.assertIn("## 현재 작업 없음\n" + "사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
                       '작업이 하나뿐이고 "이어서"면 그 작업을 use한다.', ctx)
-        self.assertFalse(session_file(self.root, "claude_fresh").exists())  # 현재 작업이 없으면 세션 파일을 만들지 않음
+        fresh = json.loads(session_file(self.root, "claude_fresh").read_text())  # Hook 작동 기록만 남기고 현재 작업은 없음
+        self.assertEqual((fresh["current_work"], sorted(fresh["hooks_seen"])), (None, ["SessionStart"]))
         ctx = self.ctx()  # claude s1: 현재 작업 = recipe-note
         self.assertIn("| PROVIDED |", ctx)
         self.assertIn("## 현재 작업: recipe-note · Recipe Note\n# Worklog 현재 상태 — recipe-note · Recipe Note (seq 1", ctx)
@@ -1058,7 +1060,7 @@ class FixTest(Base):
         s = json.loads(session_file(self.root, "codex_y").read_text())
         self.assertEqual((s["current_work"], s["last_seen"]), ("a", {"a": 1}))
         self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y1"}, session="y"))  # use 직후 save 통과
-        self.assertEqual(set(self.ok(new_work(self.root, "B", session="y"))), {"ok", "id", "title", "current_work"})
+        self.assertLessEqual({"ok", "id", "title", "current_work"}, set(self.ok(new_work(self.root, "B", session="y"))))
 
     # --- 이전 도구 C2·C6·C7 ---
     def test_c2_sessions_link_refused(self):
@@ -1215,3 +1217,138 @@ class OnOffTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinalPlanTest(unittest.TestCase):
+    """2026-10-09 최종안: check 자기 인용 표시·비텍스트 산출물, Hook 자가 진단, 출처별 해제, goal·id 정리, COMPLETED 목록, 산출물 요약."""
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.d = self.root / ".worklog"
+
+    def ok(self, result):
+        r, out = result
+        self.assertEqual(r, 0, out)
+        return json.loads(out)
+
+    def state(self, wid="t"):
+        return json.loads((self.d / f"works/{wid}/state.json").read_text())
+
+    def test_self_quoted_is_flagged_not_rejected(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["알림 등록 금지"],
+                                        "decisions": [{"text": "저녁 식사 후 11분"}]}))
+        (self.root / "a.md").write_text("규칙: 알림 등록 금지.\n저녁 식사 후 11분 동안 적는다.")
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "a.md"}],
+                                              "check": {"D1": "'11분 동안 적는다'", "C1": "'알림 등록 금지'"}}))
+        self.assertEqual((out["self_quoted"], out["unreflected"]), (["C1"], []))  # 규칙 문장 그대로 = 증거 아님, 저장은 된다
+        ev = json.loads((self.d / "works/t/events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(ev["self_quoted"], ["C1"])
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "a.md"}],
+                                              "check": {"D1": "'11분 동안 적는다'", "C1": "미반영: 알림은 만들지 않았음"}}))
+        self.assertEqual((out["self_quoted"], out["unreflected"]), ([], ["C1"]))
+
+    def test_non_text_artifacts_need_no_quote(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["폭력 과장 금지"]}))
+        (self.root / "ep.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(range(256)))
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}]}))  # check 생략 가능
+        self.assertEqual(out["unreflected"], [])
+        self.assertEqual(len(self.state()["artifacts"]), 1)
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}], "check": {"C1": "'폭력'"}})
+        self.assertEqual(r, 2)
+        self.assertIn("비텍스트", json.loads(out)["error"])
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}],
+                                              "check": {"C1": "미반영: 그림이라 인용 불가"}}))
+        self.assertEqual(out["unreflected"], ["C1"])
+        (self.root / "note.md").write_text("폭력 장면은 실루엣으로 처리했다.")
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "둘", "artifacts": [{"path": "ep.png"}, {"path": "note.md"}]})
+        self.assertEqual(r, 2)  # 텍스트 산출물이 하나라도 있으면 check 필수
+        self.assertIn("산출물 대조 누락", json.loads(out)["error"])
+
+    def test_constraint_source_and_release_rule(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["사용자 제약"]}))
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "y", "constraints": ["모델이 읽은 조건"],
+                                        "decisions": [{"text": "3컷씩 나눔"}]}))
+        s = self.state()
+        self.assertEqual([(c["id"], c["source"]) for c in s["constraints"]], [("C1", "user"), ("C2", "model")])
+        self.assertEqual(s["decisions"][0]["source"], "model")
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("- C1: 사용자 제약 [사용자]", md)
+        self.assertIn("- C2: 모델이 읽은 조건 [모델]", md)
+        self.assertIn("- D1: 3컷씩 나눔 [모델]", md)
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "z", "constraints_remove": {"C1": "불편"}})
+        self.assertEqual(r, 2)  # 사용자 제약은 사용자 출처 + quote
+        self.assertIn("사용자 제약 ['C1']", json.loads(out)["error"])
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "z", "constraints_remove": {"C2": "조건이 바뀜"}}))  # 모델 제약: 사유만
+        self.assertEqual(out["constraints"], ["C1: 사용자 제약 [사용자]"])
+        out = self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "풀어", "constraints_remove": {"C1": "사용자 해제"}}))
+        self.assertEqual(out["constraints"], [])
+
+    def test_work_id_and_goal_cleanup(self):
+        out = self.ok(new_work(self.root, "던전디펜스 1화 제작"))
+        self.assertEqual(out["id"], "work")  # 숫자만 남는 제목은 work
+        out = self.ok(new_work(self.root, "새 작업: 웹툰 제작"))
+        self.assertEqual((out["id"], out["title"]), ("work-2", "웹툰 제작"))  # 명령 접두어 제거
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "첫 저장"}))
+        self.assertEqual(self.state("work-2")["goal"], "웹툰 제작")  # goal 생략 → 제목
+        self.assertEqual(use(self.root, "work")[0], 0)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "새 작업: 던전디펜스 1화 제작",
+                                        "goal": "새 작업: 던전디펜스 1화 제작", "decisions": [{"text": "1화 60컷"}]}))
+        self.assertEqual(self.state("work")["goal"], "던전디펜스 1화 제작")
+        self.assertIn("현재 범위(최신 결정): D1: 1화 60컷", (self.d / "works/work/state.md").read_text())
+
+    def test_completed_works_listed_and_usable(self):
+        self.ok(new_work(self.root, "A", tool="claude"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "a", "quote": "q"}, tool="claude"))
+        self.ok(new_work(self.root, "B", tool="claude"))
+        self.ok(run(self.root, "archive", extra=["a"], tool="claude"))
+        ctx = json.loads(hook(self.root, "hook", session="fresh")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- b · B · ACTIVE", ctx)
+        self.assertNotIn("- a · A · COMPLETED", ctx)
+        self.assertIn("- 그 외 COMPLETED 1개: a · A (", ctx)
+        self.assertIn("[use] 현재 작업: a · A · COMPLETED", use(self.root, "a", session="fresh", tool="claude")[1])
+
+    def test_hooks_seen_reported(self):
+        self.ok(new_work(self.root, "t", tool="claude"))
+        out = self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
+        self.assertEqual(out["hooks"], {"session_start": False, "turn_start": False, "stop": False})
+        self.assertIn("Hook 미작동 의심", out["warning"])
+        self.assertIn("[Worklog Hook 경고]", use(self.root, "t", tool="claude")[1])
+        hook(self.root, "hook")
+        hook(self.root, "turn-start")
+        out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, tool="claude"))
+        self.assertEqual(out["hooks"], {"session_start": True, "turn_start": True, "stop": False})
+        self.assertNotIn("warning", out)
+        hook(self.root, "stop-hook")
+        out = self.ok(run(self.root, "verify", extra=["--all"], tool="claude"))
+        self.assertEqual(out["hooks"], {"session": "claude:s1", "session_start": True, "turn_start": True, "stop": True})
+        self.assertEqual(out["warnings"], [])
+        out = self.ok(run(self.root, "verify", extra=["--all"], tool="claude", session="other"))
+        self.assertIn("warning", out["hooks"])  # 다른 세션 ID: Hook 기록 없음 → 경고
+        self.assertNotIn("hooks", self.ok(run(self.root, "skip", extra=["읽기"], tool="pi")))  # Pi는 Hook이 없다
+
+    def test_artifact_summary_in_state_md(self):
+        self.ok(new_work(self.root, "t"))
+        arts = []
+        for ep in (1, 2):
+            (self.root / f"out/EP0{ep}").mkdir(parents=True)
+            for n in range(8):
+                p = self.root / f"out/EP0{ep}/f{n}.txt"
+                p.write_text(f"file {ep} {n}")
+                arts.append({"path": f"out/EP0{ep}/f{n}.txt"})
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "16개", "artifacts": arts}))
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("## 산출물 — 16개, 폴더별 요약", md)
+        self.assertIn("- out/EP01/ · 8개 · 최근 E0001", md)
+        self.assertNotIn("sha256:", md)
+        self.assertEqual(len(self.state()["artifacts"]), 16)  # 전체 목록은 state.json
+
+    def test_new_work_notice_about_other_constraints(self):
+        self.ok(new_work(self.root, "A"))
+        self.assertNotIn("notice", self.ok(new_work(self.root, "B")))  # 제약 없는 작업은 안내 없음
+        self.assertEqual(use(self.root, "a")[0], 0)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "a", "quote": "q", "constraints": ["게시 완료라고 주장하지 않는다"]}))
+        out = self.ok(new_work(self.root, "C"))
+        self.assertIn("a 1개", out["notice"])
+        self.assertIn("사용자에게 확인", out["notice"])

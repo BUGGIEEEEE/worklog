@@ -46,11 +46,11 @@ python3 -B worklog/tools/install_project.py --tool claude --root /path/to/projec
 python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project
 ```
 
-Requirements: Python 3.10+ (tested on 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project and backs up every file it changes.
+Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project and backs up every file it changes.
 
 ## Good to know
 
-- Whether a constraint ends up inside a produced file is the model's judgment. If it matters, say "put the constraints in the file too".
+- `save` results tell you whether the hooks are alive (`hooks`, and a `warning` when they are not) and whether a `check` quote merely repeated the rule's own text (`self_quoted`, not evidence that the rule was followed).
 - The record detects accidental edits, not deliberate tampering.
 - Pi is untested. The model-facing rules and messages are in Korean.
 
