@@ -46,11 +46,11 @@ python3 -B worklog/tools/install_project.py --tool claude --root /프로젝트/�
 python3 -B worklog/tools/install_project.py --tool codex  --root /프로젝트/경로
 ```
 
-필요한 것: Python 3.10 이상(3.14에서 시험), macOS 또는 Linux. 클론 폴더는 옮기지 마세요(Hook이 그 경로를 부릅니다). 설치기는 프로젝트 안에만 쓰고, 바꾸는 파일은 백업합니다.
+필요한 것: Python 3.9 이상(3.9.6과 3.14에서 시험), macOS 또는 Linux. 클론 폴더는 옮기지 마세요(Hook이 그 경로를 부릅니다). 설치기는 프로젝트 안에만 쓰고, 바꾸는 파일은 백업합니다.
 
 ## 알아 둘 것
 
-- 제약을 산출물 파일 안에 넣을지는 모델의 판단입니다. 중요하면 "제약도 파일에 넣어"라고 말하세요.
+- `save` 결과에 Hook이 살아 있는지(`hooks`, 아니면 `warning`)와 check 인용이 규칙 문장을 그대로 베낀 것인지(`self_quoted`, 반영의 증거가 아님)가 표시됩니다.
 - 기록은 실수로 인한 변경은 감지하지만 의도적 변조는 막지 않습니다.
 - Pi는 미검증입니다. 모델 지침과 메시지는 한국어입니다.
 
