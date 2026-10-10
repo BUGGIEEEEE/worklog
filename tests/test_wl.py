@@ -1215,6 +1215,70 @@ class OnOffTest(Base):
         self.assertIn("이유: 없음", ctx)
 
 
+class LongLedgerTest(unittest.TestCase):
+    """TEST-SPEC-3 U1: 긴 원장(사건 40+)에서 결정 교체 사슬·산출물 요약·출처별 해제·COMPLETED 뒤 새 작업·주입 크기."""
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.d = self.root / ".worklog"
+
+    def ok(self, result):
+        r, out = result
+        self.assertEqual(r, 0, out)
+        return json.loads(out)
+
+    def save(self, payload, session="s1"):
+        return self.ok(run(self.root, "save", payload, session=session, tool="claude"))
+
+    def test_long_ledger_consistency(self):
+        self.ok(new_work(self.root, "long", tool="claude"))
+        self.save({"type": "REQUEST", "summary": "시작", "quote": "주간 계획을 세워", "goal": "주간 계획",
+                   "constraints": ["알림 등록 금지", "외부 게시 금지", "다른 프로젝트 자료 조회 금지"], "decisions": [{"text": "1화까지"}]})
+        prev = "D1"
+        for n in range(2, 8):  # 결정 교체 6회 연속
+            self.save({"type": "D_USER", "summary": f"{n}화", "quote": f"{n}화까지", "decisions": [{"text": f"{n}화까지", "replaces": prev}]})
+            prev = f"D{n}"
+        self.save({"type": "RESULT", "summary": "모델 제약", "constraints": ["모델이 읽은 조건"]})
+        for i in range(28):
+            self.save({"type": "CHECKPOINT", "summary": f"진행 {i}"})
+        arts = []
+        for ep in (1, 2):  # 산출물 20개, 폴더 2개
+            (self.root / f"out/EP0{ep}").mkdir(parents=True)
+            for i in range(10):
+                p = self.root / f"out/EP0{ep}/c{i}.md"
+                p.write_text(f"7화까지 진행한다. 알림을 등록하지 않는다. 외부에 게시하지 않는다. 다른 프로젝트 자료를 조회하지 않는다. "
+                             f"모델이 읽은 조건을 지킨다. 컷 {ep}-{i}")
+                arts.append({"path": f"out/EP0{ep}/c{i}.md"})
+        out = self.save({"type": "RESULT", "summary": "20개", "artifacts": arts,
+                         "check": {"D7": "'7화까지 진행한다'", "C1": "'알림을 등록하지 않는다'", "C2": "'외부에 게시하지 않는다'",
+                                   "C3": "'다른 프로젝트 자료를 조회하지 않는다'", "C4": "'모델이 읽은 조건을 지킨다'"}})
+        self.assertEqual((out["self_quoted"], out["unreflected"]), ([], []))
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "z", "constraints_remove": {"C1": "불편"}}, tool="claude")
+        self.assertEqual(r, 2, out)  # [사용자] 제약은 사유만으로 해제되지 않는다
+        self.save({"type": "RESULT", "summary": "모델 해제", "constraints_remove": {"C4": "조건 종료"}})
+        self.save({"type": "D_USER", "summary": "사용자 해제", "quote": "알림은 이제 등록해도 돼", "constraints_remove": {"C1": "사용자 해제"}})
+        self.save({"type": "D_USER", "summary": "끝", "quote": "이 작업은 끝났어", "status": "COMPLETED"})
+        events = (self.d / "works/long/events.jsonl").read_text().splitlines()
+        self.assertGreaterEqual(len(events), 40)
+        s = json.loads((self.d / "works/long/state.json").read_text())
+        self.assertEqual([x["id"] for x in s["decisions"]], ["D7"])
+        self.assertEqual([x["id"] for x in s["constraints"]], ["C2", "C3"])
+        self.assertEqual((s["status"], len(s["artifacts"]), len(s["superseded"]), len(s["removed_constraints"])), ("COMPLETED", 20, 6, 2))
+        md = (self.d / "works/long/state.md").read_text()
+        for text in ("현재 범위(최신 결정): D7: 7화까지", "## 산출물 — 20개, 폴더별 요약", "- out/EP01/ · 10개", "대체된 결정 6개·해제된 제약 2개"):
+            self.assertIn(text, md)
+        self.assertTrue(self.ok(run(self.root, "verify", extra=["--all"], tool="claude"))["ok"])
+        r, out = run(self.root, "show", extra=["--work", "long"], tool="claude")
+        self.assertEqual(r, 0, out)
+        self.assertFalse(out.startswith("(현재 상태가 원장과"), "projection이 원장과 달라 다시 만들어졌다")
+        ctx = json.loads(hook(self.root, "hook", session="s1")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("## 현재 작업: long", ctx)
+        self.assertLessEqual(len(ctx.encode()), 8192, f"현재 작업 주입 {len(ctx.encode())}B")
+        self.ok(new_work(self.root, "next", session="s2", tool="claude"))
+        ctx = json.loads(hook(self.root, "hook", session="fresh")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- 그 외 COMPLETED 1개: long · long (", ctx)
+        self.assertLessEqual(len(ctx.encode()), 8192)
+
+
 if __name__ == "__main__":
     unittest.main()
 
