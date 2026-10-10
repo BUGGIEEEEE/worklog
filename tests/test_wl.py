@@ -1279,6 +1279,27 @@ class LongLedgerTest(unittest.TestCase):
         self.assertLessEqual(len(ctx.encode()), 8192)
 
 
+
+class IsOffTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.wl = load_wl()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_is_off_requires_existing_off_marker(self):
+        self.assertFalse(self.wl.is_off(self.root))
+        (self.root / "off").write_text("paused")
+        self.assertTrue(self.wl.is_off(self.root))
+
+    def test_is_off_recognizes_dangling_marker_link_and_rejects_string_root(self):
+        (self.root / "off").symlink_to(self.root / "missing-target")
+        self.assertTrue(self.wl.is_off(self.root))
+        with self.assertRaises(TypeError):
+            self.wl.is_off(str(self.root))
+
 if __name__ == "__main__":
     unittest.main()
 
