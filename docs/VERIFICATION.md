@@ -8,7 +8,7 @@
 
 ### English
 
-Interactive sessions driven through terminal panes: T0 (two works, no selection) → T1 → S (Stop observation) → `/compact` → T2 → `/compact` → T3. Same scenario as the 12-run matrix below, with four user constraints and two artifacts in T3 (`note-guide.md`, exactly two sentences; `plan.md`, free form). Rules in force: the 2026-10-09 rules plus the F2 wording (PR #3). One smoke run per tool first (single-work scenario), then opus-5-5 medium, sonnet-5-5 medium, gpt-6-astra medium ×3, gpt-6.1-sol high. 8/8 runs completed without a harness retry; all within the cost caps (tools 5–9, 110–178 s including both compactions, Claude 57–59万 observed tokens as reference, Codex 24–31万).
+Interactive sessions driven through terminal panes: T0 (two works, no selection) → T1 → S (Stop observation) → `/compact` → T2 → `/compact` → T3. Same scenario as the 12-run matrix below, with four user constraints and two artifacts in T3 (`note-guide.md`, exactly two sentences; `plan.md`, free form). Rules in force: the 2026-10-09 rules plus the F2 wording (PR #3). One smoke run per tool first (single-work scenario), then opus-5-5 medium, sonnet-5-5 medium, gpt-6-astra medium ×3, gpt-6.1-sol high. 8/8 runs completed without a harness retry; all within the cost caps (tools 5–9, 110–178 s including both compactions, Claude 570–590K observed tokens as reference, Codex 240–310K).
 
 | Criterion | Result | Evidence |
 |---|---|---|
