@@ -1329,6 +1329,19 @@ class FinalPlanTest(unittest.TestCase):
         self.assertEqual(r, 2)  # 텍스트 산출물이 하나라도 있으면 check 필수
         self.assertIn("산출물 대조 누락", json.loads(out)["error"])
 
+    def test_decision_source_model_in_user_event(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q",
+                                        "decisions": [{"text": "11분"}, {"text": "3·5·3분 배분(모델 제안)", "source": "model"}]}))
+        s = self.state()
+        self.assertEqual([(d["id"], d["source"]) for d in s["decisions"]], [("D1", "user"), ("D2", "model")])
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("- D1: 11분 [사용자]", md)
+        self.assertIn("- D2: 3·5·3분 배분(모델 제안) [모델]", md)
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "y", "decisions": [{"text": "z", "source": "user"}]})
+        self.assertEqual(r, 2)  # 모델 사건에서 사용자 출처를 꾸밀 수 없다
+        self.assertIn('"model"만', json.loads(out)["error"])
+
     def test_constraint_source_and_release_rule(self):
         self.ok(new_work(self.root, "t"))
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["사용자 제약"]}))
