@@ -4,6 +4,38 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Layer M — single-turn model runs under the 2026-10-09 rules (2026-10-10, 13 runs)
+
+### English
+
+Non-interactive runs (`claude -p`, `codex exec`), default models, no compaction, one fresh project per run. Each run checks one rule the 12-run matrix did not cover. Machine judgment from the ledger and session files; a human read every answer. Every `quote` the model stored was a substring of the prompt (0 fabricated of 13). Claude 7 runs cost $4.62 in total; Codex 7 runs used about 880K tokens, mostly cached input.
+
+| Scenario | Claude | Codex | Notes |
+|---|---|---|---|
+| M1 hooks absent → model reports the `warning` to the user | PASS | PASS | both named where to check (settings file / `/hooks`) |
+| M2 `새 작업: <title>` → quote on new-work, clean title and goal, constraint tagged user | PASS | PASS* | *Codex appended a clause from the user's global instructions to `goal` and stored a one-turn instruction as a constraint |
+| M3 two text artifacts under 4 constraints → no `self_quoted`, every `미반영` with a reason, content decision quoted | PASS ×2 | PASS ×2 | Codex marked all three working-method constraints unreflected; Claude quoted one or two |
+| M4 Codex saves D1 in one session, Claude replaces it in a new session | PASS | PASS | `replaces` used, one valid decision |
+| M5 "chapter 1 draft is done" → status stays ACTIVE | PASS | PASS | both said why they kept ACTIVE |
+| M6 `.worklog/off` → no save or skip, state still summarised | PASS | PASS | |
+
+Not shown by this layer: restoration after compaction (no compaction in `-p`/`exec`), reproducibility (one run per cell, two for M3). The compaction results above were measured under the previous rules; a re-run under the current rules has not been done.
+
+### 한국어
+
+비대화형 실행(`claude -p`, `codex exec`), 기본 모델, 압축 없음, 회차마다 새 프로젝트. 각 회차는 12회 매트릭스가 보지 않던 규칙 하나를 확인합니다. 기계 판정은 원장·세션 파일, 답변은 사람이 전부 읽었습니다. 모델이 저장한 모든 `quote`는 프롬프트 원문의 일부였습니다(날조 0/13). 비용은 Claude 7회 합계 $4.62, Codex 7회 약 88만 토큰(대부분 캐시 입력).
+
+| 시나리오 | Claude | Codex | 비고 |
+|---|---|---|---|
+| M1 Hook 없음 → `warning`을 사용자에게 보고 | PASS | PASS | 둘 다 확인 위치(설정 파일 / `/hooks`)를 명시 |
+| M2 `새 작업: <제목>` → new-work에 quote, 제목·goal 깨끗, 제약은 [사용자] | PASS | PASS* | *Codex는 전역 지침 문구를 `goal`에 덧붙이고 턴 한정 지시를 제약으로 저장 |
+| M3 제약 4개 아래 텍스트 산출물 2개 → `self_quoted` 0, 모든 미반영에 이유, 내용 결정 인용 | PASS ×2 | PASS ×2 | Codex는 작업 방식 제약 3개를 모두 미반영, Claude는 1~2개를 본문에 넣음 |
+| M4 Codex가 D1 저장, Claude 새 세션이 대체 | PASS | PASS | `replaces` 사용, 유효 결정 1개 |
+| M5 "1장 초안 끝" → ACTIVE 유지 | PASS | PASS | 둘 다 유지 이유를 말함 |
+| M6 `.worklog/off` → save·skip 없음, 상태 요약은 함 | PASS | PASS | |
+
+이 층이 보여 주지 않는 것: 압축 뒤 복원(`-p`/`exec`에는 압축이 없음), 재현성(칸당 1회, M3만 2회). 위의 압축 결과는 이전 규칙으로 측정한 것이며 현재 규칙으로는 아직 다시 돌리지 않았습니다.
+
 ## Format 2 — multi-work scenario (2026-10-06/07, 12 runs)
 
 ### English

@@ -43,7 +43,7 @@ When an update changes how `state.md`/`state.json` are rendered (2026-10-09 did:
 
 ## Verify
 
-- In the clone: `python3 -B -m unittest discover -s tests` (74 tests, all must pass; verified on Python 3.9.6 and 3.14).
+- In the clone: `python3 -B -m unittest discover -s tests` (75 tests, all must pass; verified on Python 3.9.6 and 3.14).
 - In a project: `python3 -B worklog/core/wl.py verify --all` checks every ledger's hash chain and the index. With `--tool <tool> --session <id>` it also reports `hooks` (which of the three hooks ran in that session).
 - A dry-run of the installer right after installing lists no `changed` files.
 
