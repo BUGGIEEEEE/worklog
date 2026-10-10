@@ -4,6 +4,38 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Layer I — interactive runs with two compactions under the current rules (2026-10-10, 6 runs + 2 smoke)
+
+### English
+
+Interactive sessions driven through terminal panes: T0 (two works, no selection) → T1 → S (Stop observation) → `/compact` → T2 → `/compact` → T3. Same scenario as the 12-run matrix below, with four user constraints and two artifacts in T3 (`note-guide.md`, exactly two sentences; `plan.md`, free form). Rules in force: the 2026-10-09 rules plus the F2 wording (PR #3). One smoke run per tool first (single-work scenario), then opus-5-5 medium, sonnet-5-5 medium, gpt-6-astra medium ×3, gpt-6.1-sol high. 8/8 runs completed without a harness retry; all within the cost caps (tools 5–9, 110–178 s including both compactions, Claude 57–59万 observed tokens as reference, Codex 24–31万).
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| 4 work selection: T0 asks, saves nothing, leaves the other work unchanged | 6/6 | T0 question (one through the question UI), 0 events, seed ledger hash unchanged |
+| 5 SessionStart injection after each compaction names the current work | 6/6 | `## 현재 작업: habit-plan` in both compact injections |
+| 1 restoration after two compactions | 6/6 | T3 used the T2 value (11 min) and the four T1 constraints; one run instead found a 7-vs-11 conflict in the ledger and asked |
+| 2 change kept, wait kept, two sentences, no early files | 5/5 | the sixth run stopped at a question (see below), so 2 and 3 are not evaluated for it |
+| 3 content decisions quoted from the body, `self_quoted` 0, every `미반영` with a reason | 5/5 | Claude left working-method constraints unreflected with reasons; Codex wrote them into the body |
+| Stop block in S | Claude 2/2 direct (`stop_hook_summary`), Codex indirect only | |
+
+Findings, not applied: (F4) all four Codex runs copied the constraint sentences into the second sentence of the guide and quoted parts of them — the core's `self_quoted` only catches exact matches, and the T3 prompt itself asked to "reflect the constraints in both files", so the prompt invited it; Claude did not. (F5) No run used `D_AGENT`: proposals the model itself labelled "(model suggestion)" were saved inside REQUEST/D_USER events and therefore tagged `[사용자]`. In one astra run that mis-tag surfaced after compaction as a 7-minute breakdown contradicting the 11-minute decision; the model asked before writing, as T3 allowed, so that run ended blocked (1 of 3 identical runs — recorded as probabilistic, no rule change). Codex also stored the turn instruction "no extra Goal, evaluator or Hook" as a constraint (F2 class).
+
+### 한국어
+
+터미널 패널로 구동한 대화형 세션: T0(작업 2개, 지정 없음) → T1 → S(Stop 관찰) → `/compact` → T2 → `/compact` → T3. 아래 12회 매트릭스와 같은 시나리오에 사용자 제약 4개, T3 산출물 2개(`note-guide.md` 정확히 두 문장, `plan.md` 자유 형식). 적용 규칙은 2026-10-09 규칙 + F2 문구(PR #3). 도구별 연기 1회(단일 작업) 뒤 opus-5-5 medium, sonnet-5-5 medium, gpt-6-astra medium ×3, gpt-6.1-sol high. 8/8 재시도 없이 완주, 전부 상한 이내(도구 5~9, 압축 포함 110~178초, Claude 관측 토큰 57~59만은 참고치, Codex 24~31만).
+
+| 기준 | 결과 | 근거 |
+|---|---|---|
+| 4 작업 선택: T0에서 묻고 저장 없음, 다른 작업 불변 | 6/6 | T0 질문(1회는 질문 UI), 사건 0, seed 원장 해시 동일 |
+| 5 압축 뒤 SessionStart 주입에 현재 작업 | 6/6 | 두 compact 주입 모두 `## 현재 작업: habit-plan` |
+| 1 압축 2회 뒤 복원 | 6/6 | T3가 T2의 11분과 T1 제약 4개를 사용. 1회는 기록에서 7분·11분 충돌을 찾아 질문 |
+| 2 변경·대기 유지, 두 문장, 조기 파일 없음 | 5/5 | 여섯째 회차는 질문에서 멈춰 기준 2·3 미평가 |
+| 3 내용 결정 본문 인용, `self_quoted` 0, 모든 미반영에 이유 | 5/5 | Claude는 작업 방식 제약을 이유와 함께 미반영, Codex는 본문에 씀 |
+| S 단계 Stop 차단 | Claude 2/2 직접 근거, Codex는 간접 추정만 | |
+
+미적용 발견: (F4) Codex 4회 전부 안내문 두 번째 문장에 제약 문장들을 옮겨 적고 일부를 인용했습니다. 코어 `self_quoted`는 완전 일치만 잡고, T3 프롬프트가 "제약을 두 파일 모두에 반영"하라고 해서 유도한 면이 있습니다. Claude는 그러지 않았습니다. (F5) `D_AGENT`를 쓴 회차가 없습니다. 모델이 "(모델 제안)"이라고 적은 것도 REQUEST/D_USER 안에 넣어 `[사용자]`로 표시됐습니다. astra 1회차에서는 이 혼입이 압축 뒤 "7분 배분 vs 11분" 충돌로 드러났고, 모델은 T3가 허용한 대로 쓰기 전에 물었습니다(같은 조건 3회 중 1회, 확률적으로 기록하고 규칙은 유지). Codex는 턴 지시 "별도 Goal·평가기·Hook 사용 금지"도 제약으로 저장했습니다(F2 부류).
+
 ## Layer M — single-turn model runs under the 2026-10-09 rules (2026-10-10, 13 runs)
 
 ### English
@@ -19,7 +51,7 @@ Non-interactive runs (`claude -p`, `codex exec`), default models, no compaction,
 | M5 "chapter 1 draft is done" → status stays ACTIVE | PASS | PASS | both said why they kept ACTIVE |
 | M6 `.worklog/off` → no save or skip, state still summarised | PASS | PASS | |
 
-Not shown by this layer: restoration after compaction (no compaction in `-p`/`exec`), reproducibility (one run per cell, two for M3). The compaction results above were measured under the previous rules; a re-run under the current rules has not been done.
+Not shown by this layer: restoration after compaction (no compaction in `-p`/`exec`), reproducibility (one run per cell, two for M3). The compaction results below were measured under the previous rules; Layer I above repeats them under the current rules.
 
 ### 한국어
 
@@ -34,7 +66,7 @@ Not shown by this layer: restoration after compaction (no compaction in `-p`/`ex
 | M5 "1장 초안 끝" → ACTIVE 유지 | PASS | PASS | 둘 다 유지 이유를 말함 |
 | M6 `.worklog/off` → save·skip 없음, 상태 요약은 함 | PASS | PASS | |
 
-이 층이 보여 주지 않는 것: 압축 뒤 복원(`-p`/`exec`에는 압축이 없음), 재현성(칸당 1회, M3만 2회). 위의 압축 결과는 이전 규칙으로 측정한 것이며 현재 규칙으로는 아직 다시 돌리지 않았습니다.
+이 층이 보여 주지 않는 것: 압축 뒤 복원(`-p`/`exec`에는 압축이 없음), 재현성(칸당 1회, M3만 2회). 아래 압축 결과는 이전 규칙으로 측정한 것이며, 위 I층이 현재 규칙으로 다시 돌린 결과입니다.
 
 ## Format 2 — multi-work scenario (2026-10-06/07, 12 runs)
 
