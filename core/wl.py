@@ -37,7 +37,8 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "summary": "이번 턴에 일어난 일 한두 문장",
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
-  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"}],   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
+  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
+                {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],  # 모델이 제안한 것은 사용자 발언과 같은 save에 있어도 "source": "model"을 붙인다 → [모델]로 표시
   "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],  # 계속 지킬 금지·자료 범위만. 작업량·목표 범위는 decisions에. 해제는 constraints_remove
                                            # "다음 요청까지 작성 보류"처럼 요청이 오면 끝나는 것은 waiting에
                                            # "파일은 만들지 마"·"두 줄로 답해"처럼 이번 턴에만 적용되는 지시는 기록하지 않는다. "외부 게시 금지"처럼 계속 적용되는 것만 제약이다
@@ -51,6 +52,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
                                            # ② "미반영: <이유>" — 작업 방식 제약이나 그림·압축 파일처럼 인용할 수 없는 것. 정상이며 결과의 unreflected에 표시
                                            # 규칙 문장을 본문에 써 넣고 그대로 인용하지 않는다. 그런 인용은 결과의 self_quoted에 표시된다
+                                           # 제약 문장을 본문에 옮겨 적지 않는다(일부만 바꿔 써도 같다). "제약을 반영해 달라"는 본문이 제약을 어기지 않게 쓰라는 뜻이다
 }
 필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
 "기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
@@ -344,7 +346,8 @@ def empty_state():
 
 def apply(state, ev):
     """Pure fold of one event into state. Raises Reject on invalid references.
-    Decisions and constraints carry source = "user" (event type REQUEST/APPROVAL/D_USER) or "model" (any other type)."""
+    Decisions and constraints carry source = "user" (event type REQUEST/APPROVAL/D_USER) or "model" (any other type).
+    A decision may carry its own "source": "model" (a model proposal saved in a user event)."""
     s = json.loads(json.dumps(state))
     c, eid = ev.get("changes", {}), ev["id"]
     source = "user" if ev.get("type") in USER_TYPES else "model"
@@ -363,7 +366,7 @@ def apply(state, ev):
             ids.discard(rep)
         nid = f"D{ev['next_d']}"
         ev["next_d"] += 1
-        item = {"id": nid, "text": d["text"], "event": eid, "source": source}
+        item = {"id": nid, "text": d["text"], "event": eid, "source": d.get("source") or source}
         if rep:
             item["replaces"] = rep
         s["decisions"].append(item)
@@ -528,6 +531,8 @@ def validate(p, root, state):
             not isinstance(x, dict) or not isinstance(x.get("text"), str) or not x["text"]
             or (x.get("replaces") is not None and not isinstance(x["replaces"], str)) for x in decisions):
         raise Reject('decisions는 [{"text": "...", "replaces": "D1"}] 형식입니다(text·replaces는 문자열).')
+    if any(x.get("source") not in (None, "model") for x in decisions):
+        raise Reject('decisions의 source는 "model"만 쓸 수 있습니다(모델 제안 표시). 사용자 결정은 type REQUEST/APPROVAL/D_USER로 저장합니다.')
     if not all(x for x in p.get("constraints", [])):
         raise Reject("constraints에 빈 문자열이 있습니다.")
     arts, bodies = [], []

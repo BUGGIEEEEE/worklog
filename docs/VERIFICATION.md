@@ -21,6 +21,8 @@ Interactive sessions driven through terminal panes: T0 (two works, no selection)
 
 Findings, not applied: (F4) all four Codex runs copied the constraint sentences into the second sentence of the guide and quoted parts of them — the core's `self_quoted` only catches exact matches, and the T3 prompt itself asked to "reflect the constraints in both files", so the prompt invited it; Claude did not. (F5) No run used `D_AGENT`: proposals the model itself labelled "(model suggestion)" were saved inside REQUEST/D_USER events and therefore tagged `[사용자]`. In one astra run that mis-tag surfaced after compaction as a 7-minute breakdown contradicting the 11-minute decision; the model asked before writing, as T3 allowed, so that run ended blocked (1 of 3 identical runs — recorded as probabilistic, no rule change). Codex also stored the turn instruction "no extra Goal, evaluator or Hook" as a constraint (F2 class).
 
+**Applied later the same day (F4, F5).** A decision may now carry its own `"source": "model"`, so a proposal the model makes in the same turn as a user request is tagged `[모델]` inside the user event (`"user"` is rejected; one new unit test, 76 in total). The rules and `SAVE_HELP` now say that constraint sentences are not written into the artifact body even paraphrased, and that "reflect the constraints" means the body must not violate them. Checked with a Codex single-turn scenario that uses the same inducement as T3 plus "propose the 11-minute split yourself": 3 of 3 runs kept the working-method constraints out of the body (unreflected with reasons) and saved the proposal as `[모델]`. Claude was not re-run, and whether this holds after compaction is untested.
+
 ### 한국어
 
 터미널 패널로 구동한 대화형 세션: T0(작업 2개, 지정 없음) → T1 → S(Stop 관찰) → `/compact` → T2 → `/compact` → T3. 아래 12회 매트릭스와 같은 시나리오에 사용자 제약 4개, T3 산출물 2개(`note-guide.md` 정확히 두 문장, `plan.md` 자유 형식). 적용 규칙은 2026-10-09 규칙 + F2 문구(PR #3). 도구별 연기 1회(단일 작업) 뒤 opus-5-5 medium, sonnet-5-5 medium, gpt-6-astra medium ×3, gpt-6.1-sol high. 8/8 재시도 없이 완주, 전부 상한 이내(도구 5~9, 압축 포함 110~178초, Claude 관측 토큰 57~59만은 참고치, Codex 24~31만).
@@ -35,6 +37,8 @@ Findings, not applied: (F4) all four Codex runs copied the constraint sentences 
 | S 단계 Stop 차단 | Claude 2/2 직접 근거, Codex는 간접 추정만 | |
 
 미적용 발견: (F4) Codex 4회 전부 안내문 두 번째 문장에 제약 문장들을 옮겨 적고 일부를 인용했습니다. 코어 `self_quoted`는 완전 일치만 잡고, T3 프롬프트가 "제약을 두 파일 모두에 반영"하라고 해서 유도한 면이 있습니다. Claude는 그러지 않았습니다. (F5) `D_AGENT`를 쓴 회차가 없습니다. 모델이 "(모델 제안)"이라고 적은 것도 REQUEST/D_USER 안에 넣어 `[사용자]`로 표시됐습니다. astra 1회차에서는 이 혼입이 압축 뒤 "7분 배분 vs 11분" 충돌로 드러났고, 모델은 T3가 허용한 대로 쓰기 전에 물었습니다(같은 조건 3회 중 1회, 확률적으로 기록하고 규칙은 유지). Codex는 턴 지시 "별도 Goal·평가기·Hook 사용 금지"도 제약으로 저장했습니다(F2 부류).
+
+**같은 날 늦게 적용(F4·F5).** 결정 항목에 `"source": "model"`을 붙일 수 있게 하여, 사용자 요청과 같은 턴에 모델이 제안한 것은 사용자 사건 안에서도 `[모델]`로 표시됩니다(`"user"`는 거부, 단위 테스트 1개 추가로 76개). 규칙과 `SAVE_HELP`에 "제약 문장은 바꿔 써도 본문에 넣지 않는다, '제약 반영'은 본문이 제약을 어기지 않게 쓰라는 뜻"을 명시했습니다. T3와 같은 유인에 "11분 배분을 직접 제안하라"를 더한 Codex 단일 턴 시나리오 3회 모두 작업 방식 제약을 본문에 넣지 않았고(이유 있는 미반영) 제안을 `[모델]`로 저장했습니다. Claude는 다시 돌리지 않았고, 압축 뒤에도 유지되는지는 미검증입니다.
 
 ## Layer M — single-turn model runs under the 2026-10-09 rules (2026-10-10, 13 runs)
 
