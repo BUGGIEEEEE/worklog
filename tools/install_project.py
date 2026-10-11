@@ -10,7 +10,7 @@ first write; a refusal (a link leading outside --root, a .worklog link, unreadab
 exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup) before change;
 the managed block and Worklog hooks from any earlier install path are replaced idempotently.
 """
-import argparse, datetime, json, os, re, shlex, shutil, subprocess, sys
+import argparse, datetime, hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 SHARED = Path(__file__).resolve().parents[1]
@@ -141,6 +141,23 @@ def hook_settings(path, tool):
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
 
 
+def manifest(worklog, tool):
+    """Write .worklog/install.json[tool] = {version, rules_src_sha, installed_at}: what this copy of the rules was made from.
+    The core compares rules_src_sha with its own adapters/rules.md and warns when they differ (never refuses)."""
+    path = worklog / "install.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    version = json.loads(subprocess.run([sys.executable, "-B", str(WL), "version"], capture_output=True, text=True, check=True).stdout)["version"]
+    data[tool] = {"version": version, "rules_src_sha": hashlib.sha256((SHARED / "adapters" / "rules.md").read_bytes()).hexdigest(),
+                  "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    return path
+
+
 def plan(root, tool, worklog_dir, when):
     """All checks and contents before any write: ([(path, text, backup or None)], .worklog to create or None)."""
     if tool == "claude":
@@ -186,6 +203,9 @@ def main():
             write(path, text, backup)
         if worklog:
             worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
+        wl_dir = root / ".worklog"
+        if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
+            changes.append(str(manifest(wl_dir, a.tool)))
     print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes,
                       "next": "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"}, ensure_ascii=False, indent=1))
 

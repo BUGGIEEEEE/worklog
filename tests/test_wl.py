@@ -1,4 +1,4 @@
-import fcntl, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
+import fcntl, hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
@@ -454,6 +454,10 @@ class CoreTest(unittest.TestCase):
         self.assertIn("| PROVIDED |", out["additionalContext"])  # 설치된 Hook이 기록 있는 현재 작업을 주입
         self.assertIn("C1: 게시 금지", out["additionalContext"])
         self.assertTrue((self.root / ".claude/skills/worklog/SKILL.md").exists())
+        manifest = json.loads((self.root / ".worklog/install.json").read_text())["claude"]  # 2단계: 설치 원본 해시 기록
+        self.assertEqual(manifest["rules_src_sha"], hashlib.sha256((inst.parents[1] / "adapters/rules.md").read_bytes()).hexdigest())
+        self.assertEqual(manifest["version"], json.loads(run(self.root, "version")[1])["version"])
+        self.assertNotIn("warning_install", json.loads(run(self.root, "skip", extra=("x",), session="x", tool="claude")[1]))
         backups = list(self.root.glob("CLAUDE.md.bak-worklog-*"))
         self.assertEqual(len(backups), 1)  # 날짜·시각 붙은 백업, 두 번째 실행은 변경 없음
         self.assertEqual(backups[0].read_text(), "# 기존 내용\n")
@@ -702,6 +706,51 @@ class Base(unittest.TestCase):
 
     def snapshot(self):
         return {str(p.relative_to(self.d)): p.read_bytes() for p in sorted(self.d.rglob("*")) if p.is_file()}
+
+
+class InstallWarningTest(Base):
+    """2단계: .worklog/install.json의 rules_src_sha가 코어의 adapters/rules.md와 다르면 경고만 붙는다."""
+    def manifest(self, sha, tool="codex", version="2.1.0"):
+        (self.d / "install.json").write_text(json.dumps({tool: {"version": version, "rules_src_sha": sha, "installed_at": "x"}}))
+
+    def test_install_warning_on_stale_copy(self):
+        self.ok(new_work(self.root, "t"))
+        self.manifest("0" * 64)
+        out = self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        self.assertIn("설치 당시(v2.1.0)", out["warning_install"])
+        self.assertIn("install_project.py", out["warning_install"])
+        self.assertIn("warning_install", self.ok(run(self.root, "skip", extra=("이유",))))
+        self.assertIn("warning_install", self.ok(run(self.root, "verify", extra=("--all",)))["hooks"])
+        self.assertIn("[Worklog 사본 경고]", self.used(run(self.root, "use", extra=("t", "--quote", "t 이어서")), "t"))
+        self.assertIn("[Worklog 사본 경고]", self.ctx(tool="codex"))
+        self.assertNotIn("[Worklog 사본 경고]", self.ctx(tool="claude"))  # 다른 도구의 항목은 보지 않는다
+
+    def test_install_warning_absent_without_manifest(self):
+        self.ok(new_work(self.root, "t"))
+        payload = {"type": "REQUEST", "summary": "x", "quote": "q"}
+        self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 파일 없음
+        (self.d / "install.json").write_text("{not json")
+        self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 깨진 JSON
+        (self.d / "install.json").write_text(json.dumps({"codex": "oops"}))
+        self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 항목이 객체가 아님
+        current = hashlib.sha256((WL.parents[1] / "adapters" / "rules.md").read_bytes()).hexdigest()
+        self.manifest(current)
+        self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 같은 해시
+        self.assertNotIn("사본 경고", self.ctx(tool="codex"))
+
+    def test_strip_source_tags_in_text(self):
+        """F6: 글자로 적힌 [사용자]/[모델]은 지우고 코어가 출처를 붙인다."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q",
+                                        "decisions": [{"text": "[사용자] 11분"}, {"text": "3·5·3분 [모델]", "source": "model"}],
+                                        "constraints": ["[모델] 게시 금지 [모델]"]}))
+        st = json.loads((self.d / "works/t/state.json").read_text())
+        self.assertEqual([(x["text"], x["source"]) for x in st["decisions"]], [("11분", "user"), ("3·5·3분", "model")])
+        self.assertEqual([(x["text"], x["source"]) for x in st["constraints"]], [("게시 금지", "user")])
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("- D1: 11분 [사용자]", md)
+        self.assertIn("- C1: 게시 금지 [사용자]", md)
+        self.refused(run(self.root, "save", {"type": "RESULT", "summary": "y", "decisions": [{"text": "[모델]"}]}), "비어 있습니다")
 
 
 class WorksTest(Base):

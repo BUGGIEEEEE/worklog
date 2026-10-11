@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.1.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.2.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -200,6 +200,39 @@ def mark_hook(d, who, name):
     update_session(d, *who, hooks_seen=seen)
 
 
+RULES_SRC = Path(__file__).resolve().parents[1] / "adapters" / "rules.md"
+INSTALLER = Path(__file__).resolve().parents[1] / "tools" / "install_project.py"
+SOURCE_TAG = re.compile(r"^(?:\s*\[(?:사용자|모델)\]\s*)+|(?:\s*\[(?:사용자|모델)\]\s*)+$")
+
+
+def strip_source_tag(text):
+    """F6: the core adds [사용자]/[모델] itself; literal tags at either end of a decision/constraint text are dropped."""
+    return SOURCE_TAG.sub("", text).strip()
+
+
+def rules_src_sha():
+    try:
+        return hashlib.sha256(RULES_SRC.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def install_report(d, tool):
+    """{"warning_install": ...} when .worklog/install.json says this tool's rules copy was made from a different adapters/rules.md.
+    Anything missing or broken (no manifest, bad JSON, no entry, no adapters) means no warning and no error."""
+    try:
+        entry = json.loads((d / "install.json").read_text(encoding="utf-8")).get(tool)
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(entry, dict):
+        return {}
+    recorded, current = entry.get("rules_src_sha"), rules_src_sha()
+    if not (isinstance(recorded, str) and current) or recorded == current:
+        return {}
+    return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
+                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} --root {shlex.quote(str(d.parent))} 를 다시 실행하세요."}
+
+
 def hooks_report(d, tool, sid):
     """{"hooks": {...}} for JSON results, plus "warning" when this session has no UserPromptSubmit hook record.
     Pi has no hooks, so nothing is reported for it."""
@@ -213,12 +246,19 @@ def hooks_report(d, tool, sid):
     out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
     if "UserPromptSubmit" not in seen:
         out["warning"] = HOOK_WARNING
+    out.update(install_report(d, tool))
     return out
 
 
 def hooks_note(d, who):
     """Text warning line for use (text output) when hooks look inactive."""
-    return f"[Worklog Hook 경고] {HOOK_WARNING}\n" if who and "warning" in hooks_report(d, *who) else ""
+    if not who:
+        return ""
+    report = hooks_report(d, *who)
+    note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
+    if "warning_install" in report:
+        note += f"[Worklog 사본 경고] {report['warning_install']}\n"
+    return note
 
 
 # --- 작업 목록 (index.json) ---
@@ -596,7 +636,10 @@ def cmd_save(args):
         elif not events and "goal" not in changes:  # 첫 저장에 목표가 없으면 작업 제목
             changes["goal"] = title
         ignored = []
-        if "constraints" in changes:
+        if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
+            changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
+            if any(not t for t in changes["constraints"]):
+                raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
             have = {norm(x["text"]) for x in state["constraints"]}
             keep = []
             for t in changes["constraints"]:
@@ -604,6 +647,10 @@ def cmd_save(args):
                 have.add(norm(t))
             changes["constraints"] = keep
         if "decisions" in changes:
+            for item in changes["decisions"]:
+                item["text"] = strip_source_tag(item["text"])
+                if not item["text"]:
+                    raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
             have = {norm(x["text"]) for x in state["decisions"]}
             keep = []
             for item in changes["decisions"]:
@@ -877,8 +924,9 @@ def verify_result(d, args, index):
         report = hooks_report(d, *who)
         if report:
             result["hooks"] = {"session": f"{who[0]}:{who[1]}", **report["hooks"]}
-            if "warning" in report:
-                result["hooks"]["warning"] = report["warning"]
+            for key in ("warning", "warning_install"):
+                if key in report:
+                    result["hooks"][key] = report[key]
     return result
 
 
@@ -1051,6 +1099,10 @@ def cmd_hook(args):
     except (Reject, OSError, ValueError) as e:
         text, status = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE"
     head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
+    if who:
+        stale = install_report(d, who[0])
+        if stale:
+            head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
                      ensure_ascii=False))
 
