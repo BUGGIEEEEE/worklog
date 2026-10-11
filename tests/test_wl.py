@@ -1,4 +1,4 @@
-import fcntl, importlib.util, io, json, os, shlex, shutil, subprocess, sys, tempfile, time, unittest
+import fcntl, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
@@ -47,6 +47,20 @@ def new_work(root, title="t", session="s1", tool="codex", quote="새 작업"):
 
 def use(root, wid="t", session="s1", tool="codex", quote="이어서"):
     return run(root, "use", session=session, tool=tool, extra=[wid, "--quote", quote])
+
+
+class VersionTest(unittest.TestCase):
+    def test_version_matches_changelog(self):
+        """`wl.py version` works without a .worklog and its number is the first `## x.y.z` in CHANGELOG.md."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = run(Path(tmp), "version")
+        self.assertEqual(rc, 0)
+        info = json.loads(out)
+        changelog = (WL.parents[1] / "CHANGELOG.md").read_text()
+        first = re.search(r"^## (\d+\.\d+\.\d+)", changelog, re.M)
+        self.assertIsNotNone(first, "CHANGELOG.md needs a `## x.y.z` heading")
+        self.assertEqual(info["version"], first.group(1))
+        self.assertEqual(info["format"], "worklog/2")
 
 
 class CoreTest(unittest.TestCase):

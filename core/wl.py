@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
+VERSION = "2.1.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -677,6 +678,11 @@ def need_quote(args, usage, said="작업을 지정한"):
         raise Reject(f"사용자 원문이 필요합니다: {usage}. 사용자가 {said} 말을 그대로 --quote에 넣으세요.")
 
 
+def cmd_version(args):
+    """설치 확인용: 코어 버전과 원장 형식. .worklog 없이도 동작한다."""
+    print(json.dumps({"version": VERSION, "format": FORMAT}))
+
+
 def cmd_works(args):
     d = store(args.root)
     index = (load_index(d) if d.is_dir() else None) or {"works": {}}
@@ -1098,7 +1104,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어 (형식 2)")
     commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
                 "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
-                "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook}
+                "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook,
+                "version": cmd_version}
     ap.add_argument("command", choices=[*commands, "help"])
     ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목")
     ap.add_argument("--root")
@@ -1111,7 +1118,7 @@ def main(argv=None):
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root = args.root or os.getcwd()
     if args.command == "help":
-        print(SAVE_HELP)
+        print(f"worklog core {VERSION} (format {FORMAT})\n" + SAVE_HELP)
         return
     try:
         if args.command in ("archive", "reopen") and not args.arg:

@@ -46,6 +46,8 @@ python3 -B worklog/tools/install_project.py --tool claude --root /path/to/projec
 python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project
 ```
 
+Check the install: `python3 -B worklog/core/wl.py version` prints the core version (see `CHANGELOG.md`).
+
 Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project and backs up every file it changes.
 
 ## Good to know
