@@ -46,6 +46,8 @@ python3 -B worklog/tools/install_project.py --tool claude --root /프로젝트/�
 python3 -B worklog/tools/install_project.py --tool codex  --root /프로젝트/경로
 ```
 
+설치 확인: `python3 -B worklog/core/wl.py version`이 코어 버전을 출력합니다(`CHANGELOG.md` 참고).
+
 필요한 것: Python 3.9 이상(3.9.6과 3.14에서 시험), macOS 또는 Linux. 클론 폴더는 옮기지 마세요(Hook이 그 경로를 부릅니다). 설치기는 프로젝트 안에만 쓰고, 바꾸는 파일은 백업합니다.
 
 ## 알아 둘 것
