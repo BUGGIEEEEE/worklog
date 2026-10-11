@@ -1,4 +1,4 @@
-import fcntl, importlib.util, io, json, os, shlex, shutil, subprocess, sys, tempfile, time, unittest
+import fcntl, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
