@@ -67,6 +67,10 @@ class VersionTest(unittest.TestCase):
         self.assertIsNotNone(first, "CHANGELOG.md needs a `## x.y.z` heading")
         self.assertEqual(info["version"], first.group(1))
         self.assertEqual(info["format"], "worklog/2")
+        heads = [tuple(map(int, m.split("."))) for m in re.findall(r"^## (\d+\.\d+\.\d+)", changelog, re.M)]
+        for newer, older in zip(heads, heads[1:]):  # 번호 규칙: 바로 앞 항목에서 정확히 한 자리만 오른다(건너뜀 금지)
+            x, y, z = older
+            self.assertIn(newer, [(x + 1, 0, 0), (x, y + 1, 0), (x, y, z + 1)], f"{older} → {newer}")
 
 
 class CoreTest(unittest.TestCase):
@@ -791,7 +795,8 @@ class CoreWarningTest(Base):
     def test_core_warning_absent_for_old_or_equal_events(self):
         self.ok(new_work(self.root, "t"))
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
-        for value in (None, "2.0.0", "garbage"):  # core 없음(옛 사건)·더 낮음·해석 불가
+        x, y, z = map(int, load_wl().VERSION.split("."))
+        for value in (None, "2.0.0", "garbage", f"{x}.{y}.{z + 1}"):  # core 없음(옛 사건)·더 낮음·해석 불가·끝 번호만 더 큼
             self.rewrite_last_core(value)
             self.assertNotIn("코어 경고", run(self.root, "show")[1], value)
             self.assertNotIn("warning_core", self.ok(run(self.root, "verify")), value)
