@@ -37,6 +37,7 @@ Claude Code and Codex share the same `.worklog/`.
 | Install | commands below. Codex: trust the project and the 3 hooks in `/hooks`. Claude Code: accept the folder-trust dialog if the project is a git repository |
 | First session | `새 작업: <title>` |
 | Later sessions | pick from the list: `<id> 이어서` |
+| Delegating | Subagent in the same session: put "do not run Worklog commands (use·save·skip)" in its prompt; the delegating session records the result in the same turn (`[위임: …]`, files as artifacts+check). Separate session: open it with the hooks and start it with `<id> 이어서. 하위 작업: <name>`; it records by itself, and the opener adopts the result after `show` |
 | Pause | `워크로그 꺼` ("worklog off", whole project). `워크로그 켜` resumes. Nothing is recorded while off |
 | Update | a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. Nothing changes by itself: run `python3 -B worklog/core/wl.py update` to fast-forward to the newest tag of the same major version and reinstall the current project; `update rollback` goes back; `update --mode off` silences the line. A new major version is announced only. Hooks stay unchanged, so no re-trust |
 
