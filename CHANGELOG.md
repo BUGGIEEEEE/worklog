@@ -1,9 +1,19 @@
 # Changelog
 
 Tags are set by the author only; an external PR gets a tag only after the author merges and reviews it.
-Numbering: a ledger-structure change bumps `FORMAT` and the major number (3.0.0, with a migration script); every other change bumps the minor number (2.2.0). `python3 -B core/wl.py version` prints the installed number.
+Numbering x.y.z — decided by *what changed*, never by what the user has to do afterwards. A unit test keeps `VERSION` equal to the first heading below and every heading exactly one step above the previous one.
+- **x (major)**: the ledger structure changes (`FORMAT`, e.g. `worklog/2` → `worklog/3`). Ships with a migration script. `update` never crosses this line by itself.
+- **y (minor)**: anything the model can notice changes — what the core writes (ledger fields), refuses or shows (JSON keys and values, injection lines, refusal and warning text), what the installer writes, `update.py`, and the model-facing rules (`adapters/rules.md`, `SAVE_HELP`). Touching the rules file is always y, even for a typo, so nobody has to argue what counts. Rule of thumb: if an existing test expectation must change, it is at least y.
+- **z (patch)**: everything the model cannot notice — comments, refactors with identical output, tests only, text meant for people (stderr, docstrings). Cores that differ only in z read each other's ledgers without `warning_core`.
+- Docs only (README, docs/, this file): no new number, no tag.
+`python3 -B core/wl.py version` prints the installed number.
 
-tag는 작성자만 붙인다. 번호: 원장 구조 변경 = FORMAT과 주 번호(3.0.0, 마이그레이션 동반), 그 외 = 부 번호(2.2.0). `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
+tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정한다(사용자가 할 일로 정하지 않는다). 단위 테스트가 `VERSION` = 아래 첫 제목, 그리고 모든 제목이 바로 앞 제목보다 정확히 한 자리만 큰지 지킨다.
+- **x(주)**: 원장 구조 변경(`FORMAT`, 예: `worklog/2` → `worklog/3`). 마이그레이션 스크립트 동반. `update`는 이 경계를 스스로 넘지 않는다.
+- **y(부)**: 모델이 알아챌 수 있는 변경 — 코어가 쓰는 것(기록 필드), 거부하는 것, 보여 주는 것(JSON 키·값, 주입 줄, 거부·경고 문장), 설치기가 쓰는 파일, `update.py`, 모델이 읽는 규칙(`adapters/rules.md`, `SAVE_HELP`). 규칙 파일은 오타 수정이라도 항상 y다(무엇이 해당하는지 다투지 않기 위해). 판정 요령: 기존 테스트의 기대값을 고쳐야 하면 최소 y.
+- **z(끝)**: 모델이 알아챌 수 없는 변경 — 주석, 출력이 같은 리팩터, 테스트만, 사람이 보는 글(stderr, docstring). z만 다른 코어끼리는 서로의 기록을 `warning_core` 없이 읽는다.
+- 문서만(README, docs/, 이 파일): 번호·tag 없음.
+`python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
 ## 2.5.0 — 2026-10-12
 Update notifications only: the `auto` mode is gone. `update.py background` (started detached once a day by SessionStart) now only fetches tags and writes the cache; nothing changes files on its own. The rules copy is no longer reinstalled at session start (a stale copy keeps the 2.2.0 warning line with the install command). Modes: `notify` (default for a git clone) | `off`. Applying is always by hand: `wl.py update` (fast-forward to the newest tag of the same major, refuses a dirty tree, reverts on version mismatch, reinstalls the current project), `update rollback`, `update check`. A clone that already runs 2.4.0 in auto mode applies 2.5.0 once by itself and is notify-only from then on.
