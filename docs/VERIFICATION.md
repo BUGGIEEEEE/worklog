@@ -4,6 +4,40 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Delegation rule (2.8.0) — subagent vs separate session (2026-10-13, 23 model runs + 2 real uses)
+
+### English
+
+The 2.8.0 rule splits delegation in two. **Subagent** (same session): the delegation prompt says "do not run Worklog commands (use·save·skip)", the delegating session saves in the same turn with `[위임: …]` at the head of the summary (never inside decision or constraint text), files as artifacts+check, proposals as `source: model`. **Separate session**: opened with the hooks running, first prompt `"<id> 이어서. 하위 작업: <name>"`, no forbid line (the sub-session saves by itself), same goal → same work id, independent goal → `새 작업:` with the parent id in the summary; the opener skips while the sub runs, then `show` and an adopt-save; if the sub ended without saving, the opener saves instead and notes "하위 세션 기록 없음". 2.7.0 had applied the forbid line and same-turn save to both cases, which made the separate-session half impossible to follow. All runs below used the 2.8.0 branch before merge (`WL_SHARED`).
+
+| Layer / cell | Runs | Result |
+|---|---|---|
+| M7 subagent (Claude opus) | 3 | 3/3: forbid line, single save, proposals `[모델]` |
+| M8 separate session, same goal (Claude opus / Codex astra, sub opened through Herdr with the same tool) | 3 + 3 | 6/6: turn 1 skip (0 saves), sub saved by itself with artifacts+check, turn 2 adopt-save (1) |
+| M8b separate session, independent goal | 2 + 2 | clause observed 4/4 (`새 작업:` + parent id); machine 0/4 for non-rule reasons (prompt design ×2, delegation noted on the parent work ×1 — allowed by the text, sub asked about constraint inheritance ×1) |
+| M9 fallback (sub ended without events) | 2 + 2 | 4/4: `[위임:]` + "하위 세션 기록 없음", artifacts+check, single save |
+| I5 two compactions, then a delegating turn (Claude subagent / Codex Herdr session) | 1 + 1 smoke, 3 + 3 | delegation 8/8; Layer I criteria 1·4·5, F4, F5 unchanged (8/8). Codex ran with the user's full-access setting (an approval prompt blocks the Herdr socket); its tool/time counts exceed the reference caps because of the Herdr commands |
+| Real project, subagent (Claude, 2026-10-12, rule 2.7.0 = same subagent text) | 1 | PASS: one save, `[위임:]`, artifacts+check, no Worklog call by the subagent |
+| Real project, separate session (Claude main + Herdr Claude sub, 2026-10-13) | 1 | PASS by hand: turn 1 `use` → Herdr tab + Claude sub → `skip` (0 saves); the sub saved E0192 by itself (artifacts+check); turn 2 `[위임:]` adopt-save (1 event, decision `source: model`). The opener's adopt-save carried no artifact entry (the sub had recorded it) — the rule does not require re-recording |
+
+Not shown by this: "always" (2–3 runs per cell), Codex subagents (no tool), the path where the opener waits inside the turn (seen only in the real uses, not in M8). Two Codex I5 runs saved a harness instruction ("no separate Goal / extra evaluator / Hook") as a fifth constraint in T1, before any delegation; the constraint wording has not changed since 2.2.0, so this is interpretation variance, not an effect of 2.8.0. Evidence: `worklog-control/shared/runs/m-20261013-delegation2/RESULTS.md`, `runs/I5-RESULTS.md`, `runs/real-delegation2-20261013/`.
+
+### 한국어
+
+2.8.0 규칙은 위임을 둘로 나눕니다. **서브에이전트**(같은 세션): 위임 프롬프트에 "Worklog 명령(use·save·skip)은 실행하지 않는다"를 넣고, 시킨 세션이 같은 턴에 summary 첫머리 `[위임: …]`(결정·제약 글자에는 쓰지 않음)로 save, 파일은 artifacts+check, 제안은 `source: model`. **별도 세션**: Hook이 도는 방식으로 열고 첫 프롬프트는 `"<id> 이어서. 하위 작업: <이름>"`, 금지문 없음(하위가 스스로 save), 같은 목표면 같은 작업 id, 독립 목표만 `새 작업:` + summary에 상위 id. 연 세션은 하위가 도는 동안 skip, 끝나면 `show` 뒤 채택 save, 하위가 save 없이 끝나면 대신 save하고 "하위 세션 기록 없음"을 적습니다. 2.7.0은 금지문과 같은 턴 save를 두 경우 모두에 적용해 별도 세션 쪽을 따를 수 없었습니다. 아래 회차는 모두 병합 전 2.8.0 브랜치(`WL_SHARED`)로 돌렸습니다.
+
+| 층 / 셀 | 회차 | 결과 |
+|---|---|---|
+| M7 서브에이전트(Claude opus) | 3 | 3/3: 금지문, save 1건, 제안 `[모델]` |
+| M8 별도 세션·같은 목표(Claude opus / Codex astra, 하위는 Herdr로 같은 도구) | 3 + 3 | 6/6: 1턴 skip(save 0) → 하위가 artifacts+check로 스스로 save → 2턴 채택 save 1건 |
+| M8b 별도 세션·독립 목표 | 2 + 2 | 조항 4/4 관찰(`새 작업:` + 상위 id). 기계 0/4는 비규칙 원인(프롬프트 설계 2, 상위 작업에 위임 기록 1 = 문장상 허용, 하위가 제약 승계 질문 1) |
+| M9 대체 save(하위가 사건 없이 끝남) | 2 + 2 | 4/4: `[위임:]` + "하위 세션 기록 없음", artifacts+check, save 1건 |
+| I5 압축 2회 뒤 위임 턴(Claude 서브에이전트 / Codex Herdr 세션) | 연기 1 + 1, 본 3 + 3 | 위임 8/8. I층 기준 1·4·5, F4·F5 동일(8/8). Codex는 사용자 설정(full access) 유지(승인 요청이 Herdr 소켓을 막음), Herdr 명령 때문에 도구·시간 참고 상한 초과 |
+| 실제 프로젝트, 서브에이전트(Claude, 2026-10-12, 2.7.0 = 같은 서브에이전트 문장) | 1 | PASS: save 1건, `[위임:]`, artifacts+check, 서브에이전트의 Worklog 호출 0 |
+| 실제 프로젝트, 별도 세션(Claude 메인 + Herdr Claude 하위, 2026-10-13) | 1 | 사람 PASS: 1턴 `use` → Herdr 탭 + Claude 하위 → `skip`(save 0), 하위가 E0192를 스스로 save(artifacts+check), 2턴 `[위임:]` 채택 save 1건(결정 `source: model`). 연 세션의 채택 save에는 artifacts가 없음(하위가 기록) — 규칙은 재기록을 요구하지 않음 |
+
+이 결과가 보여 주지 않는 것: "항상"(셀당 2~3회), Codex 서브에이전트(도구 없음), 연 세션이 턴 안에서 기다리는 경로(M8이 아니라 실사용에서만 관찰). Codex I5 2회는 위임 전 T1에서 실행 지시("별도 Goal·추가 평가기·Hook 사용 금지")를 다섯째 제약으로 저장했는데, 제약 규칙 문장은 2.2.0 이후 바뀌지 않았으므로 2.8.0의 효과가 아니라 해석 편차입니다. 근거: `worklog-control/shared/runs/m-20261013-delegation2/RESULTS.md`, `runs/I5-RESULTS.md`, `runs/real-delegation2-20261013/`.
+
 ## Layer I — interactive runs with two compactions under the current rules (2026-10-10, 6 runs + 2 smoke)
 
 ### English
