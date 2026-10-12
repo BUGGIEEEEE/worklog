@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.7.0 — 2026-10-12
+Delegation rule (rules.md, `SAVE_HELP`): when a subagent or a separate session does the work, the session that was given the work saves in the same turn, tells the delegate not to run Worklog commands, starts the summary with `[위임: …]` (never in decision or constraint text), records the delegate's files as artifacts with checks and its proposals as `"source": "model"`. Separate sessions are opened with hooks running and a first prompt of `"<work id> 이어서. 하위 작업: <name>"`; the same goal keeps the same work id; the opening session skips instead of saving while the sub-session runs, then reads with `show` and saves what it adopts. Core unchanged.
+위임 규칙(rules.md, `SAVE_HELP`): 서브에이전트나 별도 세션이 일을 하면 작업을 지정받은 세션이 같은 턴에 save하고, 위임 프롬프트에 Worklog 명령 금지를 넣고, summary 첫머리에 `[위임: …]`(결정·제약 글자에는 금지), 만든 파일은 artifacts+check, 제안은 `"source": "model"`. 별도 세션은 Hook이 도는 방식으로 열고 첫 프롬프트를 `"<작업 id> 이어서. 하위 작업: <이름>"`으로 시작한다. 같은 목표는 같은 작업 id. 하위 세션이 도는 동안 여는 세션은 skip, 끝나면 `show` 뒤 채택 여부 save. 코어 불변.
+
 ## 2.6.0 — 2026-10-12
 `warning_core` now compares only the major and minor numbers: by the numbering rule a patch-only difference changes nothing the model can notice, so a 2.6.1 ledger no longer warns a 2.6.0 core. A unit test checks that every CHANGELOG heading is exactly one step above the previous one.
 `warning_core`가 주·부 번호만 비교한다. 번호 규칙상 끝 번호만 다른 코어는 모델이 알아챌 변경이 없으므로, 2.6.1이 쓴 기록을 2.6.0이 읽어도 경고하지 않는다. CHANGELOG의 모든 제목이 바로 앞 제목보다 정확히 한 자리만 큰지 단위 테스트가 확인한다.
