@@ -38,7 +38,7 @@ Claude Code와 Codex는 같은 `.worklog/`를 함께 씁니다.
 | 첫 세션 | `새 작업: <제목>` |
 | 다음 세션 | 목록에서 골라 `<id> 이어서` |
 | 잠시 끄기 | `워크로그 꺼` (그 프로젝트 전체). `워크로그 켜`로 복귀. 꺼진 동안은 기록 없음 |
-| 업데이트 | git clone이면 자동: 하루 한 번 세션 시작 때 배경에서 origin의 tag를 확인하고 같은 주 번호의 최신 tag로 fast-forward 한다. 다음 세션이 한 줄로 알리고 규칙 사본을 다시 설치한다. 끄거나 알림만 받으려면 `python3 -B worklog/core/wl.py update --mode notify`(또는 `off`). `update`는 수동 적용, `update rollback`은 되돌리기. 새 주 버전은 알리기만 하고 자동 적용하지 않는다. Hook은 그대로라 재신뢰 없음 |
+| 업데이트 | git clone이면 하루 한 번 세션 시작 때 배경에서 origin의 tag를 확인하고(기다리지 않음), 새 버전이 있으면 다음 세션이 한 줄로 알린다. 스스로 바꾸는 것은 없다: `python3 -B worklog/core/wl.py update`를 치면 같은 주 번호의 최신 tag로 fast-forward 하고 현재 프로젝트를 재설치한다. `update rollback`은 되돌리기, `update --mode off`는 알림 끄기. 새 주 버전은 알리기만 한다. Hook은 그대로라 재신뢰 없음 |
 
 ```sh
 git clone https://github.com/BUGGIEEEEE/worklog.git

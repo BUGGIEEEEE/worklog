@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.4.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.5.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -251,11 +251,11 @@ def core_report(events):
     return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
 
 
-# --- 갱신 (tools/update.py가 한다. Hook은 캐시 파일만 읽고, 하루 한 번 배경 검사를 띄울 뿐 기다리지 않는다) ---
+# --- 갱신 알림 (tools/update.py가 한다. Hook은 캐시 파일만 읽고, 하루 한 번 배경 검사를 띄울 뿐 기다리지 않는다. 적용은 사용자가 `update`를 칠 때만) ---
 
 UPDATE_PY = Path(__file__).resolve().parents[1] / "tools" / "update.py"
 WL_HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
-UPDATE_MODES = ("auto", "notify", "off")
+UPDATE_MODES = ("notify", "off")
 CHECK_EVERY = datetime.timedelta(hours=24)
 
 
@@ -268,9 +268,9 @@ def home_json(name):
 
 
 def update_mode():
-    """auto by default for a git clone of the repo; a plain copy (no .git) is never updated by itself."""
+    """notify by default for a git clone of the repo; a plain copy (no .git) has nothing to check."""
     m = home_json("config.json").get("update")
-    return m if m in UPDATE_MODES else ("auto" if (UPDATE_PY.parents[1] / ".git").exists() else "off")
+    return m if m in UPDATE_MODES else ("notify" if (UPDATE_PY.parents[1] / ".git").exists() else "off")
 
 
 def recent(stamp, within=CHECK_EVERY):
@@ -282,7 +282,7 @@ def recent(stamp, within=CHECK_EVERY):
 
 
 def spawn_update_check():
-    """SessionStart: start `update.py background` detached at most once a day. Never waits, never fails the hook.
+    """SessionStart: start `update.py background` (fetch + cache only) detached at most once a day. Never waits, never fails the hook.
     The cache's checked_at is claimed first so parallel sessions do not start it twice."""
     try:
         if update_mode() == "off" or not UPDATE_PY.is_file():
@@ -315,30 +315,15 @@ def update_note():
     if latest and (parse_version(latest) or (0,)) > (parse_version(VERSION) or (0,)):
         if cache.get("error"):
             return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
-        if mode == "auto":
-            return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION})을 배경에서 적용 중이다. 다음 세션부터 쓰인다.\n"
         return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
     return ""
 
 
-def auto_reinstall(d, tool):
-    """auto mode: a stale rules copy is reinstalled on the spot (local, backs up the old files). Returns the line to inject."""
-    try:
-        p = subprocess.run([sys.executable, "-B", str(INSTALLER), "--tool", tool, "--root", str(d.parent)],
-                           capture_output=True, text=True, timeout=8)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if p.returncode != 0 or install_report(d, tool):
-        return ""
-    return (f"[Worklog 규칙 갱신] 규칙 사본을 코어 {VERSION}에 맞춰 다시 설치했다(이전 파일은 *.bak-worklog-* 백업). "
-            "새 규칙은 다음 세션부터 읽힌다.\n")
-
-
 def cmd_update(args):
-    """update [check|rollback] [--mode auto|notify|off]: runs tools/update.py and prints its JSON."""
+    """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
     action = args.arg or "apply"
     if action not in ("check", "apply", "rollback"):
-        raise Reject("update 형식: update [check|rollback] [--mode auto|notify|off]")
+        raise Reject("update 형식: update [check|rollback] [--mode notify|off]")
     cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
     if args.mode:
         cmd += ["--mode", args.mode]
@@ -1222,7 +1207,7 @@ def cmd_hook(args):
     if who:
         stale = install_report(d, who[0])
         if stale:
-            head += (auto_reinstall(d, who[0]) if update_mode() == "auto" else "") or f"[Worklog 사본 경고] {stale['warning_install']}\n"
+            head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
                      ensure_ascii=False))
 
@@ -1280,7 +1265,7 @@ def main(argv=None):
                 "version": cmd_version, "update": cmd_update}
     ap.add_argument("command", choices=[*commands, "help"])
     ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목 / update의 check·rollback")
-    ap.add_argument("--mode", choices=UPDATE_MODES, help="update: 갱신 방식 설정(auto·notify·off)")
+    ap.add_argument("--mode", choices=UPDATE_MODES, help="update: 갱신 알림 방식 설정(notify·off)")
     ap.add_argument("--root")
     ap.add_argument("--tool")
     ap.add_argument("--session")
