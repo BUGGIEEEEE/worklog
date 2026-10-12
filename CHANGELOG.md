@@ -5,6 +5,10 @@ Numbering: a ledger-structure change bumps `FORMAT` and the major number (3.0.0,
 
 tag는 작성자만 붙인다. 번호: 원장 구조 변경 = FORMAT과 주 번호(3.0.0, 마이그레이션 동반), 그 외 = 부 번호(2.2.0). `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.4.0 — 2026-10-12
+Self-update for git clones: `tools/update.py` fetches tags from origin and fast-forwards to the newest tag of the current major version (a newer major is announced, never applied). Mode in `~/.worklog/config.json` (`"update": "auto"|"notify"|"off"`; a clone defaults to auto, a plain copy to off). The SessionStart hook never touches the network: once a day it starts `update.py background` detached, and it only reads the cache `~/.worklog/update.json` to add one line (update applied / available / failed / newer major). In auto mode a stale rules copy is reinstalled at SessionStart (local, backs up the old files). `wl.py update [check|rollback] [--mode M]` runs it by hand and reinstalls the current project. `WL_HOME` overrides the state folder (tests).
+git clone 사용자용 자가 갱신: `tools/update.py`가 origin의 tag를 받아 현재 주 번호의 최신 tag로 fast-forward 한다(더 높은 주 번호는 알리기만 하고 적용하지 않는다). 방식은 `~/.worklog/config.json`의 `"update"`(auto·notify·off; clone 기본 auto, 복사본 기본 off). SessionStart Hook은 네트워크를 쓰지 않는다: 하루 한 번 `update.py background`를 분리 실행만 하고, 캐시 `~/.worklog/update.json`만 읽어 한 줄(적용됨·있음·실패·새 주 버전)을 붙인다. auto에서는 오래된 규칙 사본을 SessionStart에서 다시 설치한다(로컬, 백업 생성). `wl.py update [check|rollback] [--mode M]`은 수동 실행이며 현재 프로젝트를 재설치한다. `WL_HOME`으로 상태 폴더를 바꿀 수 있다(테스트용).
+
 ## 2.3.0 — 2026-10-12
 Every new event records the core that wrote it (`"core": "2.3.0"`). When a ledger holds an event written by a newer core, show/use text, save results and verify results carry `warning_core` (never refuses; events without `core` never warn). Prepares older copies to notice a newer one before external users exist. No reinstall needed.
 새 사건마다 쓴 코어 번호(`"core": "2.3.0"`)를 기록한다. 더 새 코어가 쓴 사건이 있으면 show·use 텍스트, save·verify 결과에 `warning_core`를 붙인다(거부 없음, `core` 없는 옛 사건은 경고 없음). 외부 사용자가 생기기 전에 옛 사본이 새 사본을 알아차리게 하는 준비. 재설치 불필요.

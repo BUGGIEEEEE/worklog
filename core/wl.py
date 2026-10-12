@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Worklog shared core (format 2): several works per project, one append-only event log per work.
 
-Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | off | on | help | hook | turn-start | stop-hook
+Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | off | on | version | update | help | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
            sessions/<tool>_<session>.json, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
 Standard library only. Never runs business commands.
 """
-import argparse, datetime, fcntl, hashlib, json, os, re, shlex, sys, uuid
+import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.3.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.4.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -249,6 +249,103 @@ def core_report(events):
         return {}
     top = max(newer, key=parse_version)
     return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
+
+
+# --- 갱신 (tools/update.py가 한다. Hook은 캐시 파일만 읽고, 하루 한 번 배경 검사를 띄울 뿐 기다리지 않는다) ---
+
+UPDATE_PY = Path(__file__).resolve().parents[1] / "tools" / "update.py"
+WL_HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
+UPDATE_MODES = ("auto", "notify", "off")
+CHECK_EVERY = datetime.timedelta(hours=24)
+
+
+def home_json(name):
+    try:
+        value = json.loads((WL_HOME / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def update_mode():
+    """auto by default for a git clone of the repo; a plain copy (no .git) is never updated by itself."""
+    m = home_json("config.json").get("update")
+    return m if m in UPDATE_MODES else ("auto" if (UPDATE_PY.parents[1] / ".git").exists() else "off")
+
+
+def recent(stamp, within=CHECK_EVERY):
+    try:
+        at = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.datetime.now(datetime.timezone.utc) - at < within
+
+
+def spawn_update_check():
+    """SessionStart: start `update.py background` detached at most once a day. Never waits, never fails the hook.
+    The cache's checked_at is claimed first so parallel sessions do not start it twice."""
+    try:
+        if update_mode() == "off" or not UPDATE_PY.is_file():
+            return
+        cache = home_json("update.json")
+        if recent(cache.get("checked_at")):
+            return
+        WL_HOME.mkdir(parents=True, exist_ok=True)
+        write_atomic(WL_HOME / "update.json", json.dumps(dict(cache, checked_at=now()), ensure_ascii=False))
+        subprocess.Popen([sys.executable, "-B", str(UPDATE_PY), "background"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, ValueError):
+        pass
+
+
+def update_note():
+    """One line for the SessionStart injection, from the cache file only (no network)."""
+    cache, mode = home_json("update.json"), update_mode()
+    if mode == "off" or not cache:
+        return ""
+    cmd = f"python3 -B {shlex.quote(str(Path(__file__).resolve()))} update"
+    applied = cache.get("applied") or {}
+    if isinstance(applied, dict) and applied.get("to") == VERSION and recent(applied.get("at")):
+        return (f"[Worklog 갱신] 코어를 v{applied.get('from')}에서 v{VERSION}으로 갱신했다({applied.get('at')}). "
+                f"변경 내용: {UPDATE_PY.parents[1] / 'CHANGELOG.md'}. 되돌리기: {cmd} rollback\n")
+    if cache.get("latest_major"):
+        return (f"[Worklog 갱신 안내] 새 주 버전 v{cache['latest_major']}이 있다(현재 {VERSION}). 기록 구조가 바뀌므로 자동 갱신하지 않는다. "
+                "CHANGELOG의 마이그레이션 안내를 읽고 사용자가 직접 진행한다.\n")
+    latest = cache.get("latest")
+    if latest and (parse_version(latest) or (0,)) > (parse_version(VERSION) or (0,)):
+        if cache.get("error"):
+            return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
+        if mode == "auto":
+            return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION})을 배경에서 적용 중이다. 다음 세션부터 쓰인다.\n"
+        return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
+    return ""
+
+
+def auto_reinstall(d, tool):
+    """auto mode: a stale rules copy is reinstalled on the spot (local, backs up the old files). Returns the line to inject."""
+    try:
+        p = subprocess.run([sys.executable, "-B", str(INSTALLER), "--tool", tool, "--root", str(d.parent)],
+                           capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if p.returncode != 0 or install_report(d, tool):
+        return ""
+    return (f"[Worklog 규칙 갱신] 규칙 사본을 코어 {VERSION}에 맞춰 다시 설치했다(이전 파일은 *.bak-worklog-* 백업). "
+            "새 규칙은 다음 세션부터 읽힌다.\n")
+
+
+def cmd_update(args):
+    """update [check|rollback] [--mode auto|notify|off]: runs tools/update.py and prints its JSON."""
+    action = args.arg or "apply"
+    if action not in ("check", "apply", "rollback"):
+        raise Reject("update 형식: update [check|rollback] [--mode auto|notify|off]")
+    cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
+    if args.mode:
+        cmd += ["--mode", args.mode]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
+    print(p.stdout, end="")
 
 
 def hooks_report(d, tool, sid):
@@ -1120,10 +1217,12 @@ def cmd_hook(args):
     except (Reject, OSError, ValueError) as e:
         text, status = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE"
     head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
+    spawn_update_check()
+    head += update_note()
     if who:
         stale = install_report(d, who[0])
         if stale:
-            head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
+            head += (auto_reinstall(d, who[0]) if update_mode() == "auto" else "") or f"[Worklog 사본 경고] {stale['warning_install']}\n"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
                      ensure_ascii=False))
 
@@ -1178,9 +1277,10 @@ def main(argv=None):
     commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
                 "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
                 "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook,
-                "version": cmd_version}
+                "version": cmd_version, "update": cmd_update}
     ap.add_argument("command", choices=[*commands, "help"])
-    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목")
+    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목 / update의 check·rollback")
+    ap.add_argument("--mode", choices=UPDATE_MODES, help="update: 갱신 방식 설정(auto·notify·off)")
     ap.add_argument("--root")
     ap.add_argument("--tool")
     ap.add_argument("--session")
