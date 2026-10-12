@@ -18,12 +18,18 @@ def load_wl():
     return mod
 
 
+TEST_HOME = Path(tempfile.mkdtemp())  # WL_HOME for every run: update mode off, so no test starts a background update check
+(TEST_HOME / "config.json").write_text('{"update": "off"}')
+
+
 def clean_env():
-    return {k: v for k, v in os.environ.items() if not k.endswith("SESSION_ID") and k not in ("CODEX_THREAD_ID", "WL_TOOL")}
+    env = {k: v for k, v in os.environ.items() if not k.endswith("SESSION_ID") and k not in ("CODEX_THREAD_ID", "WL_TOOL")}
+    env["WL_HOME"] = str(TEST_HOME)
+    return env
 
 
-def run(root, cmd, payload=None, session="s1", tool="codex", extra=()):
-    env = dict(clean_env(), WL_TOOL=tool, WL_SESSION_ID=session)
+def run(root, cmd, payload=None, session="s1", tool="codex", extra=(), env=None):
+    env = dict(clean_env(), WL_TOOL=tool, WL_SESSION_ID=session, **(env or {}))
     p = subprocess.run([sys.executable, "-B", str(WL), cmd, *extra, "--root", str(root)], input=json.dumps(payload) if payload else "",
                        capture_output=True, text=True, env=env)
     return p.returncode, p.stdout
@@ -790,6 +796,112 @@ class CoreWarningTest(Base):
             self.assertNotIn("코어 경고", run(self.root, "show")[1], value)
             self.assertNotIn("warning_core", self.ok(run(self.root, "verify")), value)
         self.assertNotIn("warning_core", self.ok(run(self.root, "save", {"type": "RESULT", "summary": "y"})))
+
+
+class UpdateTest(Base):
+    """4단계: 갱신은 tools/update.py가 하고(같은 주 번호의 tag로 fast-forward), SessionStart Hook은 캐시 파일만 읽는다."""
+    def setUp(self):
+        super().setUp()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.env = {"WL_HOME": str(self.home)}
+
+    def home_write(self, name, value):
+        (self.home / name).write_text(json.dumps(value))
+
+    def git(self, repo, *args):
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                           env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t",
+                                    GIT_COMMITTER_EMAIL="t@x", GIT_TERMINAL_PROMPT="0"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout.strip()
+
+    def make_upstream(self):
+        """origin with tags v<current>, v<next minor>, v<next major>, and a clone reset to v<current>."""
+        up, src, cur = self.root / "upstream", WL.parents[1], load_wl().VERSION
+        for rel in ("core/wl.py", "tools/update.py", "tools/install_project.py", "adapters/rules.md", "CHANGELOG.md"):
+            (up / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src / rel, up / rel)
+        self.git(up, "init", "-q", "-b", "master")
+        self.git(up, "add", "-A")
+        self.git(up, "commit", "-q", "-m", "base")
+        self.git(up, "tag", f"v{cur}")
+        major, minor, _ = map(int, cur.split("."))
+        prev, versions = cur, (f"{major}.{minor + 1}.0", f"{major + 1}.0.0")
+        for v in versions:
+            core = up / "core/wl.py"
+            core.write_text(core.read_text().replace(f'VERSION = "{prev}"', f'VERSION = "{v}"'))
+            self.git(up, "commit", "-qam", v)
+            self.git(up, "tag", f"v{v}")
+            prev = v
+        clone = self.root / "clone"
+        self.git(self.root, "clone", "-q", str(up), str(clone))
+        self.git(clone, "reset", "-q", "--hard", f"v{cur}")
+        return clone, cur, versions[0], versions[1]
+
+    def update(self, clone, *args):
+        p = subprocess.run([sys.executable, "-B", str(clone / "tools/update.py"), *args], capture_output=True, text=True,
+                           env=dict(os.environ, WL_HOME=str(self.home)))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return json.loads(p.stdout)
+
+    def test_check_apply_rollback_in_clone(self):
+        clone, cur, minor, major = self.make_upstream()
+        c = self.update(clone, "check")
+        self.assertEqual((c["mode"], c["current"], c["latest"], c["latest_major"], c["error"]), ("auto", cur, minor, major, None))
+        c = self.update(clone, "apply")
+        self.assertEqual((c["current"], c["applied"]["from"], c["applied"]["to"], c["latest"], c["error"]), (minor, cur, minor, None, None))
+        out = subprocess.run([sys.executable, "-B", str(clone / "core/wl.py"), "version"], capture_output=True, text=True).stdout
+        self.assertEqual(json.loads(out)["version"], minor)
+        self.assertEqual(self.git(clone, "branch", "--show-current"), "master")  # fast-forward keeps the user's branch
+        c = self.update(clone, "rollback")
+        self.assertEqual((c["current"], c["applied"], c["previous"], c["error"]), (cur, None, None, None))
+        (clone / "core/wl.py").write_text((clone / "core/wl.py").read_text() + "\n# local change\n")
+        c = self.update(clone, "apply")  # 커밋되지 않은 변경: 적용하지 않고 이유만 남긴다
+        self.assertIn("커밋되지 않은 변경", c["error"])
+        self.assertEqual(c["current"], cur)
+
+    def test_mode_setting_and_plain_copy(self):
+        clone, cur, minor, major = self.make_upstream()
+        c = self.update(clone, "check", "--mode", "notify")
+        self.assertEqual((c["mode"], json.loads((self.home / "config.json").read_text())["update"]), ("notify", "notify"))
+        shutil.rmtree(clone / ".git")  # 복사본(shared 폴더처럼 .git 없음): 갱신 대상이 아니다
+        self.assertIn("git 저장소가 아니다", self.update(clone, "check")["error"])
+
+    def test_session_start_reads_cache_only(self):
+        self.ok(new_work(self.root, "t"))
+        wl = load_wl()
+        self.home_write("config.json", {"update": "notify"})
+        self.home_write("update.json", {"checked_at": wl.now(), "latest": "9.9.0", "current": wl.VERSION})
+        ctx = self.ctx(tool="codex", env=self.env)
+        self.assertIn("[Worklog 갱신 안내] 새 버전 v9.9.0", ctx)
+        self.assertIn("wl.py update", ctx.split("\n")[2])
+        self.home_write("update.json", {"checked_at": wl.now(), "latest_major": "10.0.0", "current": wl.VERSION})
+        self.assertIn("새 주 버전 v10.0.0", self.ctx(tool="codex", env=self.env))
+        self.home_write("update.json", {"checked_at": wl.now(), "applied": {"from": "0.0.1", "to": wl.VERSION, "at": wl.now()}})
+        self.assertIn(f"[Worklog 갱신] 코어를 v0.0.1에서 v{wl.VERSION}으로", self.ctx(tool="codex", env=self.env))
+        self.home_write("update.json", {"checked_at": wl.now(), "latest": "9.9.0", "error": "git fetch 실패: x"})
+        self.assertIn("[Worklog 갱신 실패] v9.9.0", self.ctx(tool="codex", env=self.env))
+        stamp = wl.now()
+        self.home_write("update.json", {"checked_at": stamp, "latest": "9.9.0"})
+        self.ctx(tool="codex", env=self.env)  # 최근 검사가 있으면 배경 검사를 띄우지 않는다(checked_at 불변)
+        self.assertEqual(json.loads((self.home / "update.json").read_text())["checked_at"], stamp)
+        self.home_write("config.json", {"update": "off"})
+        self.assertNotIn("Worklog 갱신", self.ctx(tool="codex", env=self.env))
+
+    def test_auto_mode_reinstalls_stale_copy(self):
+        subprocess.run([sys.executable, "-B", str(WL.parents[1] / "tools/install_project.py"), "--tool", "codex", "--root", str(self.root)],
+                       capture_output=True, text=True, check=True)
+        current = json.loads((self.d / "install.json").read_text())["codex"]["rules_src_sha"]
+        self.home_write("update.json", {"checked_at": load_wl().now()})
+        for mode, expect in (("notify", "[Worklog 사본 경고]"), ("auto", "[Worklog 규칙 갱신]")):
+            (self.d / "install.json").write_text(json.dumps({"codex": {"version": "0.0.1", "rules_src_sha": "0" * 64, "installed_at": "x"}}))
+            self.home_write("config.json", {"update": mode})
+            self.assertIn(expect, self.ctx(tool="codex", env=self.env), mode)
+        self.assertEqual(json.loads((self.d / "install.json").read_text())["codex"]["rules_src_sha"], current)
+        ctx = self.ctx(tool="codex", env=self.env)
+        self.assertNotIn("규칙 갱신", ctx)
+        self.assertNotIn("사본 경고", ctx)
 
 
 class WorksTest(Base):
