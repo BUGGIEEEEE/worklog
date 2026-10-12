@@ -1,9 +1,19 @@
 # Changelog
 
 Tags are set by the author only; an external PR gets a tag only after the author merges and reviews it.
-Numbering: a ledger-structure change bumps `FORMAT` and the major number (3.0.0, with a migration script); every other change bumps the minor number (2.2.0). `python3 -B core/wl.py version` prints the installed number.
+Numbering x.y.z — decided by *what changed*, never by what the user has to do afterwards:
+- **x (major)**: the ledger structure changes (`FORMAT`, e.g. `worklog/2` → `worklog/3`). Ships with a migration script. `update` never crosses this line by itself.
+- **y (minor)**: behaviour changes — core, installer or `update.py` code, a new command, field, warning or injection line, and any change to the model-facing rules (`adapters/rules.md`, `SAVE_HELP`), because rule wording changes what the model does.
+- **z (patch)**: same behaviour, different text — typos, message wording, comments, tests, docs inside a code file. Rule wording is never a patch.
+- Docs only (README, docs/, this file): no new number, no tag.
+Every number has a `## x.y.z — date` entry here; `python3 -B core/wl.py version` prints the installed number and a unit test keeps it equal to the first heading.
 
-tag는 작성자만 붙인다. 번호: 원장 구조 변경 = FORMAT과 주 번호(3.0.0, 마이그레이션 동반), 그 외 = 부 번호(2.2.0). `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
+tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정한다(사용자가 할 일로 정하지 않는다):
+- **x(주)**: 원장 구조 변경(`FORMAT`, 예: `worklog/2` → `worklog/3`). 마이그레이션 스크립트 동반. `update`는 이 경계를 스스로 넘지 않는다.
+- **y(부)**: 동작 변경 — 코어·설치기·`update.py` 코드, 새 명령·필드·경고·주입 줄, 그리고 모델이 읽는 규칙(`adapters/rules.md`, `SAVE_HELP`)의 문구 변경(문구가 모델 동작을 바꾸므로).
+- **z(끝)**: 동작은 같고 글자만 — 오타, 메시지 문구, 주석, 테스트, 코드 파일 안의 설명. 규칙 문구는 z가 아니다.
+- 문서만(README, docs/, 이 파일): 번호·tag 없음.
+모든 번호는 여기에 `## x.y.z — 날짜` 항목을 가진다. `python3 -B core/wl.py version`으로 설치된 번호를 확인하고, 단위 테스트가 첫 제목과 같은지 지킨다.
 
 ## 2.5.0 — 2026-10-12
 Update notifications only: the `auto` mode is gone. `update.py background` (started detached once a day by SessionStart) now only fetches tags and writes the cache; nothing changes files on its own. The rules copy is no longer reinstalled at session start (a stale copy keeps the 2.2.0 warning line with the install command). Modes: `notify` (default for a git clone) | `off`. Applying is always by hand: `wl.py update` (fast-forward to the newest tag of the same major, refuses a dirty tree, reverts on version mismatch, reinstalls the current project), `update rollback`, `update check`. A clone that already runs 2.4.0 in auto mode applies 2.5.0 once by itself and is notify-only from then on.
