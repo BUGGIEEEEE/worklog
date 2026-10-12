@@ -799,7 +799,7 @@ class CoreWarningTest(Base):
 
 
 class UpdateTest(Base):
-    """4단계: 갱신은 tools/update.py가 하고(같은 주 번호의 tag로 fast-forward), SessionStart Hook은 캐시 파일만 읽는다."""
+    """4단계: 갱신은 사용자가 치는 tools/update.py만 한다(같은 주 번호의 tag로 fast-forward). 배경은 fetch·캐시만, Hook은 캐시만 읽는다."""
     def setUp(self):
         super().setUp()
         self.home = self.root / "home"
@@ -848,7 +848,13 @@ class UpdateTest(Base):
     def test_check_apply_rollback_in_clone(self):
         clone, cur, minor, major = self.make_upstream()
         c = self.update(clone, "check")
-        self.assertEqual((c["mode"], c["current"], c["latest"], c["latest_major"], c["error"]), ("auto", cur, minor, major, None))
+        self.assertEqual((c["mode"], c["current"], c["latest"], c["latest_major"], c["error"]), ("notify", cur, minor, major, None))
+        p = subprocess.run([sys.executable, "-B", str(clone / "tools/update.py"), "background"], capture_output=True, text=True,
+                           env=dict(os.environ, WL_HOME=str(self.home)))  # 배경 실행은 캐시만 쓰고 아무것도 적용하지 않는다
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertEqual(json.loads((self.home / "update.json").read_text())["latest"], minor)
+        self.assertEqual(json.loads(subprocess.run([sys.executable, "-B", str(clone / "core/wl.py"), "version"],
+                                                   capture_output=True, text=True).stdout)["version"], cur)
         c = self.update(clone, "apply")
         self.assertEqual((c["current"], c["applied"]["from"], c["applied"]["to"], c["latest"], c["error"]), (minor, cur, minor, None, None))
         out = subprocess.run([sys.executable, "-B", str(clone / "core/wl.py"), "version"], capture_output=True, text=True).stdout
@@ -863,8 +869,8 @@ class UpdateTest(Base):
 
     def test_mode_setting_and_plain_copy(self):
         clone, cur, minor, major = self.make_upstream()
-        c = self.update(clone, "check", "--mode", "notify")
-        self.assertEqual((c["mode"], json.loads((self.home / "config.json").read_text())["update"]), ("notify", "notify"))
+        c = self.update(clone, "check", "--mode", "off")
+        self.assertEqual((c["mode"], json.loads((self.home / "config.json").read_text())["update"]), ("off", "off"))
         shutil.rmtree(clone / ".git")  # 복사본(shared 폴더처럼 .git 없음): 갱신 대상이 아니다
         self.assertIn("git 저장소가 아니다", self.update(clone, "check")["error"])
 
@@ -889,19 +895,18 @@ class UpdateTest(Base):
         self.home_write("config.json", {"update": "off"})
         self.assertNotIn("Worklog 갱신", self.ctx(tool="codex", env=self.env))
 
-    def test_auto_mode_reinstalls_stale_copy(self):
+    def test_stale_copy_is_only_warned_about(self):
+        """세션 시작은 규칙 사본을 고쳐 쓰지 않는다: 사본 경고 줄만, install.json 불변."""
         subprocess.run([sys.executable, "-B", str(WL.parents[1] / "tools/install_project.py"), "--tool", "codex", "--root", str(self.root)],
                        capture_output=True, text=True, check=True)
-        current = json.loads((self.d / "install.json").read_text())["codex"]["rules_src_sha"]
+        stale = {"codex": {"version": "0.0.1", "rules_src_sha": "0" * 64, "installed_at": "x"}}
+        (self.d / "install.json").write_text(json.dumps(stale))
+        self.home_write("config.json", {"update": "notify"})
         self.home_write("update.json", {"checked_at": load_wl().now()})
-        for mode, expect in (("notify", "[Worklog 사본 경고]"), ("auto", "[Worklog 규칙 갱신]")):
-            (self.d / "install.json").write_text(json.dumps({"codex": {"version": "0.0.1", "rules_src_sha": "0" * 64, "installed_at": "x"}}))
-            self.home_write("config.json", {"update": mode})
-            self.assertIn(expect, self.ctx(tool="codex", env=self.env), mode)
-        self.assertEqual(json.loads((self.d / "install.json").read_text())["codex"]["rules_src_sha"], current)
         ctx = self.ctx(tool="codex", env=self.env)
+        self.assertIn("[Worklog 사본 경고]", ctx)
         self.assertNotIn("규칙 갱신", ctx)
-        self.assertNotIn("사본 경고", ctx)
+        self.assertEqual(json.loads((self.d / "install.json").read_text()), stale)
 
 
 class WorksTest(Base):

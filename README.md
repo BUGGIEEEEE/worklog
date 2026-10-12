@@ -38,7 +38,7 @@ Claude Code and Codex share the same `.worklog/`.
 | First session | `새 작업: <title>` |
 | Later sessions | pick from the list: `<id> 이어서` |
 | Pause | `워크로그 꺼` ("worklog off", whole project). `워크로그 켜` resumes. Nothing is recorded while off |
-| Update | automatic for a git clone: once a day a session start checks the origin tags in the background and fast-forwards to the newest tag of the same major version; the next session says so in one line and reinstalls the rules copy. Turn it off or to notify-only with `python3 -B worklog/core/wl.py update --mode notify` (or `off`); `update` applies by hand, `update rollback` goes back. A new major version is announced but never applied automatically. Hooks stay unchanged, so no re-trust |
+| Update | a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. Nothing changes by itself: run `python3 -B worklog/core/wl.py update` to fast-forward to the newest tag of the same major version and reinstall the current project; `update rollback` goes back; `update --mode off` silences the line. A new major version is announced only. Hooks stay unchanged, so no re-trust |
 
 ```sh
 git clone https://github.com/BUGGIEEEEE/worklog.git

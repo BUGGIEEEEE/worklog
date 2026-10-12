@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Update the Worklog core from its git origin: tags only, same major version only.
 
-Mode (~/.worklog/config.json, key "update"): auto (default when this folder is a git clone) | notify | off.
+Mode (~/.worklog/config.json, key "update"): notify (default when this folder is a git clone) | off.
   check        fetch tags from origin and write ~/.worklog/update.json      (network, ~1 s)
-  apply        check, then fast-forward to the newest tag of the current major (network)
-  background   check, plus apply when the mode is auto; prints nothing. The SessionStart hook starts this
-               detached at most once a day and never waits for it — hooks read only the cache file.
+  apply        check, then fast-forward to the newest tag of the current major (network). Only by hand:
+               nothing ever changes files on its own.
+  background   check only, prints nothing. The SessionStart hook starts this detached at most once a day
+               and never waits for it — hooks read only the cache file.
   rollback     return to the commit recorded before the last apply
   --mode M     set the mode. --root DIR: after apply/rollback, reinstall the rules copy of that project
                (tools listed in its .worklog/install.json).
@@ -18,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 CORE = REPO / "core" / "wl.py"
 HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
 CONFIG, CACHE = HOME / "config.json", HOME / "update.json"
-MODES = ("auto", "notify", "off")
+MODES = ("notify", "off")
 FETCH_TIMEOUT = 20
 
 
@@ -59,7 +60,7 @@ def is_clone():
 
 def mode():
     m = read_json(CONFIG).get("update")
-    return m if m in MODES else ("auto" if is_clone() else "off")
+    return m if m in MODES else ("notify" if is_clone() else "off")
 
 
 def git(*args, timeout=FETCH_TIMEOUT):
@@ -154,9 +155,7 @@ def main():
     if a.mode:
         write_json(CONFIG, dict(read_json(CONFIG), update=a.mode))
     if a.action == "background":
-        cache = check()
-        if cache["mode"] == "auto":
-            apply(cache)
+        check()
         return
     cache = check() if a.action in ("check", "apply") else read_json(CACHE)
     before = cache.get("current")
