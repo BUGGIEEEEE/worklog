@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.6.0 — 2026-10-12
+`warning_core` now compares only the major and minor numbers: by the numbering rule a patch-only difference changes nothing the model can notice, so a 2.6.1 ledger no longer warns a 2.6.0 core. A unit test checks that every CHANGELOG heading is exactly one step above the previous one.
+`warning_core`가 주·부 번호만 비교한다. 번호 규칙상 끝 번호만 다른 코어는 모델이 알아챌 변경이 없으므로, 2.6.1이 쓴 기록을 2.6.0이 읽어도 경고하지 않는다. CHANGELOG의 모든 제목이 바로 앞 제목보다 정확히 한 자리만 큰지 단위 테스트가 확인한다.
+
 ## 2.5.0 — 2026-10-12
 Update notifications only: the `auto` mode is gone. `update.py background` (started detached once a day by SessionStart) now only fetches tags and writes the cache; nothing changes files on its own. The rules copy is no longer reinstalled at session start (a stale copy keeps the 2.2.0 warning line with the install command). Modes: `notify` (default for a git clone) | `off`. Applying is always by hand: `wl.py update` (fast-forward to the newest tag of the same major, refuses a dirty tree, reverts on version mismatch, reinstalls the current project), `update rollback`, `update check`. A clone that already runs 2.4.0 in auto mode applies 2.5.0 once by itself and is notify-only from then on.
 알림만 남긴다: `auto` 모드 삭제. SessionStart가 하루 한 번 분리 실행하는 `update.py background`는 tag 가져오기와 캐시 기록만 하고, 어떤 파일도 스스로 바꾸지 않는다. 세션 시작 때 규칙 사본 재설치도 없앴다(오래된 사본은 2.2.0의 사본 경고 줄이 설치 명령과 함께 알린다). 모드: `notify`(git clone 기본) | `off`. 적용은 항상 수동: `wl.py update`(같은 주 번호의 최신 tag로 fast-forward, 커밋 안 된 변경이 있으면 거부, 버전 불일치면 복귀, 현재 프로젝트 재설치), `update rollback`, `update check`. 2.4.0을 auto로 쓰던 clone은 2.5.0을 한 번 스스로 적용한 뒤부터 알림만 받는다.

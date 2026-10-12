@@ -53,7 +53,7 @@
 | `changes` | ✓ | 상태 변경: `goal`·`decisions`·`constraints`·`constraints_remove`·`waiting`·`next_action`·`status`·`artifacts` |
 | `refs` | | 호환용. 의미가 정해지지 않아 지침·도움말에서 뺐다. 받으면 그대로 저장하고 해석하지 않는다 |
 | `source` | | 이전된 사건의 출처: `path`·`line`·`sha256`·원래 종류 |
-| `core` | | 사건을 쓴 코어 번호(2.3.0부터). 더 새 코어가 쓴 사건이 있으면 show·save·verify에 `warning_core`가 붙는다(거부 없음). 없으면 옛 사건으로 보고 경고하지 않는다 |
+| `core` | | 사건을 쓴 코어 번호(2.3.0부터). 주·부 번호가 더 큰 코어가 쓴 사건이 있으면 show·save·verify에 `warning_core`가 붙는다(끝 번호만 다르면 경고 없음, 거부 없음). 없으면 옛 사건으로 보고 경고하지 않는다 |
 | `check` | 텍스트 산출물 시 | 유효 결정·제약마다 산출물 **본문**의 인용(공백 정규화 후 실제로 있어야 함) 또는 `미반영: <이유>`. 미반영 ID는 저장 결과의 `unreflected`에 표시. 산출물이 모두 비텍스트(UTF-8이 아니거나 NUL 포함)면 check는 선택이고 미반영만 받는다 |
 | `self_quoted` | | 인용이 규칙 문장과 같았던 ID 목록. 저장은 되지만 반영의 증거가 아니다. 저장 결과에도 같은 이름으로 표시 |
 | `writer_acquired` | | 작성권 인수 기록 |

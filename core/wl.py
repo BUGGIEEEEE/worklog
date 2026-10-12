@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.5.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.6.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -241,10 +241,11 @@ def parse_version(v):
 
 
 def core_report(events):
-    """{"warning_core": ...} when any event carries a `core` newer than this VERSION (older events without
-    `core`, or unparsable values, never warn). FORMAT is untouched, so nothing is refused."""
-    mine = parse_version(VERSION)
-    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine) > mine]
+    """{"warning_core": ...} when any event carries a `core` with a newer major or minor number than this VERSION
+    (patch differences are text-only by the numbering rule; older events without `core`, or unparsable values, never warn).
+    FORMAT is untouched, so nothing is refused."""
+    mine = parse_version(VERSION)[:2]
+    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine)[:2] > mine]
     if not newer:
         return {}
     top = max(newer, key=parse_version)
