@@ -753,6 +753,45 @@ class InstallWarningTest(Base):
         self.refused(run(self.root, "save", {"type": "RESULT", "summary": "y", "decisions": [{"text": "[모델]"}]}), "비어 있습니다")
 
 
+class CoreWarningTest(Base):
+    """3단계 ①: 사건에 쓴 코어 번호가 남고, 더 새 코어가 쓴 사건을 보면 show·use·save·verify에 경고만 붙는다."""
+    def rewrite_last_core(self, value):
+        """마지막 사건의 core만 바꾼다(마지막 줄이라 다음 prev가 없어 연결은 그대로)."""
+        path = self.d / "works/t/events.jsonl"
+        lines = path.read_bytes().splitlines()
+        ev = json.loads(lines[-1])
+        ev.pop("core", None)
+        if value is not None:
+            ev["core"] = value
+        lines[-1] = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+    def test_core_warning_on_newer_event(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        ev = json.loads((self.d / "works/t/events.jsonl").read_bytes().splitlines()[-1])
+        self.assertEqual(ev["core"], json.loads(run(self.root, "version")[1])["version"])
+        self.rewrite_last_core("2.10.0")  # 숫자 비교: 2.10.0 > 2.3.0 (문자열 비교였다면 작다)
+        msg = "[Worklog 코어 경고] 이 기록은 코어 2.10.0이 썼습니다"
+        self.assertIn(msg, run(self.root, "show")[1])
+        self.assertIn(msg, self.used(use(self.root, "t"), "t"))
+        one = self.ok(run(self.root, "verify"))
+        self.assertTrue(one["ok"])  # 경고일 뿐 원장·투영은 정상
+        self.assertIn("코어 2.10.0", one["warning_core"])
+        self.assertIn("warning_core", self.ok(run(self.root, "verify", extra=("--all",)))["works"][0])
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "y"}))
+        self.assertIn("코어를 갱신하세요", out["warning_core"])
+
+    def test_core_warning_absent_for_old_or_equal_events(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        for value in (None, "2.0.0", "garbage"):  # core 없음(옛 사건)·더 낮음·해석 불가
+            self.rewrite_last_core(value)
+            self.assertNotIn("코어 경고", run(self.root, "show")[1], value)
+            self.assertNotIn("warning_core", self.ok(run(self.root, "verify")), value)
+        self.assertNotIn("warning_core", self.ok(run(self.root, "save", {"type": "RESULT", "summary": "y"})))
+
+
 class WorksTest(Base):
     """형식 2: 작업 여러 개·사용자 지정·index·이전 도구."""
     def test_two_works_list_and_select(self):

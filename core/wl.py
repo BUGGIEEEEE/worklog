@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.2.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.3.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -231,6 +231,24 @@ def install_report(d, tool):
         return {}
     return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
                                f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} --root {shlex.quote(str(d.parent))} 를 다시 실행하세요."}
+
+
+def parse_version(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return None
+
+
+def core_report(events):
+    """{"warning_core": ...} when any event carries a `core` newer than this VERSION (older events without
+    `core`, or unparsable values, never warn). FORMAT is untouched, so nothing is refused."""
+    mine = parse_version(VERSION)
+    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine) > mine]
+    if not newer:
+        return {}
+    top = max(newer, key=parse_version)
+    return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
 
 
 def hooks_report(d, tool, sid):
@@ -522,7 +540,7 @@ def read_writer(path):
 def new_event(events, prev, kind, tool, sid, summary, quote, refs, changes):
     return {"v": 1, "seq": len(events) + 1, "id": f"E{len(events) + 1:04d}", "type": kind, "at": now(),
             "tool": tool, "session_id": sid, "summary": summary, "quote": quote,
-            "refs": refs, "changes": changes, "prev": prev}
+            "refs": refs, "changes": changes, "prev": prev, "core": VERSION}
 
 
 # --- 저장 ---
@@ -715,7 +733,7 @@ def cmd_save(args):
                       "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]],
                       "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d),
-                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
+                      **core_report(events), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 # --- 작업 선택 ---
@@ -867,6 +885,9 @@ def read_work(d, wid, title, who, **session_changes):
     if events and not all(projection_ok(wd, state, wid, title, events)):  # 하나라도 다르거나 없으면 둘 다 다시 만든다
         project(wd, state, wid, title)
         note = "(현재 상태가 원장과 달라 원장에서 다시 만들었다)\n"
+    newer = core_report(events)
+    if newer:
+        note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
     return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n")
@@ -878,7 +899,7 @@ def check_work(d, wid, title):
     state, _ = fold(events)
     ok_json, ok_md = projection_ok(wd, state, wid, title, events)
     return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
-            "state_json": ok_json, "state_md": ok_md}
+            "state_json": ok_json, "state_md": ok_md, **core_report(events)}
 
 
 def cmd_verify(args):
