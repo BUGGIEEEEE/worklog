@@ -19,9 +19,11 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 | 시작 지침 | `CLAUDE.md` 블록 | `AGENTS.md` 블록 | `AGENTS.md` 블록(cwd·상위 폴더에서 읽음) |
 | Skill | `.claude/skills/worklog` | `.agents/skills/worklog` (경로 미확인) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
 | Hook 위치 | `.claude/settings.local.json` | `.codex/hooks.json` | 없음 |
-| SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact → `wl.py hook --tool claude` | startup·resume·compact → `wl.py hook --tool codex` | 없음 — 지침("못 봤으면 `show`") |
+| SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact·fork¹ → `wl.py hook --tool claude` | startup·resume·compact → `wl.py hook --tool codex` | 없음 — 지침("못 봤으면 `show`") |
 | UserPromptSubmit (턴 시작) | `wl.py turn-start --tool claude` | `wl.py turn-start --tool codex` | 없음 — 지침 |
 | Stop (저장 확인) | `wl.py stop-hook --tool claude` | `wl.py stop-hook --tool codex` | 없음 — 지침 |
+
+¹ `fork`는 `/branch`·`--fork-session`·`/fork`(세션 복사)·백그라운드 전환으로 생긴 분기 세션의 시작(Claude Code 2.1.214+). 그 미만 버전은 분기를 `resume`으로 보고하므로 영향이 없다. 2.12.0부터 설치기가 넣는다.
 | 신뢰 절차 | Hook 승인 불필요. git 저장소면 첫 시작 때 폴더 신뢰 대화상자 1회 | 프로젝트 신뢰 + `/hooks`에서 Hook 3개 신뢰. Hook 정의가 바뀌면 재신뢰. 설치기를 다시 실행해도 같은 설치의 Hook은 그대로 두므로(파일 바이트 유지) 클론을 옮긴 경우에만 재신뢰 | AGENTS.md는 신뢰 불필요, Skill은 프로젝트 신뢰 후 |
 | 세션 ID | `CLAUDE_CODE_SESSION_ID` (실측) | `CODEX_THREAD_ID` (실측) | `PI_SESSION_ID` (공식 문서 기준, 미실측) |
 | 한계 | — | — | Hook 없음·지침만, 강제되지 않음, 미검증 |

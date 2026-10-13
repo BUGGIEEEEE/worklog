@@ -599,7 +599,7 @@ class CoreTest(unittest.TestCase):
             return g
         sp = self.root / ".claude/settings.local.json"
         sp.parent.mkdir()
-        text = json.dumps({"hooks": {"SessionStart": [group("hook", "startup|resume|clear|compact")],
+        text = json.dumps({"hooks": {"SessionStart": [group("hook", "startup|resume|clear|compact|fork")],
                                      "UserPromptSubmit": [group("turn-start")], "Stop": [group("stop-hook")]}},
                           ensure_ascii=False, indent=2) + "\n"
         sp.write_bytes(text.encode())
