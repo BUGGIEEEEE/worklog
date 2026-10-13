@@ -9,6 +9,8 @@ Every target (files, backups, directories to create, .worklog) is checked and ev
 first write; a refusal (a link leading outside --root, a .worklog link, unreadable hook settings) changes nothing and
 exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup) before change;
 the managed block and Worklog hooks from any earlier install path are replaced idempotently.
+When --root is a git repository and .worklog is managed here, .gitignore gets `.worklog/sessions/` and `.worklog/.lock`
+(per-session state and the lock; the record under works/ stays committable). Lines already present are left alone.
 """
 import argparse, datetime, hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
@@ -158,6 +160,23 @@ def manifest(worklog, tool):
     return path
 
 
+GITIGNORE_LINES = (".worklog/sessions/", ".worklog/.lock")
+
+
+def gitignore_text(path):
+    """New .gitignore content with the Worklog lines appended, or None when nothing is missing (or the file is unreadable as text)."""
+    try:
+        current = path.read_text() if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    have = {line.strip() for line in current.splitlines()}
+    missing = [line for line in GITIGNORE_LINES if line not in have]
+    if not missing:
+        return None
+    body = current if (not current or current.endswith("\n")) else current + "\n"
+    return body + "".join(line + "\n" for line in missing)
+
+
 def plan(root, tool, worklog_dir, when):
     """All checks and contents before any write: ([(path, text, backup or None)], .worklog to create or None)."""
     if tool == "claude":
@@ -180,6 +199,12 @@ def plan(root, tool, worklog_dir, when):
     if settings:
         files.append((settings, hook_settings(settings, tool)))
     files.append((sk, skill(tool)))
+    if worklog_dir and tool in {"claude", "codex"} and (root / ".git").exists():  # git project: keep session state out of commits
+        gi = root / ".gitignore"
+        inside(root, gi)
+        text = gitignore_text(gi)
+        if text is not None:
+            files.append((gi, text))
     changed = [(p, t) for p, t in files if not (p.exists() and p.read_text() == t)]
     return [(p, t, backup_path(root, p, when) if p.exists() else None) for p, t in changed], (worklog if make_dir else None)
 

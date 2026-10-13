@@ -26,6 +26,7 @@
 ├── .worklog/works/<id>/state.md   지금 상태. 열면 목표·결정·제약·다음 할 일이 보임
 ├── CLAUDE.md 또는 AGENTS.md       모델 지침 블록 하나 (기존 내용은 그대로)
 ├── Hook 3개                        세션 시작에 읽기, 턴 끝에 저장 확인
+├── .gitignore                     git 프로젝트만: .worklog/sessions/와 .worklog/.lock 추가 (works/의 기록은 커밋, 세션 파일은 무시)
 └── skills/worklog/                `/worklog on|off` 호출용 스킬 파일 (Claude: .claude/, Codex: .agents/)
 ```
 
