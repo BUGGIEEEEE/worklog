@@ -13,7 +13,7 @@ The 2.8.0 rule splits delegation in two. **Subagent** (same session): the delega
 | Layer / cell | Runs | Result |
 |---|---|---|
 | M7 subagent (Claude opus) | 3 | 3/3: forbid line, single save, proposals `[모델]` |
-| M8 separate session, same goal (Claude opus / Codex astra, sub opened through Herdr with the same tool) | 3 + 3 | 6/6: turn 1 skip (0 saves), sub saved by itself with artifacts+check, turn 2 adopt-save (1) |
+| M8 separate session, same goal (Claude opus / Codex astra, sub opened through Herdr with the same tool) | 3 + 3 | 6/6: turn 1 skip (0 saves), sub saved by itself with artifacts+check, turn 2 adopt-save (1). "Codex astra" is the main session; the sub-session opened through Herdr runs the user's default interactive model (GPT-6.1-Sol at the time) |
 | M8b separate session, independent goal | 2 + 2 | clause observed 4/4 (`새 작업:` + parent id); machine 0/4 for non-rule reasons (prompt design ×2, delegation noted on the parent work ×1 — allowed by the text, sub asked about constraint inheritance ×1) |
 | M9 fallback (sub ended without events) | 2 + 2 | 4/4: `[위임:]` + "하위 세션 기록 없음", artifacts+check, single save |
 | I5 two compactions, then a delegating turn (Claude subagent / Codex Herdr session) | 1 + 1 smoke, 3 + 3 | delegation 8/8; Layer I criteria 1·4·5, F4, F5 unchanged (8/8). Codex ran with the user's full-access setting (an approval prompt blocks the Herdr socket); its tool/time counts exceed the reference caps because of the Herdr commands |
@@ -31,7 +31,7 @@ Not shown by this: "always" (2–3 runs per cell), Codex subagents (no tool), th
 | 층 / 셀 | 회차 | 결과 |
 |---|---|---|
 | M7 서브에이전트(Claude opus) | 3 | 3/3: 금지문, save 1건, 제안 `[모델]` |
-| M8 별도 세션·같은 목표(Claude opus / Codex astra, 하위는 Herdr로 같은 도구) | 3 + 3 | 6/6: 1턴 skip(save 0) → 하위가 artifacts+check로 스스로 save → 2턴 채택 save 1건 |
+| M8 별도 세션·같은 목표(Claude opus / Codex astra, 하위는 Herdr로 같은 도구) | 3 + 3 | 6/6: 1턴 skip(save 0) → 하위가 artifacts+check로 스스로 save → 2턴 채택 save 1건. "Codex astra"는 메인 기준이며 Herdr로 연 하위 세션은 사용자 기본 대화형 모델(당시 GPT-6.1-Sol)로 돌았다 |
 | M8b 별도 세션·독립 목표 | 2 + 2 | 조항 4/4 관찰(`새 작업:` + 상위 id). 기계 0/4는 비규칙 원인(프롬프트 설계 2, 상위 작업에 위임 기록 1 = 문장상 허용, 하위가 제약 승계 질문 1) |
 | M9 대체 save(하위가 사건 없이 끝남) | 2 + 2 | 4/4: `[위임:]` + "하위 세션 기록 없음", artifacts+check, save 1건 |
 | I5 압축 2회 뒤 위임 턴(Claude 서브에이전트 / Codex Herdr 세션) | 연기 1 + 1, 본 3 + 3 | 위임 8/8. I층 기준 1·4·5, F4·F5 동일(8/8). Codex는 사용자 설정(full access) 유지(승인 요청이 Herdr 소켓을 막음), Herdr 명령 때문에 도구·시간 참고 상한 초과 |
