@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.9.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.10.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -65,7 +65,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   python3 -B wl.py use habit-plan --quote "habit-plan 이어서 해"   기존 작업을 이 세션의 현재 작업으로(현황 출력, show 불필요)
   python3 -B wl.py new-work "습관 계획 habit-plan" --quote "새 작업: 습관 계획"
                                        새 작업을 만들고 현재 작업으로(id 반환: 제목의 영문·숫자 → habit-plan, 한글만·숫자만이면 work, work-2…)
-                                       결과의 notice: 다른 작업의 제약은 새 작업에 적용되지 않는다. 이어받을 것은 사용자에게 확인한다
+                                       결과의 notice: 다른 작업의 제약은 새 작업에 적용되지 않는다. 이어받을 것은 맡긴 프롬프트에 적힌 것만 저장하고, 없으면 사용자에게 확인한다
   python3 -B wl.py show [--work <id>]                            현황 읽기(현재 작업이 없으면 목록)
   python3 -B wl.py verify [--work <id> | --all]
   python3 -B wl.py archive <id> / reopen <id>                    COMPLETED ↔ ACTIVE
@@ -897,7 +897,7 @@ def cmd_new_work(args):
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
     if others:
         result["notice"] = ("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
-                            + ". 이어받을 제약이 있으면 사용자에게 확인한 뒤 이 작업에 다시 저장하세요.")
+                            + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
     print(json.dumps({**result, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
