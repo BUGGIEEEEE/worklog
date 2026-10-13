@@ -781,13 +781,15 @@ class CoreWarningTest(Base):
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
         ev = json.loads((self.d / "works/t/events.jsonl").read_bytes().splitlines()[-1])
         self.assertEqual(ev["core"], json.loads(run(self.root, "version")[1])["version"])
-        self.rewrite_last_core("2.10.0")  # 숫자 비교: 2.10.0 > 2.3.0 (문자열 비교였다면 작다)
-        msg = "[Worklog 코어 경고] 이 기록은 코어 2.10.0이 썼습니다"
+        major, minor, _ = (int(x) for x in ev["core"].split("."))
+        newer = f"{major}.{minor + 1}.0"  # 현재 코어보다 부 번호가 하나 큰 값(2.9.0 → 2.10.0처럼 자릿수가 늘어도 숫자 비교라 더 크다)
+        self.rewrite_last_core(newer)
+        msg = f"[Worklog 코어 경고] 이 기록은 코어 {newer}이 썼습니다"
         self.assertIn(msg, run(self.root, "show")[1])
         self.assertIn(msg, self.used(use(self.root, "t"), "t"))
         one = self.ok(run(self.root, "verify"))
         self.assertTrue(one["ok"])  # 경고일 뿐 원장·투영은 정상
-        self.assertIn("코어 2.10.0", one["warning_core"])
+        self.assertIn(f"코어 {newer}", one["warning_core"])
         self.assertIn("warning_core", self.ok(run(self.root, "verify", extra=("--all",)))["works"][0])
         out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "y"}))
         self.assertIn("코어를 갱신하세요", out["warning_core"])
