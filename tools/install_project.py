@@ -115,7 +115,7 @@ def hook_settings(path, tool):
     for event, command in (("SessionStart", "hook"), ("UserPromptSubmit", "turn-start"), ("Stop", "stop-hook")):
         matcher = None
         if event == "SessionStart":
-            matcher = "startup|resume|clear|compact" if tool == "claude" else "^(startup|resume|compact)$"
+            matcher = "startup|resume|clear|compact|fork" if tool == "claude" else "^(startup|resume|compact)$"  # fork: /branch, --fork-session (Claude Code 2.1.214+)
         groups, kept = [], False
         try:
             for group in hooks.get(event, []):

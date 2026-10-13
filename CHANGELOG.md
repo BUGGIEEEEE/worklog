@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.12.0 — 2026-10-13
+Installer: the Claude Code SessionStart matcher now includes `fork` (`startup|resume|clear|compact|fork`). Claude Code 2.1.214+ reports a branched session (`/branch`, `--fork-session`, `/fork` session copy, moving a session to the background) with `source: fork`; without the matcher the branch started with no injected record, so the model did not see the work list. Older Claude Code reports branches as `resume` and was never affected. Reinstalling rewrites only the Claude settings file; the Codex hooks file is unchanged (no re-trust). Core logic unchanged.
+설치기: Claude Code SessionStart matcher에 `fork`를 추가했다(`startup|resume|clear|compact|fork`). Claude Code 2.1.214+는 분기 세션(`/branch`, `--fork-session`, `/fork` 세션 복사, 백그라운드 전환)의 시작을 `source: fork`로 보고하는데, matcher에 없어 분기 세션에 기록 주입이 뜨지 않았다. 그 미만 버전은 분기를 `resume`으로 보고해 영향이 없었다. 재설치는 Claude 설정 파일만 바꾸고 Codex hooks 파일은 그대로다(재신뢰 없음). 코어 논리 변경 없음.
+
 ## 2.11.0 — 2026-10-13
 Installer: when the project is a git repository, `.gitignore` gets `.worklog/sessions/` and `.worklog/.lock` (lines already present are left alone; an existing `.gitignore` is backed up like every other file). Session files change on every turn and are per-machine state; committing them made Claude Code's auto mode show a diff after every save or skip. The record under `works/` stays committable. Existing projects that already track them: run `git rm -r --cached .worklog/sessions .worklog/.lock` once after reinstalling. Not applied with `--no-worklog-dir`. Core logic unchanged.
 설치기: 프로젝트가 git 저장소면 `.gitignore`에 `.worklog/sessions/`와 `.worklog/.lock`을 추가한다(이미 있는 줄은 그대로, 기존 `.gitignore`는 다른 파일처럼 백업). 세션 파일은 턴마다 바뀌는 기기별 상태라 커밋하면 Claude Code auto 모드가 save·skip마다 diff를 보여 줬다. `works/`의 기록은 그대로 커밋할 수 있다. 이미 추적 중인 프로젝트는 재설치 뒤 `git rm -r --cached .worklog/sessions .worklog/.lock`을 한 번 실행한다. `--no-worklog-dir`에는 적용하지 않는다. 코어 논리 변경 없음.
