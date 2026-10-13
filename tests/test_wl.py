@@ -472,6 +472,24 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(len(backups), 1)  # 날짜·시각 붙은 백업, 두 번째 실행은 변경 없음
         self.assertEqual(backups[0].read_text(), "# 기존 내용\n")
 
+    def test_installer_gitignore_in_git_project(self):
+        """2.11.0: git 프로젝트면 .gitignore에 세션 파일·잠금 줄을 더하고, 이미 있는 줄·git 아닌 폴더는 건드리지 않는다."""
+        inst = INST
+        run_inst = lambda: subprocess.run([sys.executable, "-B", str(inst), "--tool", "claude", "--root", str(self.root)], check=True, capture_output=True)
+        run_inst()
+        self.assertFalse((self.root / ".gitignore").exists())  # git 저장소가 아니면 만들지 않는다
+        (self.root / ".git").mkdir()
+        (self.root / ".gitignore").write_text("node_modules/\n.worklog/.lock\n")
+        run_inst()
+        text = (self.root / ".gitignore").read_text()
+        self.assertEqual(text, "node_modules/\n.worklog/.lock\n.worklog/sessions/\n")  # 빠진 줄만 끝에 추가
+        self.assertEqual(len(list(self.root.glob(".gitignore.bak-worklog-*"))), 1)  # 기존 파일은 백업
+        run_inst()
+        self.assertEqual((self.root / ".gitignore").read_text(), text)  # 두 번째 실행은 변경 없음
+        self.assertEqual(len(list(self.root.glob(".gitignore.bak-worklog-*"))), 1)
+        subprocess.run([sys.executable, "-B", str(inst), "--tool", "claude", "--root", str(self.root), "--no-worklog-dir"], check=True, capture_output=True)
+        self.assertEqual((self.root / ".gitignore").read_text(), text)  # 상위 폴더 설치는 .gitignore를 건드리지 않는다
+
     # --- 배포 전 검토 회귀 시험 ---
     def install(self, *extra, inst=INST):
         p = subprocess.run([sys.executable, "-B", str(inst), "--tool", "claude", "--root", str(self.root), *extra],

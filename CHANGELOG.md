@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.11.0 — 2026-10-13
+Installer: when the project is a git repository, `.gitignore` gets `.worklog/sessions/` and `.worklog/.lock` (lines already present are left alone; an existing `.gitignore` is backed up like every other file). Session files change on every turn and are per-machine state; committing them made Claude Code's auto mode show a diff after every save or skip. The record under `works/` stays committable. Existing projects that already track them: run `git rm -r --cached .worklog/sessions .worklog/.lock` once after reinstalling. Not applied with `--no-worklog-dir`. Core logic unchanged.
+설치기: 프로젝트가 git 저장소면 `.gitignore`에 `.worklog/sessions/`와 `.worklog/.lock`을 추가한다(이미 있는 줄은 그대로, 기존 `.gitignore`는 다른 파일처럼 백업). 세션 파일은 턴마다 바뀌는 기기별 상태라 커밋하면 Claude Code auto 모드가 save·skip마다 diff를 보여 줬다. `works/`의 기록은 그대로 커밋할 수 있다. 이미 추적 중인 프로젝트는 재설치 뒤 `git rm -r --cached .worklog/sessions .worklog/.lock`을 한 번 실행한다. `--no-worklog-dir`에는 적용하지 않는다. 코어 논리 변경 없음.
+
 ## 2.10.1 — 2026-10-13
 Tests only: `test_core_warning_on_newer_event` derived its "newer core" version from a hard-coded `2.10.0`, which stopped being newer once 2.10.0 shipped; it now uses the current minor number plus one. No change the model can notice.
 테스트만: `test_core_warning_on_newer_event`가 "더 새로운 코어"로 `2.10.0`을 고정해 두어 2.10.0 배포 뒤에는 더 새롭지 않았다. 이제 현재 부 번호 +1을 쓴다. 모델이 알아챌 변경 없음.
