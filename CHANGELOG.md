@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.10.1 — 2026-10-13
+Tests only: `test_core_warning_on_newer_event` derived its "newer core" version from a hard-coded `2.10.0`, which stopped being newer once 2.10.0 shipped; it now uses the current minor number plus one. No change the model can notice.
+테스트만: `test_core_warning_on_newer_event`가 "더 새로운 코어"로 `2.10.0`을 고정해 두어 2.10.0 배포 뒤에는 더 새롭지 않았다. 이제 현재 부 번호 +1을 쓴다. 모델이 알아챌 변경 없음.
+
 ## 2.10.0 — 2026-10-13
 The `new-work` notice now matches rule 2.9.0 B': "decisions and constraints to inherit are only those written in the prompt that delegated this work; if the prompt has none, ask the user" (was: "ask the user"). `SAVE_HELP` comment updated to the same wording. Core logic unchanged; only the text the model reads.
 `new-work`의 notice를 2.9.0 B'와 맞췄다: "이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요."(이전: "사용자에게 확인"). `SAVE_HELP` 주석도 같은 문구. 코어 논리는 그대로이고 모델이 읽는 문장만 바뀐다.
