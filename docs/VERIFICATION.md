@@ -10,13 +10,13 @@ Measured by hand in the real project (test work archived afterwards): `/branch` 
 
 **Codex (2026-10-14, codex-cli 0.158.0, trusted trial root, a logging SessionStart hook without matcher beside the installed one).** `/fork` → new thread, `source: fork`, installed hook did not run; `/new` → new thread, `startup`, ran; `/clear` → new thread, `clear`, did not run; `/side` → new thread with tools, `fork`, did not run (UserPromptSubmit·Stop did). Codex fires SessionStart at the new thread's first prompt. → 2.14.0 adds `clear`·`fork` to the Codex matcher. Evidence: `shared/runs/codex-fork-20261014/`.
 
-**Follow-up to ② (2.15.0).** Artifacts recorded by the current session whose file is gone are reported in show/use/injection and save/skip results; `verify` compares every artifact's existence and hash. Unit-tested only; whether the model relays the line to the user is not measured.
+**Follow-up to ② (2.15.0).** Artifacts recorded by the current session whose file is gone are reported in show/use/injection and save/skip results; `verify` compares every artifact's existence and hash. One model run (M10, Claude opus, 2026-10-14): the file was deleted after the model's own artifact save, the session resumed, and the next save result carried `artifacts_missing`; the model checked the folder, told the user the recorded file was gone, recorded a waiting item and asked whether to recreate it — PASS 1/1 (one run, not "always"). Script and evidence: `worklog-control/shared/runs/m-20261014-v2150/`.
 
 실제 프로젝트에서 손으로 실측(시험 작업은 뒤에 보관): `/branch` → 새 세션 id, 설치기 matcher에 `fork`가 있으면 SessionStart 주입(2.12.0). `/rewind` 대화 복원 → 같은 id, 모델에게 되감기 표시 없음, `show` 없이 재저장 → 중복 사건 1건(결정은 코어가 중복 제거) → 2.13.0에서 같은 세션·같은 summary 재저장 거부. `/rewind` 코드 복원 → 파일 삭제, 원장 그대로, 보고 없음(문서 기재, 코어 변경 없음). git worktree → 원장 둘, events.jsonl·state.md·writer.json 병합 충돌 → 2.13.0 `warning_worktree`. `/btw`→`f` 포크 → 메인 id로 자각하며 저장, 메인은 skip. 동시 저장 → 거부, `show`, 재저장. 미실측: rewind 메뉴 Summarize, Codex 대화형 resume(소스상 `resume`, matcher에 이미 있음).
 
 **Codex(2026-10-14, codex-cli 0.158.0, 신뢰된 시험 루트, 설치된 훅 옆에 matcher 없는 기록용 SessionStart 훅).** `/fork` → 새 thread, `source: fork`, 설치된 훅 미발화. `/new` → 새 thread, `startup`, 발화. `/clear` → 새 thread, `clear`, 미발화. `/side` → 도구 있는 새 thread, `fork`, 미발화(UserPromptSubmit·Stop은 발화). Codex는 새 thread의 첫 프롬프트 때 SessionStart를 발화한다. → 2.14.0에서 Codex matcher에 `clear`·`fork` 추가. 근거: `shared/runs/codex-fork-20261014/`.
 
-**② 후속(2.15.0).** 현재 세션이 기록한 산출물의 파일이 없으면 show·use·주입과 save·skip 결과에 표시하고, `verify`는 모든 산출물의 존재·해시를 대조한다. 단위 시험만 했고, 모델이 그 줄을 사용자에게 전하는지는 미실측.
+**② 후속(2.15.0).** 현재 세션이 기록한 산출물의 파일이 없으면 show·use·주입과 save·skip 결과에 표시하고, `verify`는 모든 산출물의 존재·해시를 대조한다. 모델 실행 1회(M10, Claude opus, 2026-10-14): 모델이 산출물을 저장한 뒤 파일을 지우고 같은 세션을 재개하자 다음 save 결과에 `artifacts_missing`이 붙었고, 모델은 폴더를 확인해 사용자에게 파일이 사라졌다고 알리고 대기 항목을 기록한 뒤 다시 만들지 물었다 — PASS 1/1(1회라 "항상"은 아님). 근거: `worklog-control/shared/runs/m-20261014-v2150/`.
 
 ## Delegation rule (2.8.0) — subagent vs separate session (2026-10-13, 23 model runs + 2 real uses)
 
