@@ -4,6 +4,12 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Rewind · branch · worktree (2.12.0–2.13.0, 2026-10-13, Claude Code, 1 real session)
+
+Measured by hand in the real project (test work archived afterwards): `/branch` → new session id, SessionStart injected once the installer matcher includes `fork` (2.12.0). `/rewind` conversation restore → same id, no rewind marker reaches the model, the model re-saved the turn without `show` → one duplicate event (decisions deduplicated by the core) → 2.13.0 refuses a same-session same-summary re-save. `/rewind` code restore → file gone, ledger unchanged, not reported (documented, no core change). git worktree → two ledgers, merge conflicts in events.jsonl/state.md/writer.json → 2.13.0 `warning_worktree`. `/btw`→`f` fork → saved under the main id with self-awareness, main skipped. Concurrent save → refused, `show`, re-saved. Not measured: rewind-menu Summarize, Codex `/fork`·`/new`·`/side`·interactive resume.
+
+실제 프로젝트에서 손으로 실측(시험 작업은 뒤에 보관): `/branch` → 새 세션 id, 설치기 matcher에 `fork`가 있으면 SessionStart 주입(2.12.0). `/rewind` 대화 복원 → 같은 id, 모델에게 되감기 표시 없음, `show` 없이 재저장 → 중복 사건 1건(결정은 코어가 중복 제거) → 2.13.0에서 같은 세션·같은 summary 재저장 거부. `/rewind` 코드 복원 → 파일 삭제, 원장 그대로, 보고 없음(문서 기재, 코어 변경 없음). git worktree → 원장 둘, events.jsonl·state.md·writer.json 병합 충돌 → 2.13.0 `warning_worktree`. `/btw`→`f` 포크 → 메인 id로 자각하며 저장, 메인은 skip. 동시 저장 → 거부, `show`, 재저장. 미실측: rewind 메뉴 Summarize, Codex `/fork`·`/new`·`/side`·대화형 resume.
+
 ## Delegation rule (2.8.0) — subagent vs separate session (2026-10-13, 23 model runs + 2 real uses)
 
 ### English

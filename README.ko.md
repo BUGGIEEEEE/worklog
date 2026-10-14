@@ -57,6 +57,8 @@ python3 -B worklog/tools/install_project.py --tool codex  --root /프로젝트/�
 
 - `save` 결과에 Hook이 살아 있는지(`hooks`, 아니면 `warning`)와 check 인용이 규칙 문장을 그대로 베낀 것인지(`self_quoted`, 반영의 증거가 아님)가 표시됩니다.
 - 기록은 실수로 인한 변경은 감지하지만 의도적 변조는 막지 않습니다.
+- 되감기(`/rewind`)의 코드 복원은 파일만 되돌리고 기록은 그대로 둡니다. 기록에 적힌 산출물과 실제 파일이 달라져도 보고되지 않습니다. 대화 복원 뒤 같은 턴을 다시 저장하면 코어가 거부하고 `show`를 안내합니다(2.13.0).
+- git worktree(격리 포크) 안에서 저장한 기록은 본 저장소와 갈라져 병합 때 `.worklog/works/*/events.jsonl`이 충돌합니다. 코어가 `warning_worktree`로 경고합니다. 기록은 본 저장소 세션에서 하세요.
 - Pi는 미검증입니다. 모델 지침과 메시지는 한국어입니다.
 
 상세: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · 라이선스 MIT([LICENSE](LICENSE))
