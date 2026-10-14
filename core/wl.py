@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.14.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.15.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -61,6 +61,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
 "기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
+결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·삭제). 사용자에게 알린다.
 읽기 전용 턴(저장할 것이 없음): python3 -B wl.py skip "이유" — 원장에는 아무것도 쓰지 않는다.
 
 작업 선택 — 사용자가 지정한다. 모델이 임의로 고르거나 만들지 않는다.
@@ -336,6 +337,43 @@ def cmd_update(args):
     if p.returncode != 0:
         raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
     print(p.stdout, end="")
+
+
+ARTIFACTS_MISSING = "이 세션이 기록한 산출물이 실제 파일에 없다"
+
+
+def own_missing_artifacts(d, events, state, who):
+    """["path(Eid)"] for artifacts this session recorded whose file is gone (rewind code restore, deletion).
+    Only this session's: a file another session or the user removed on purpose is not nagged every turn (verify checks all)."""
+    if not who or not state.get("artifacts"):
+        return []
+    tool, sid = who
+    by_id = {e["id"]: e for e in events}
+    out = []
+    for a in state["artifacts"]:
+        ev = by_id.get(a.get("event"))
+        if ev and ev.get("tool") == tool and ev.get("session_id") == sid and not (d.parent / a["path"]).is_file():
+            out.append(f"{a['path']}({a['event']})")
+    return out
+
+
+def artifacts_note(missing):
+    """Text line for show·use·SessionStart (output only, never in state.md)."""
+    return (f"[Worklog 산출물 없음] {ARTIFACTS_MISSING}: {', '.join(missing)}. 되감기(rewind) 코드 복원이나 삭제가 원인일 수 있다. "
+            "사용자에게 알린다.\n") if missing else ""
+
+
+def artifacts_check(d, state):
+    """verify: every artifact — missing files and changed hashes. Not an error: a recorded file may change afterwards."""
+    arts = state.get("artifacts", [])
+    missing, changed = [], 0
+    for a in arts:
+        p = d.parent / a["path"]
+        if not p.is_file():
+            missing.append(f"{a['path']}({a['event']})")
+        elif sha(p.read_bytes()) != a.get("sha256"):
+            changed += 1
+    return {"missing": missing, "changed": changed, "checked": len(arts)}
 
 
 def worktree_report(d):
@@ -828,8 +866,9 @@ def cmd_save(args):
         rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
         update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
+        missing = own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid))
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
-                      "self_quoted": self_quoted,
+                      "self_quoted": self_quoted, **({"artifacts_missing": missing} if missing else {}),
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
                       "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]],
@@ -989,6 +1028,7 @@ def read_work(d, wid, title, who, **session_changes):
     newer = core_report(events)
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
+    note += artifacts_note(own_missing_artifacts(d, events, state, who))
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
     return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n")
@@ -1000,7 +1040,7 @@ def check_work(d, wid, title):
     state, _ = fold(events)
     ok_json, ok_md = projection_ok(wd, state, wid, title, events)
     return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
-            "state_json": ok_json, "state_md": ok_md, **core_report(events)}
+            "state_json": ok_json, "state_md": ok_md, "artifacts": artifacts_check(d, state), **core_report(events)}
 
 
 def cmd_verify(args):
@@ -1197,8 +1237,13 @@ def injection(d, who):
             mark_hook(d, who, "SessionStart")
     if cur:
         title = works[cur]["title"]
-        out += [f"## 현재 작업: {cur} · {title}",
-                render(fold(events)[0], cur, title).rstrip("\n") if events else "기록 없음. 첫 save가 기록을 만든다."]
+        out.append(f"## 현재 작업: {cur} · {title}")
+        if events:
+            st = fold(events)[0]
+            out += [x for x in (artifacts_note(own_missing_artifacts(d, events, st, who)).rstrip("\n"),) if x]
+            out.append(render(st, cur, title).rstrip("\n"))
+        else:
+            out.append("기록 없음. 첫 save가 기록을 만든다.")
     else:
         out += ["## 현재 작업 없음", NO_WORK_GUIDE]
     return ("EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"), "\n".join(out) + "\n"
@@ -1273,9 +1318,18 @@ def cmd_skip(args):
         print(json.dumps({"ok": True, "turn": 0}))
         return
     with locked(d):
-        turn = session_or_new(d, tool, sid)["turn"]
+        s = session_or_new(d, tool, sid)
+        turn = s["turn"]
         update_session(d, tool, sid, skipped_turn=turn)
-    print(json.dumps({"ok": True, "turn": turn, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
+        missing, cur = [], s.get("current_work")
+        if cur and work_dir(d, cur).is_dir():
+            try:
+                evs, _ = read_events(work_dir(d, cur))
+                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
+            except (Reject, OSError, ValueError):
+                pass
+    print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
+                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 def main(argv=None):

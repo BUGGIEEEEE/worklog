@@ -57,7 +57,7 @@ Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the c
 
 - `save` results tell you whether the hooks are alive (`hooks`, and a `warning` when they are not) and whether a `check` quote merely repeated the rule's own text (`self_quoted`, not evidence that the rule was followed).
 - The record detects accidental edits, not deliberate tampering.
-- A `/rewind` code restore reverts files only; the record stays, and a recorded artifact that no longer matches its file is not reported. Re-saving the same turn after a conversation restore is refused by the core, which points to `show` (2.13.0).
+- A `/rewind` code restore reverts files only; the record stays. An artifact this session recorded whose file is gone shows up in the next `show`/save result as `[Worklog 산출물 없음]`/`artifacts_missing` (2.15.0); `verify` checks every artifact's existence and hash. Re-saving the same turn after a conversation restore is refused by the core, which points to `show` (2.13.0).
 - A record written inside a git worktree (isolated fork) diverges from the main checkout and conflicts on merge (`.worklog/works/*/events.jsonl`). The core warns with `warning_worktree`; record from the main checkout instead.
 - Pi is untested. The model-facing rules and messages are in Korean.
 

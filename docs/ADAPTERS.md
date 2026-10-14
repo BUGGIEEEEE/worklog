@@ -38,6 +38,7 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 - SessionStart 주입이 있으면 턴 시작 `show`를 생략할 수 있고, 없으면 지침대로 `show`를 한 번 실행합니다. 두 경로 모두 같은 작업별 `works/<id>/state.md` 내용입니다.
 - 세 Hook은 돌 때마다 세션 파일에 `hooks_seen`을 남깁니다. save·skip 결과의 `hooks`와 `warning`(Hook 미작동 의심), `verify --all --tool … --session …`의 `hooks`로 Hook이 실제로 도는지 확인합니다. Codex에서 `/hooks` 신뢰를 빠뜨리면 첫 턴의 결과에서 바로 드러납니다.
 - 세션 id와 분기(2026-10-13 실측, Claude Code): `/branch`·`/clear`는 새 세션 id로 SessionStart(fork·clear) 주입을 받습니다. `/btw`→`f`·`/subtask`처럼 사용자가 띄운 포크 서브에이전트는 메인 세션 id를 그대로 쓰며 그 id로 저장합니다(메인은 `show`로 확인 뒤 중복 저장하지 않음). `/rewind` 대화 복원은 같은 세션 id이고 모델에게 되감기 표시가 가지 않으므로, 코어가 같은 세션·같은 summary 재저장을 거부합니다(2.13.0). 프로젝트 루트의 `.git`이 파일이면(git worktree) SessionStart 주입과 save·skip·verify·use에 `warning_worktree`가 붙습니다. Codex는 `/fork`·`/side`가 `fork`, `/clear`가 `clear`, `/new`가 `startup`으로 새 thread id를 받습니다(2026-10-14 실측).
+- 산출물 대조(2.15.0): 현재 세션이 기록한 산출물의 파일이 없으면 show·use·SessionStart 주입에 `[Worklog 산출물 없음]`, save·skip 결과에 `artifacts_missing`이 붙습니다(출력에만, state.md에는 없음). 전체 산출물의 존재·해시는 `verify`의 `artifacts`에서 봅니다.
 - Stop Hook은 save도 skip도 작업 지정(`selected_turn`)도 없는 턴을 한 번 막습니다. 읽기 전용 턴의 예외는 모델이 `skip "이유" --tool <도구>`를 실행하는 데 의존합니다. 막힌 뒤에는 save 또는 skip으로 마칩니다.
 
 ## 작업 선택 흐름
