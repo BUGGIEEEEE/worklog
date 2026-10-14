@@ -17,7 +17,7 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 | | Claude Code | Codex | Pi |
 |---|---|---|---|
 | 시작 지침 | `CLAUDE.md` 블록 | `AGENTS.md` 블록 | `AGENTS.md` 블록(cwd·상위 폴더에서 읽음) |
-| Skill | `.claude/skills/worklog` | `.agents/skills/worklog` (경로 미확인) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
+| Skill | `.claude/skills/worklog` | `.agents/skills/worklog` (`$worklog`로 호출 확인, 2026-10-14) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
 | Hook 위치 | `.claude/settings.local.json` | `.codex/hooks.json` | 없음 |
 | SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact·fork¹ → `wl.py hook --tool claude` | startup·resume·clear·compact·fork² → `wl.py hook --tool codex` | 없음 — 지침("못 봤으면 `show`") |
 | UserPromptSubmit (턴 시작) | `wl.py turn-start --tool claude` | `wl.py turn-start --tool codex` | 없음 — 지침 |
