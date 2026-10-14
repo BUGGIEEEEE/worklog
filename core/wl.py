@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.12.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.13.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -26,6 +26,8 @@ LIST_MAX = 10
 DONE_MAX = 3      # SessionStart 목록 뒤에 보여 주는 최근 COMPLETED 작업 수
 ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
 NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
+WORKTREE_WARNING = ("git worktree 안입니다. 여기서 저장한 기록은 본 저장소와 갈라져 병합 때 .worklog/works/*/events.jsonl이 충돌합니다. "
+                    "기록은 본 저장소 세션에서 하고, 여기서 저장했다면 병합 전에 충돌을 사람이 정리하세요.")
 HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 UserPromptSubmit Hook 기록이 없습니다. Hook이 꺼져 있거나 신뢰되지 않았거나 "
                 "세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
 NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
@@ -58,6 +60,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 }
 필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
 "기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
+"직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
 읽기 전용 턴(저장할 것이 없음): python3 -B wl.py skip "이유" — 원장에는 아무것도 쓰지 않는다.
 
 작업 선택 — 사용자가 지정한다. 모델이 임의로 고르거나 만들지 않는다.
@@ -335,11 +338,16 @@ def cmd_update(args):
     print(p.stdout, end="")
 
 
+def worktree_report(d):
+    """{"warning_worktree": ...} when the project root is a git worktree (.git is a file, not a directory): its ledger diverges from the main checkout."""
+    return {"warning_worktree": WORKTREE_WARNING} if (d.parent / ".git").is_file() else {}
+
+
 def hooks_report(d, tool, sid):
-    """{"hooks": {...}} for JSON results, plus "warning" when this session has no UserPromptSubmit hook record.
-    Pi has no hooks, so nothing is reported for it."""
+    """{"hooks": {...}} for JSON results, plus "warning" when this session has no UserPromptSubmit hook record
+    and "warning_worktree" inside a git worktree. Pi has no hooks, so only the worktree warning is reported for it."""
     if tool == "pi":
-        return {}
+        return worktree_report(d)
     try:
         s = load_session(d, tool, sid) or new_session()
     except SessionCorrupt:
@@ -349,6 +357,7 @@ def hooks_report(d, tool, sid):
     if "UserPromptSubmit" not in seen:
         out["warning"] = HOOK_WARNING
     out.update(install_report(d, tool))
+    out.update(worktree_report(d))
     return out
 
 
@@ -360,6 +369,8 @@ def hooks_note(d, who):
     note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
     if "warning_install" in report:
         note += f"[Worklog 사본 경고] {report['warning_install']}\n"
+    if "warning_worktree" in report:
+        note += f"[Worklog worktree 경고] {report['warning_worktree']}\n"
     return note
 
 
@@ -727,6 +738,12 @@ def cmd_save(args):
             raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다.")
         if seen is not None and seen < len(events):
             raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요.")
+        # 같은 세션이 직전 사건과 같은 내용을 다시 저장하면 거부: 되감기(rewind) 뒤 기억만 되돌아간 경우(신선도 검사는 통과한다)
+        last = events[-1] if events else None
+        if last and (last.get("tool"), last.get("session_id"), last.get("type")) == (tool, sid, p["type"]) \
+                and norm(last.get("summary") or "") == norm(p["summary"]):
+            raise Reject(f"직전 사건 {last['id']}와 같은 세션·같은 summary입니다. 되감기(rewind) 뒤라면 show로 현재 기록을 확인하고, "
+                         "이미 저장됐으면 skip하세요. 새 내용이면 summary를 바꿔 저장하세요.")
         # writer.json은 마지막 작성자 정보. takeover는 선택(사용자가 명시적으로 넘길 때 기록)
         wpath = wd / "writer.json"
         writer = read_writer(wpath)  # 정보용: 읽을 수 없으면 없는 것으로 보고 저장 성공 시 덮어쓴다
@@ -1029,7 +1046,7 @@ def verify_result(d, args, index):
         report = hooks_report(d, *who)
         if report:
             result["hooks"] = {"session": f"{who[0]}:{who[1]}", **report["hooks"]}
-            for key in ("warning", "warning_install"):
+            for key in ("warning", "warning_install", "warning_worktree"):
                 if key in report:
                     result["hooks"][key] = report[key]
     return result
@@ -1210,6 +1227,8 @@ def cmd_hook(args):
         stale = install_report(d, who[0])
         if stale:
             head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
+    if (d.parent / ".git").is_file():
+        head += f"[Worklog worktree 경고] {WORKTREE_WARNING} 사용자에게 알린다.\n"
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
                      ensure_ascii=False))
 

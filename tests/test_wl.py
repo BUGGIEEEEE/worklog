@@ -213,6 +213,42 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(codes.count(0), 1)  # 잠금으로 직렬화: 첫 저장만 성공, 나머지는 기록을 읽지 않아 거부
         self.assertEqual(run(self.root, "verify")[0], 0)
 
+    def test_save_rejects_same_session_repeat(self):
+        """같은 세션이 직전 사건과 같은 type·summary로 다시 저장하면 거부(되감기 뒤 재저장). 다른 세션이나 다른 summary는 허용."""
+        self.start(session="a")
+        self.assertEqual(run(self.root, "save", {"type": "CHECKPOINT", "summary": "결정 2 저장"}, session="a")[0], 0)
+        r, out = run(self.root, "save", {"type": "CHECKPOINT", "summary": " 결정 2  저장 "}, session="a")  # 공백 차이는 같은 글자
+        self.assertEqual(r, 2, out)
+        self.assertIn("직전 사건 E0001와 같은 세션·같은 summary", json.loads(out)["error"])
+        self.assertIn("skip", json.loads(out)["error"])
+        self.assertEqual(run(self.root, "save", {"type": "RESULT", "summary": "결정 2 저장"}, session="a")[0], 0)  # type이 다르면 허용
+        self.assertEqual(run(self.root, "save", {"type": "RESULT", "summary": "결정 3 저장"}, session="a")[0], 0)
+        r, out = use(self.root, session="b", tool="claude")
+        self.assertEqual(r, 0, out)
+        self.assertEqual(run(self.root, "save", {"type": "RESULT", "summary": "결정 3 저장"}, session="b", tool="claude")[0], 0)  # 다른 세션은 허용
+        self.assertEqual(len((self.wd / "events.jsonl").read_text().splitlines()), 4)
+
+    def test_worktree_warning(self):
+        """루트의 .git이 파일(git worktree)이면 SessionStart 주입·save·skip·verify·use에 경고, 폴더면 없음."""
+        self.start()
+        (self.root / ".git").mkdir()
+        r, out = hook(self.root, "hook")
+        self.assertNotIn("worktree", out)
+        self.assertNotIn("warning_worktree", run(self.root, "skip", extra=["읽기 전용"])[1])
+        (self.root / ".git").rmdir()
+        (self.root / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+        r, out = hook(self.root, "hook")
+        self.assertEqual(r, 0, out)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("[Worklog worktree 경고] git worktree 안입니다", ctx.split("## ")[0])  # head(주입 본문 앞)에 붙는다
+        r, out = run(self.root, "save", {"type": "CHECKPOINT", "summary": "w"})
+        self.assertEqual(r, 0, out)
+        self.assertIn("events.jsonl이 충돌", json.loads(out)["warning_worktree"])
+        self.assertIn("warning_worktree", run(self.root, "skip", extra=["읽기 전용"])[1])
+        self.assertIn("warning_worktree", json.loads(run(self.root, "verify", extra=["--all"])[1])["hooks"])
+        self.assertIn("[Worklog worktree 경고]", use(self.root, session="b", tool="pi")[1])
+        self.assertIn("warning_worktree", run(self.root, "skip", session="b", tool="pi", extra=["읽기 전용"])[1])
+
     def test_freshness(self):
         self.start(session="a")
         run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, session="a")
@@ -257,7 +293,7 @@ class CoreTest(unittest.TestCase):
                                          "check": {"D1": 'D1 반영: "식사 후 11분 동안"', "C1": "미반영: 알림은 만들지 않음"}})
         self.assertEqual(r, 0, out)  # 공백 정규화, 큰따옴표
         self.assertEqual(json.loads(out)["unreflected"], ["C1"])
-        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": arts,
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s2", "artifacts": arts,
                                          "check": {"D1": "'11분 동안'", "C1": "'알림은 만들지 않는다'"}})
         self.assertEqual(r, 0, out)  # 두 번째 산출물에만 있는 인용도 통과
         self.assertEqual(json.loads(out)["unreflected"], [])
@@ -758,11 +794,14 @@ class InstallWarningTest(Base):
         payload = {"type": "REQUEST", "summary": "x", "quote": "q"}
         self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 파일 없음
         (self.d / "install.json").write_text("{not json")
+        payload["summary"] = "x2"  # 같은 세션의 같은 summary 재저장은 2.13.0부터 거부
         self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 깨진 JSON
         (self.d / "install.json").write_text(json.dumps({"codex": "oops"}))
+        payload["summary"] = "x3"
         self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 항목이 객체가 아님
         current = hashlib.sha256((WL.parents[1] / "adapters" / "rules.md").read_bytes()).hexdigest()
         self.manifest(current)
+        payload["summary"] = "x4"
         self.assertNotIn("warning_install", self.ok(run(self.root, "save", payload)))  # 같은 해시
         self.assertNotIn("사본 경고", self.ctx(tool="codex"))
 
@@ -1551,7 +1590,7 @@ class FinalPlanTest(unittest.TestCase):
         self.assertEqual((out["self_quoted"], out["unreflected"]), (["C1"], []))  # 규칙 문장 그대로 = 증거 아님, 저장은 된다
         ev = json.loads((self.d / "works/t/events.jsonl").read_text().splitlines()[-1])
         self.assertEqual(ev["self_quoted"], ["C1"])
-        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "a.md"}],
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s2", "artifacts": [{"path": "a.md"}],
                                               "check": {"D1": "'11분 동안 적는다'", "C1": "미반영: 알림은 만들지 않았음"}}))
         self.assertEqual((out["self_quoted"], out["unreflected"]), ([], ["C1"]))
 
@@ -1562,10 +1601,10 @@ class FinalPlanTest(unittest.TestCase):
         out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}]}))  # check 생략 가능
         self.assertEqual(out["unreflected"], [])
         self.assertEqual(len(self.state()["artifacts"]), 1)
-        r, out = run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}], "check": {"C1": "'폭력'"}})
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "그림 2", "artifacts": [{"path": "ep.png"}], "check": {"C1": "'폭력'"}})
         self.assertEqual(r, 2)
         self.assertIn("비텍스트", json.loads(out)["error"])
-        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "그림", "artifacts": [{"path": "ep.png"}],
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "그림 3", "artifacts": [{"path": "ep.png"}],
                                               "check": {"C1": "미반영: 그림이라 인용 불가"}}))
         self.assertEqual(out["unreflected"], ["C1"])
         (self.root / "note.md").write_text("폭력 장면은 실루엣으로 처리했다.")
