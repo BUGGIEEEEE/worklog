@@ -249,6 +249,43 @@ class CoreTest(unittest.TestCase):
         self.assertIn("[Worklog worktree 경고]", use(self.root, session="b", tool="pi")[1])
         self.assertIn("warning_worktree", run(self.root, "skip", session="b", tool="pi", extra=["읽기 전용"])[1])
 
+    def test_artifacts_missing_same_session_only(self):
+        """이 세션이 기록한 산출물의 파일이 없으면 show·use·주입·save·skip에 표시. 다른 세션에는 없음. state.md에는 안 들어감."""
+        self.start(session="a")
+        (self.root / "a.md").write_text("본문 한 줄")
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "a.md"}]}, session="a")
+        self.assertEqual(r, 0, out)
+        self.assertNotIn("artifacts_missing", out)
+        (self.root / "a.md").unlink()
+        self.assertIn("[Worklog 산출물 없음] 이 세션이 기록한 산출물이 실제 파일에 없다: a.md(E0001)", run(self.root, "show", session="a")[1])
+        self.assertEqual(json.loads(run(self.root, "skip", session="a", extra=["읽기 전용"])[1])["artifacts_missing"], ["a.md(E0001)"])
+        out = json.loads(run(self.root, "save", {"type": "CHECKPOINT", "summary": "c"}, session="a")[1])
+        self.assertEqual(out["artifacts_missing"], ["a.md(E0001)"])
+        ctx = json.loads(hook(self.root, "hook", session="a", tool="codex")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("[Worklog 산출물 없음]", ctx)
+        self.assertNotIn("산출물 없음", (self.wd / "state.md").read_text())  # 출력에만 붙고 투영에는 없다
+        self.assertTrue(json.loads(run(self.root, "verify", extra=["--all"], session="a")[1])["ok"])
+        r, out = use(self.root, session="b", tool="claude")
+        self.assertEqual(r, 0, out)
+        self.assertNotIn("산출물 없음", out)  # 다른 세션이 기록한 산출물은 잔소리하지 않는다
+        self.assertNotIn("artifacts_missing", run(self.root, "skip", session="b", tool="claude", extra=["읽기 전용"])[1])
+        (self.root / "a.md").write_text("복구")
+        self.assertNotIn("산출물 없음", run(self.root, "show", session="a")[1])
+
+    def test_verify_artifacts(self):
+        """verify는 모든 산출물의 존재·해시를 대조해 artifacts에 보고하고 ok에는 반영하지 않는다."""
+        self.start()
+        for n in ("x.md", "y.md", "z.md"):
+            (self.root / n).write_text(n)
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": n} for n in ("x.md", "y.md", "z.md")]})
+        self.assertEqual(r, 0, out)
+        (self.root / "x.md").unlink()
+        (self.root / "y.md").write_text("바뀜")
+        r, out = run(self.root, "verify", extra=["--all"])
+        self.assertEqual(r, 0, out)
+        self.assertEqual(json.loads(out)["works"][0]["artifacts"], {"missing": ["x.md(E0001)"], "changed": 1, "checked": 3})
+        self.assertEqual(json.loads(run(self.root, "verify", extra=["--work", "t"])[1])["artifacts"]["missing"], ["x.md(E0001)"])
+
     def test_freshness(self):
         self.start(session="a")
         run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, session="a")
