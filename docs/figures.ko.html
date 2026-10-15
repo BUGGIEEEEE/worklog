@@ -1,0 +1,503 @@
+<!-- README 그림 원본. 재생성: python3 -B worklog-control/shared/tools/make_readme_figures.py --html docs/figures.ko.html --lang ko --out docs/img (GitHub Pages 미사용, 이 파일은 링크하지 않음) -->
+<title>Worklog 프롬프트 해부 최종안</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* README 보강용. GitHub Primer 팔레트(다크 우선). 기준: 한눈에 읽히는가. 라벨 칸은 맥락별로 맞추되 한 절 안에서는 같은 폭. 표현 단위 줄바꿈(<i>), 매달린 들여쓰기. */
+:root{
+  --label:150px; --num:64px; --brace:76px;
+  --bg:#0d1117; --surface:#161b22; --surface2:#1c2128; --line:#30363d; --fg:#e6edf3; --muted:#8b949e;
+  --sys:#1c2128; --sys-fg:#c9d1d9;
+  --rule:rgba(56,139,253,.12); --rule-fg:#79c0ff; --rule-line:rgba(56,139,253,.45);
+  --wl:rgba(47,143,138,.16); --wl-fg:#7fd1ca; --wl-line:#2f8f8a;
+  --user:rgba(210,153,34,.16); --user-fg:#e3b341; --user-line:rgba(210,153,34,.45);
+  --tool:rgba(163,113,245,.15); --tool-fg:#d2a8ff; --tool-line:rgba(163,113,245,.45);
+  --bad:rgba(248,81,73,.14); --bad-fg:#ffa198; --bad-line:rgba(248,81,73,.45);
+  --code:#1c2128; --link:#58a6ff;
+  --font:"IBM Plex Sans KR",system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#ffffff; --surface:#f6f8fa; --surface2:#eef1f4; --line:#d0d7de; --fg:#1f2328; --muted:#636c76;
+  --sys:#eef1f4; --sys-fg:#24292f;
+  --rule:#ddf4ff; --rule-fg:#0969da; --rule-line:#54aeff;
+  --wl:#d9f2f0; --wl-fg:#0f6e68; --wl-line:#2a9d96;
+  --user:#fff8c5; --user-fg:#7d4e00; --user-line:#d4a72c;
+  --tool:#fbefff; --tool-fg:#6639ba; --tool-line:#c297ff;
+  --bad:#ffebe9; --bad-fg:#a40e26; --bad-line:#ff8182;
+  --code:#eef1f4; --link:#0969da; color-scheme:light } }
+:root[data-theme="light"]{
+  --bg:#ffffff; --surface:#f6f8fa; --surface2:#eef1f4; --line:#d0d7de; --fg:#1f2328; --muted:#636c76;
+  --sys:#eef1f4; --sys-fg:#24292f;
+  --rule:#ddf4ff; --rule-fg:#0969da; --rule-line:#54aeff;
+  --wl:#d9f2f0; --wl-fg:#0f6e68; --wl-line:#2a9d96;
+  --user:#fff8c5; --user-fg:#7d4e00; --user-line:#d4a72c;
+  --tool:#fbefff; --tool-fg:#6639ba; --tool-line:#c297ff;
+  --bad:#ffebe9; --bad-fg:#a40e26; --bad-line:#ff8182;
+  --code:#eef1f4; --link:#0969da; color-scheme:light }
+body{background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5;font-size:16px;padding-block:32px 64px;padding-inline:16px;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:1120px;margin:0 auto;display:grid;gap:48px}
+header{display:grid;gap:8px}
+h1{font-size:1.9rem;line-height:1.2;margin:0;text-wrap:balance}
+h2{font-size:1.25rem;margin:0;text-wrap:balance}
+h2 small{font-weight:500;color:var(--muted);font-size:.85rem}
+.intro{margin-top:8px;border:1px solid var(--wl-line);border-left:4px solid var(--wl-line);background:var(--wl);border-radius:8px;padding:12px 16px;display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
+.intro .name{font-size:2.1rem;font-weight:700;color:var(--wl-fg);letter-spacing:.01em;line-height:1}
+.intro .desc{font-size:.95rem;line-height:1.55}
+@media (max-width:640px){.intro{grid-template-columns:1fr;gap:8px}}
+section{display:grid;gap:14px}
+.eyebrow{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+code{font-family:var(--mono);font-size:.82em;background:var(--code);border:1px solid var(--line);padding:0 4px;border-radius:4px;white-space:nowrap}
+a{color:var(--link)}
+small{color:var(--muted)}
+i{font-style:normal;display:inline-block}
+i.a::before{content:"→ ";color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:.84rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid var(--line)}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:.84rem;line-height:1.55;margin:0;color:var(--fg)}
+ul.dots{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+ul.dots li{display:grid;grid-template-columns:14px 1fr}
+ul.dots li::before{content:"·";color:var(--muted)}
+/* 예시 타임라인 */
+.tl{display:grid;grid-template-columns:1fr 92px 1fr;gap:10px;align-items:stretch}
+.tl .box{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:.9rem;display:grid;gap:8px;align-content:start}
+.tl .box .t{font-weight:700}
+.tl .box .q{font-family:var(--mono);font-size:.82rem;background:var(--code);border:1px solid var(--line);border-radius:4px;padding:4px 8px}
+.tl .mid{display:grid;place-items:center;text-align:center;color:var(--muted);font-size:.8rem;gap:4px}
+.tl .mid b{font-size:1.4rem;color:var(--wl-line);display:block}
+.keep{border:1px dashed var(--wl-line);color:var(--wl-fg);border-radius:6px;padding:6px 10px;font-size:.84rem}
+/* 문맥 창 그림 */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:28px;align-items:start}
+.stack{display:grid;gap:6px;min-width:0}
+.cap{font-weight:700;font-size:.95rem;display:grid;grid-template-columns:1fr auto;gap:8px;padding-bottom:4px;border-bottom:2px solid var(--line);margin-right:calc(var(--brace) + 8px)}
+.cap small{font-weight:500}
+.group{display:grid;grid-template-columns:1fr var(--brace);gap:8px}
+.group.left{grid-template-columns:var(--brace) 1fr}
+.group .layers{display:grid;gap:6px;min-width:0}
+.brace{position:relative;display:grid;place-items:center;font-size:.74rem;color:var(--muted);text-align:center;line-height:1.3}
+.brace::before{content:"";position:absolute;top:6px;bottom:6px;left:0;width:14px;border:2px solid var(--line);border-left:none;border-radius:0 8px 8px 0}
+.group.left .brace::before{left:auto;right:0;border:2px solid var(--line);border-right:none;border-radius:8px 0 0 8px}
+.brace.wl::before{border-color:var(--wl-line)}
+.brace span{position:relative;background:var(--bg);padding:2px 0;margin-left:14px}
+.group.left .brace span{margin-left:0;margin-right:14px}
+.group.left .total{grid-column:2}
+.brace b{display:block;font-family:var(--mono);font-weight:500;color:var(--fg)}
+.cap.left{margin-right:0;margin-left:calc(var(--brace) + 8px)}
+/* 1절 카드: 왼쪽 1열(규칙 블록) + 오른쪽 2행(주입, 비용) */
+.cards.split{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cards.split .col{display:grid;gap:12px;align-content:start}
+@media (max-width:720px){.cards.split{grid-template-columns:1fr}}
+mark.w{background:var(--wl);color:var(--wl-fg);border:1px solid var(--wl-line);border-radius:4px;padding:0 5px;font-weight:700}
+.tl+.tl{margin-top:10px}
+.tl .lab{grid-column:1/-1;font-size:.84rem;color:var(--muted);font-weight:600}
+.layer{border-radius:6px;padding:7px 10px;font-size:.88rem;min-width:0;border:1px solid var(--line);display:grid;grid-template-columns:var(--label) 1fr var(--num);gap:8px;align-items:center;min-height:44px;background:var(--surface)}
+.layer.nonum{grid-template-columns:var(--label) 1fr}
+.layer .k{font-weight:600}
+.layer .v{font-size:.84rem;color:var(--fg);opacity:.9}
+.layer .n{font-family:var(--mono);font-size:.78rem;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.l-sys{background:var(--sys);color:var(--sys-fg)}
+.l-rule{background:var(--rule);border-color:var(--rule-line)} .l-rule .k{color:var(--rule-fg)}
+.l-wl{background:var(--wl);border-color:var(--wl-line);border-left-width:4px} .l-wl .k{color:var(--wl-fg)}
+.l-user{background:var(--user);border-color:var(--user-line)} .l-user .k{color:var(--user-fg)}
+.l-tool{background:var(--tool);border-color:var(--tool-line)} .l-tool .k{color:var(--tool-fg)}
+.l-bad{background:var(--bad);border-color:var(--bad-line)} .l-bad .k{color:var(--bad-fg)}
+/* 중첩 상자: 지침 파일 안에 규칙 블록 */
+.wrap{border-radius:6px;border:1px solid var(--rule-line);background:var(--rule);padding:7px 10px 8px;display:grid;gap:6px;min-width:0}
+.wrap .head{display:grid;grid-template-columns:var(--label) 1fr var(--num);gap:8px;align-items:center;font-size:.88rem;min-height:28px}
+.wrap .head .k{font-weight:600;color:var(--rule-fg)}
+.wrap .head .v{font-size:.84rem;opacity:.9}
+.wrap .head .n{font-family:var(--mono);font-size:.78rem;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.wrap .layer{min-height:40px;grid-template-columns:calc(var(--label) - 10px) 1fr var(--num)}
+.wrap .layer.nonum{grid-template-columns:calc(var(--label) - 10px) 1fr}
+.wrap .layer.plain{background:var(--surface);border-color:var(--line)}
+/* 보조 설명(괄호·참고)은 한 단계 작게 */
+i.p{font-size:.92em;color:var(--muted)}
+/* 참고 사항: 2×2 */
+.cards.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+ul.dots li>span{min-width:0}
+@media (max-width:640px){.cards.two{grid-template-columns:1fr}}
+.total{grid-column:1;display:grid;grid-template-columns:1fr var(--num);gap:8px;font-size:.84rem;padding:4px 10px;border-top:2px solid var(--line);color:var(--muted)}
+.total .n{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;color:var(--fg)}
+.total.wl{border-top-color:var(--wl-line)}
+/* 카드 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:.9rem;min-width:0;display:grid;gap:7px;align-content:start}
+.card .t{font-weight:700;font-size:.95rem}
+.card .row{display:grid;grid-template-columns:minmax(72px,max-content) 1fr;gap:10px;align-items:start}
+.card .row b{font-weight:600;color:var(--muted);font-size:.82rem;padding-top:2px;white-space:nowrap}
+.card.wl{border-left:4px solid var(--wl-line)} .card.wl .t{color:var(--wl-fg)}
+.chips{display:grid;gap:6px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:4px 10px;font-size:.84rem;background:var(--surface2);display:grid;grid-template-columns:max-content 1fr;gap:10px}
+.chip b{font-weight:600}
+/* 주입 구조: 행마다 [왼쪽 층 | 오른쪽 주석]을 한 그리드 행에 두어 항상 같은 높이. 왼쪽 열은 청록 상자처럼 보이게 테두리를 이어 그림 */
+.inj{display:grid;gap:0}
+.irow{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px;align-items:stretch}
+.irow .lcell{background:var(--wl);border-left:4px solid var(--wl-line);border-right:1px solid var(--wl-line);padding:3px 10px;min-width:0;display:grid;align-items:center}
+.irow.head .lcell{border-top:1px solid var(--wl-line);border-radius:6px 6px 0 0;padding-top:8px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
+.irow.last .lcell{border-bottom:1px solid var(--wl-line);border-radius:0 0 6px 6px;padding-bottom:8px}
+.irow .layer{min-height:40px;grid-template-columns:var(--label) 1fr;background:var(--surface);border-color:var(--line)}
+.irow .layer .k{color:var(--fg)}
+.irow .layer.sub .k{padding-left:22px}
+.irow .layer.sub .k::before{content:"└ ";color:var(--muted)}
+/* 오른쪽 주석: 핵심(굵게) + 근거(작게) 두 줄, 행과 같은 높이의 상자 */
+.cm{font-size:.84rem;color:var(--muted);border:1px solid var(--line);border-left:3px solid var(--wl-line);background:var(--surface);border-radius:6px;padding:6px 12px;margin:3px 0;display:grid;align-content:center;min-width:0}
+.cm b{display:block;color:var(--fg);font-weight:600;font-size:.88rem}
+.cm small{display:block;color:var(--muted);font-size:.8rem;line-height:1.4}
+.irow.head .blank{display:grid;align-items:end;padding:0 12px 6px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
+/* 제목 옆 배지(예정 등): 사용자 메시지 색 계열 */
+.badge{display:inline-block;font-size:.74rem;font-weight:600;color:var(--user-fg);background:var(--user);border:1px solid var(--user-line);border-radius:999px;padding:1px 9px;margin-left:8px;vertical-align:middle}
+/* 0절: 파일 강조 블록 (이력 = 보라, 현재 상태 = 청록) */
+pre b.f-ev{color:var(--tool-fg);font-weight:600}
+pre b.f-st{color:var(--wl-fg);font-weight:600}
+.files{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.fbox{border-radius:6px;padding:8px 12px;font-size:.88rem;display:grid;gap:4px;min-width:0;border:1px solid}
+.fbox .q{font-family:var(--mono);font-size:.82rem;font-weight:600}
+.fbox.ev{background:var(--tool);border-color:var(--tool-line)} .fbox.ev .q{color:var(--tool-fg)}
+.fbox.st{background:var(--wl);border-color:var(--wl-line)} .fbox.st .q{color:var(--wl-fg)}
+.fbox span{font-size:.84rem}
+/* 1절 층: 라벨 칸을 좁혀 본문이 한 줄에 */
+.cols.ctx{--label:118px}
+/* 카드 행 간격 */
+.card{gap:10px}
+/* 상태값 카드: 라벨 칸을 2절 층의 본문 시작선에 맞춤 */
+.card.states .row{grid-template-columns:158px 1fr}
+/* 2절: 왼쪽 열을 아래 카드와 같은 너비로. 본문 시작선을 2절 층·상태값 카드·3절 흐름도가 공유 (x ≈ 160px) */
+.irow{grid-template-columns:repeat(2,minmax(0,1fr))}
+.irow.head .blank{border:none}
+.inj{--label:128px}
+.card.states .row{grid-template-columns:136px 1fr}
+/* 경고 카드: 항목명 칸 고정으로 설명 시작선 통일, 꼬리 문장은 항목명 글자 시작선에 */
+.chip{grid-template-columns:116px 1fr}
+.card .note{padding-left:11px}
+/* 1절: 왼쪽(트리 + 파일 블록) 세로 길이를 오른쪽 카드에 맞춤, 줄 간격 확대 */
+.cols.units{align-items:stretch}
+.stack.units{grid-template-rows:1fr auto;gap:10px}
+.stack.units pre{line-height:1.75;padding:12px 14px}
+.fbox{padding:12px 14px;gap:6px;line-height:1.6}
+.fbox span:not(.q){padding-left:8px}
+/* 복사 가능한 명령 블록 */
+.cmd{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:stretch;min-width:0}
+.cmd pre{font-size:.8rem;padding:8px 10px;line-height:1.5;white-space:pre;overflow-x:auto;min-width:0}
+.cmd .copy{font:inherit;font-size:.78rem;padding:0 10px;border-radius:6px;border:1px solid var(--line);background:var(--surface2);color:var(--fg);cursor:pointer}
+.cmd .copy:focus-visible{outline:2px solid var(--wl-line)}
+.card .row span>.cmd{margin:2px 0}
+.cards.one{grid-template-columns:1fr}
+.cards.one .card .row{grid-template-columns:110px 1fr}
+/* 3절: 전·후의 "그 뒤" 묶음이 같은 높이에서 시작하도록, 첫 묶음을 같은 높이로 늘리되 층은 위에 붙임 */
+.cols.ctx{align-items:stretch}
+.cols.ctx .stack{grid-template-rows:auto 1fr auto}
+.cols.ctx .group{align-content:start}
+/* 규칙 블록 카드: 줄 간격 확대 */
+.cards.split .card.wl:first-child{gap:16px}
+.cards.split .card.wl:first-child .row{line-height:1.65}
+/* 6절 미니 표 (2×2) */
+table.mini{margin-top:6px;font-size:.84rem;width:auto}
+table.mini th,table.mini td{padding:3px 10px 3px 0;border-bottom:1px solid var(--line)}
+table.mini th{font-size:.76rem}
+table.mini td:first-child{color:var(--muted);font-weight:600}
+/* 1절: 제목과 블록 사이 간격 축소, 카드 줄 간격 확대 */
+section.units{gap:10px}
+section.units .card{gap:14px}
+section.units .card .row{line-height:1.6}
+/* 3절: 전·후 모델 답변 상자 높이 통일(4줄 기준) */
+.cols.ctx .l-bad{min-height:112px}
+/* 5절: 수영 레인(열 = 사용자 / 모델 / Worklog 도구, 행 = 시간 순) */
+.lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:14px;row-gap:0;align-items:stretch}
+.lanes .lh{font-size:.8rem;font-weight:600;letter-spacing:.04em;text-align:center;padding:4px 0 6px;border-bottom:2px solid var(--line);color:var(--muted)}
+.lanes .lh.user{color:var(--user-fg)} .lanes .lh.model{color:var(--tool-fg)} .lanes .lh.wl{color:var(--wl-fg)}
+.lanes .step{border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:.86rem;min-width:0;display:grid;gap:2px;align-content:center;background:var(--surface);margin:6px 0}
+.lanes .step .t{font-weight:600}
+.lanes .step .d{font-size:.82rem;opacity:.9}
+.lanes .c1{grid-column:1} .lanes .c2{grid-column:2} .lanes .c3{grid-column:3}
+.lanes .step.user{background:var(--user);border-color:var(--user-line)} .lanes .step.user .t{color:var(--user-fg)}
+.lanes .step.model{background:var(--tool);border-color:var(--tool-line)} .lanes .step.model .t{color:var(--tool-fg)}
+.lanes .step.wl{background:var(--wl);border-color:var(--wl-line)} .lanes .step.wl .t{color:var(--wl-fg)}
+.lanes .step.recv{border-style:dashed}
+/* 행 구분: 점선 가운데에 다음 단계로 넘어가는 이유를 얹음 (화살표 없음) */
+.lanes .ar{grid-column:1/-1;position:relative;display:grid;place-items:center;height:30px;color:var(--muted)}
+.lanes .ar::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px dashed var(--line)}
+.lanes .ar em{display:none}
+.lanes .ar span{position:relative;font-size:.78rem;white-space:nowrap;background:var(--bg);padding:0 12px}
+@media (max-width:720px){.lanes{grid-template-columns:1fr}.lanes .lh{display:none}.lanes .c1,.lanes .c2,.lanes .c3{grid-column:1}.lanes .ar{padding-left:12px}}
+/* 세로 흐름도 */
+.vflow{display:grid;gap:0;--label:142px}
+.vstep .box{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:.88rem;min-width:0;display:grid;grid-template-columns:var(--label) 1fr;gap:8px;align-items:center;background:var(--surface)}
+.vstep .box .t{font-weight:600}
+.vstep .box .d{font-size:.86rem;opacity:.9}
+.vstep .arrow{height:28px;display:grid;grid-template-columns:var(--label) 1fr;gap:8px;align-items:center;padding:0 10px;color:var(--muted)}
+.vstep .arrow em{font-style:normal;text-align:center;font-size:1.05rem}
+.vstep .arrow span{font-size:.78rem}
+.vstep.wl .box{background:var(--wl);border-color:var(--wl-line)} .vstep.wl .t{color:var(--wl-fg)}
+.vstep.user .box{background:var(--user);border-color:var(--user-line)} .vstep.user .t{color:var(--user-fg)}
+.vstep.tool .box{background:var(--tool);border-color:var(--tool-line)} .vstep.tool .t{color:var(--tool-fg)}
+.vstep.ans .box{background:var(--surface2)}
+@media (max-width:720px){
+  :root{--label:120px;--brace:60px}
+  .inj{grid-template-columns:1fr}.cms{padding-top:0}.cm{border-left:none;padding:0 0 4px 24px;min-height:0}
+  .tl{grid-template-columns:1fr}.tl .mid b{transform:rotate(90deg)}
+}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">README 보강 자료 · 최종안 · 2026-10-15 실측 기준</div>
+  <div class="intro">
+    <span class="name">Worklog</span>
+    <span class="desc"><i>Claude Code·Codex가 대화 압축이나 새 세션 뒤에도</i> <i>정한 것을 잊지 않게 하는 기록 도구</i><br><i>이 페이지는 설치와 사용법부터</i> <i>그 기록이 모델의 입력에 들어가는 방식까지</i> <i>순서대로 보여 줍니다</i></span>
+  </div>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--sys)"></i>시스템·도구</span>
+    <span><i class="sw" style="background:var(--rule);border-color:var(--rule-line)"></i>지침 파일</span>
+    <span><i class="sw" style="background:var(--wl);border-color:var(--wl-line)"></i>Worklog가 더한 층</span>
+    <span><i class="sw" style="background:var(--user);border-color:var(--user-line)"></i>사용자 메시지</span>
+    <span><i class="sw" style="background:var(--tool);border-color:var(--tool-line)"></i>도구 호출·결과</span>
+    <span><i class="sw" style="background:var(--bad);border-color:var(--bad-line)"></i>모델 답변</span>
+  </div>
+</header>
+
+<section class="units">
+  <h2>1. 기록의 단위 <small>Worklog가 무엇을 어디에 적는가</small></h2>
+  <div class="cols units" style="margin-top:-2px">
+    <div class="stack units">
+<pre>프로젝트 폴더/
+└── .worklog/                 프로젝트마다 하나 (설치 때 생성)
+    └── works/                작업마다 폴더 하나
+        ├── guide/            작업 1  종이 노트 습관 계획
+        │   ├── <b class="f-ev">events.jsonl</b>    이력
+        │   └── <b class="f-st">state.md</b>        현재 상태
+        ├── report/           작업 2  보고서 작성
+        ├── api-docs/         작업 3  API 문서 정리
+        └── …/                작업 n</pre>
+      <div class="files">
+        <div class="fbox ev"><span class="q">events.jsonl · 이력</span><span><i>모든 결정·결과를 순서대로</i> <i>· 덧붙이기만, 지우지 않음</i></span></div>
+        <div class="fbox st"><span class="q">state.md · 현재 상태</span><span><i>지금 유효한 목표·결정·제약·다음 할 일</i> <i>· ② 주입이 보여 주는 내용 (5절)</i></span></div>
+      </div>
+    </div>
+    <div class="card">
+      <span class="t">작업과 기록의 관계</span>
+      <div class="row"><b>작업 단위</b><span><i>작업마다 폴더 하나</i> <i>· 다른 작업의 결정·제약은 섞이지 않음</i> <i>· 세션은 작업 1~n 중 하나에 연결됨</i> <i class="p">(2절)</i></span></div>
+      <div class="row"><b>이력·현재</b><ul class="dots"><li><span>저장할 때마다 이력에 한 줄 추가</span></li><li><span>현재 상태는 이력에서 다시 계산</span></li><li><span><i>값을 바꾸면 이전 결정은 이력에 남고</i> <i>현재 상태에는 최신만</i></span></li></ul></div>
+      <div class="row"><b>보는 법</b><span><i>AI에게 <code>현재 작업 상태 보여 줘</code></i> <i>· 파일로는 <code>state.md</code></i> <i>· 모델은 세션 시작 때 자동으로 받음</i> <i class="p">(4·5절)</i></span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>2. 어떻게 사용하나 <small>설치는 AI에게 시키고, 그 뒤에는 말로 작업을 고르기만</small></h2>
+  <div class="cards one">
+    <div class="card">
+      <span class="t">설치 — AI에게 시키면 됨</span>
+      <div class="row"><b>AI에게</b><span><code>https://github.com/BUGGIEEEEE/worklog 를 clone해서 이 프로젝트에 Worklog 설치해 줘</code></span></div>
+      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone은 처음 한 번, 프로젝트 연결은 프로젝트마다 한 번</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
+      <div class="row"><b>사람이 할 일</b><span><i>Codex: 첫 세션에서 프로젝트와 <code>/hooks</code>의 자동 실행 설정 3개를 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i></span></div>
+      <div class="row"><b>확인</b><span><i>AI에게 <code>Worklog 버전 확인해 줘</code></i> <i class="a">설치된 버전을 알려 줌</i></span></div>
+    </div>
+  </div>
+  <div class="cards two">
+      <div class="card">
+        <span class="t">작업할 때 하는 말</span>
+        <div class="row"><b>첫 세션</b><span><code>새 작업: 종이 노트 습관 계획 guide</code> <i class="a">작업 guide 생성</i> <i class="p">(id는 제목의 영문·숫자로 만듦 · 없으면 work)</i></span></div>
+        <div class="row"><b>다음 세션</b><span><code>guide 이어서. plan.md 써 줘.</code> <i class="a">기록을 받아 이어서 진행</i></span></div>
+        <div class="row"><b>다른 작업 참조</b><span><code>guide에서 정한 시간 배분을 참고해 줘</code><br><i class="a">모델이 guide의 기록을 읽어 참고</i> <i>· 가져오는 것은 요청한 내용만</i></span></div>
+        <div class="row"><b>위임</b><span><i>AI에게 맡기라고 말하면 됨</i> <i>· 별도 세션을 직접 열면 첫 프롬프트를 <code>guide 이어서. 하위 작업: 〈이름〉</code>으로</i></span></div>
+        <div class="row"><b>목록 확인</b><span><i>작업이 여러 개면 세션 시작 때 모델이 목록을 보여 주고 물음</i></span></div>
+        <div class="row"><b>저장</b><span><i>사용자가 할 일 없음</i> <i>· 턴마다 모델이 저장</i></span></div>
+      </div>
+      <div class="card">
+        <span class="t">그 밖에 필요할 때 하는 말</span>
+        <div class="row"><b>잠시 끄기</b><span><code>워크로그 꺼</code> / <code>워크로그 켜</code> <i class="p">(그 프로젝트 전체 · 꺼진 동안 기록 없음)</i></span></div>
+        <div class="row"><b>업데이트</b><span><i>새 버전이 있으면 세션 시작 때 한 줄로 알림</i> <i class="a"><code>Worklog 업데이트해 줘</code></i></span></div>
+        <div class="row"><b>현재 상태 보기</b><span><code>현재 작업 상태 보여 줘</code> <i class="a">목표·결정·제약·다음 할 일</i></span></div>
+      </div>
+  </div>
+</section>
+
+<section>
+  <h2>3. 예시 <small>이 페이지의 그림은 모두 이 상황을 전제</small></h2>
+  <div class="tl">
+    <div class="lab">경우 1 · 새 세션에서 같은 작업을 이어서</div>
+    <div class="box"><span class="t">세션 1 · 작업 <mark class="w">guide</mark> 시작</span><span class="q">새 작업: 종이 노트 습관 계획 guide</span>
+      <ul class="dots"><li><span>결정: 수요일 저녁 식사 후 7분</span></li><li><span>제약: 알림 등록 금지</span></li><li><span>다음 할 일: plan.md 작성</span></li></ul></div>
+    <div class="mid"><b>→</b><span>세션 종료</span></div>
+    <div class="box"><span class="t">세션 2 · 같은 작업 <mark class="w">guide</mark> 이어서</span><span class="q"><mark class="w">guide</mark> 이어서. plan.md 써 줘.</span>
+      <span class="keep"><i>세션 1의 결정·제약이 그대로 적용</i> <i>· 다시 말하지 않아도</i> <i>7분·수요일·알림 없음</i></span></div>
+  </div>
+  <div class="tl">
+    <div class="lab">경우 2 · 한 세션이 길어져 압축이 여러 번</div>
+    <div class="box"><span class="t">세션 1 초반 · 작업 <mark class="w">guide</mark></span><span class="q">새 작업: 종이 노트 습관 계획 guide</span>
+      <ul class="dots"><li><span>결정: 수요일 저녁 식사 후 7분</span></li><li><span>제약: 알림 등록 금지</span></li></ul></div>
+    <div class="mid"><b>→</b><span>긴 대화<br>압축 n회</span></div>
+    <div class="box"><span class="t">세션 1 후반 · 같은 작업 <mark class="w">guide</mark></span><span class="q">plan.md 써 줘.</span>
+      <span class="keep"><i>압축할 때마다 ② 주입이 다시 들어옴</i> <i class="a">처음 정한 7분·수요일·알림 없음이 희미해지지 않음</i></span></div>
+  </div>
+</section>
+
+<section>
+  <h2>4. 세션 2의 첫 턴에 모델이 받는 것 — 전 / 후 <small>턴 = 요청 한 번과 그 답변 · 오른쪽 숫자는 글자 수 · 2026-10-15 실측, Claude opus 전·후 각 1회</small></h2>
+  <div class="cols ctx">
+    <div class="stack">
+      <div class="cap left"><span>Worklog 전</span><small>4층</small></div>
+      <div class="group left">
+        <div class="brace"><span>모델 입력<b>25,085</b></span></div>
+        <div class="layers">
+          <div class="layer l-sys"><span class="k">시스템 프롬프트</span><span class="v"><i>Claude Code 기본 지시,</i> <i>환경 정보</i></span><span class="n">17,666</span></div>
+          <div class="wrap">
+            <div class="head"><span class="k">지침 파일</span><span class="v"></span><span class="n">7,396</span></div>
+            <div class="layer plain nonum"><span class="k">전역 지침</span><span class="v"><i>CLAUDE.md · AGENTS.md</i></span></div>
+          </div>
+          <div class="layer l-sys"><span class="k">도구 정의</span><span class="v"><i>Bash, Read, Edit, …</i></span><span class="n">—</span></div>
+          <div class="layer l-user"><span class="k">사용자 메시지</span><span class="v"><i>guide 이어서. plan.md 써 줘.</i></span><span class="n">23</span></div>
+        </div>
+        <div class="total"><span>첫 턴 합계 <i class="p">(도구 정의 제외)</i></span><span class="n">25,085</span></div>
+      </div>
+      <div class="group left">
+        <div class="brace"><span>그 뒤<b>26.5초</b></span></div>
+        <div class="layers">
+          <div class="layer l-tool"><span class="k">도구 호출</span><span class="v"><i>폴더·메모리 탐색</i> <i class="a">"guide" 기록 없음</i></span><span class="n">2회</span></div>
+          <div class="layer l-bad nonum"><span class="k">모델 답변</span><span class="v"><i>작성 안 함</i><br><i>· "지어내면 정하지 않은 값이 들어감"</i><br><i>· 목표·시간·제약을 되물음</i></span></div>
+        </div>
+        <div class="total"><span>응답 시간</span><span class="n">26.5초</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="cap"><span>Worklog 후</span><small>더한 것 2개 <i class="p">(청록)</i></small></div>
+      <div class="group">
+        <div class="layers">
+          <div class="layer l-sys"><span class="k">시스템 프롬프트</span><span class="v"><i>그대로</i></span><span class="n">17,666</span></div>
+          <div class="wrap">
+            <div class="head"><span class="k">지침 파일</span><span class="v"></span><span class="n">15,267</span></div>
+            <div class="layer plain"><span class="k">전역 지침</span><span class="v"><i>그대로</i></span><span class="n">7,396</span></div>
+            <div class="layer l-wl"><span class="k">① 규칙 블록</span><span class="v"><i>프로젝트 CLAUDE.md에 설치기가 써 둔</i> <i>Worklog 행동 규칙</i> <i>· 항상 같음</i></span><span class="n">7,871</span></div>
+          </div>
+          <div class="layer l-sys"><span class="k">도구 정의</span><span class="v"><i>그대로</i> <i class="p">(+ 스킬 worklog 이름 한 줄)</i></span><span class="n">—</span></div>
+          <div class="layer l-wl"><span class="k">② 주입</span><span class="v"><i>세션 시작 때 자동으로 붙는 기록 요약</i> <i>· 매 세션 다름</i></span><span class="n">405</span></div>
+          <div class="layer l-user"><span class="k">사용자 메시지</span><span class="v"><i>guide 이어서. plan.md 써 줘.</i> <i class="p">(그대로)</i></span><span class="n">23</span></div>
+        </div>
+        <div class="brace wl"><span>모델 입력<b>33,361</b>+33%</span></div>
+        <div class="total wl"><span>첫 턴 합계 <i class="p">(도구 정의 제외)</i> · +8,276</span><span class="n">33,361</span></div>
+      </div>
+      <div class="group">
+        <div class="layers">
+          <div class="layer l-tool"><span class="k">도구 호출</span><span class="v"><i>use</i> <i class="a">Write plan.md</i> <i class="a">save</i></span><span class="n">4회</span></div>
+          <div class="layer l-bad nonum"><span class="k">모델 답변</span><span class="v"><i>plan.md 작성</i><br><i>· 수요일·7분 반영</i><br><i>· 알림 없음</i><br><i>· 작성 전에 되묻지 않음</i></span></div>
+        </div>
+        <div class="brace"><span>그 뒤<b>32.1초</b></span></div>
+        <div class="total"><span>응답 시간</span><span class="n">32.1초</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cards split">
+    <div class="card wl">
+      <span class="t">① 규칙 블록 — 모델이 기록을 다루는 절차</span>
+      <div class="row"><b>위치</b><span><i>프로젝트의 <code>CLAUDE.md</code></i> <i class="p">(Claude Code가 세션마다 읽는 지침 파일)</i> <i>· 설치기가 한 번 기록</i></span></div>
+      <div class="row"><b>턴 시작</b><span><i>② 주입이 있으면 현재 상태로 사용</i> <i>· 없으면 <code>show</code>로 기록 읽기</i></span></div>
+      <div class="row"><b>작업 선택</b><span><i>사용자가 <code>〈id〉 이어서</code> 또는</i> <i><code>새 작업: 〈제목〉</code>이라고 할 때만</i> <i>· 임의 선택 없음</i></span></div>
+      <div class="row"><b>저장</b><span><i>턴 종료 전 <code>save</code></i> <i>· 결정·제약마다 산출물에서 인용하거나</i> <i>"미반영: 사유" 기재</i></span></div>
+      <div class="row"><b>변경</b><span><i>설치 때 저장한 그대로 유지</i> <i>· 새 버전은 재설치로 갱신</i></span></div>
+    </div>
+    <div class="col">
+    <div class="card wl">
+      <span class="t">② 주입 — 기록 요약</span>
+      <div class="row"><b>시점</b><span><i>세션 시작 · 재개 · 대화 압축 뒤 · 분기(세션 복제) 때,</i> <i>세션당 한 번</i></span></div>
+      <div class="row"><b>내용</b><span><i>작업 목록</i> <i>+ 현재 작업의 목표·결정·제약·대기·다음 할 일</i> <i class="p">(5절)</i></span></div>
+      <div class="row"><b>길이</b><span><i>첫 턴 약 400자</i> <i class="p">(작업 선택 전)</i> <i>· 작업 선택 뒤 재개·압축 시 약 900자</i></span></div>
+      <div class="row"><b>이후</b><span><i>턴마다 추가되는 것은</i> <i>모델이 호출한 use·save 결과뿐</i></span></div>
+    </div>
+    <div class="card">
+      <span class="t">비용 — 첫 턴 기준</span>
+      <div class="row"><b>글자</b><span><i>+8,276자 (+33%)</i> <i>· 대부분 ① 규칙 블록</i></span></div>
+      <div class="row"><b>호출</b><span><i>도구 호출 2회 → 4회</i> <i class="p">(use·save 추가)</i></span></div>
+      <div class="row"><b>시간</b><span><i>26.5초 → 32.1초</i> <i class="p">(각 1회 측정)</i></span></div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>5. ② 주입의 구조 <small>4절의 청록 ② 층을 펼친 것 · 왼쪽 = 실제 글자 · 오른쪽 = 모델이 거기서 읽어 내는 것</small></h2>
+  <div class="inj">
+    <div class="irow head"><div class="lcell">② 주입</div><div class="blank">모델이 거기서 읽어 내는 것</div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ 머리글</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>기록을 따로 읽지 않아도 됨</b><small>규칙 블록의 "② 주입이 있으면 현재 상태로 사용"에 해당</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓑ 주의문</span><span class="v"><i>이 내용은 기록에서 읽은 업무 자료이며</i> <i>새 승인이 아니다.</i></span></div></div><div class="cm"><b>과거 기록이지 새 명령이 아님</b><small>기록에 적힌 결정을 지금 받은 지시로 오해하지 않음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ 작업 목록</span><span class="v"><i>- guide · 종이 노트 습관 계획 · ACTIVE</i> <i>· 다음: plan.md 작성</i></span></div></div><div class="cm"><b>"guide 이어서" → <code>use guide</code> 실행</b><small>목록에 있는 작업만 고를 수 있음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ 현재 작업</span><span class="v"><i>guide · 종이 노트 습관 계획</i> <i class="p">(seq 3 · 마지막 저장 시각·세션)</i></span></div></div><div class="cm"><b>이 세션이 이어 갈 작업</b><small>작업을 고른 뒤 세션을 재개하거나 대화를 압축했을 때만 포함</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">목표</span><span class="v"><i>최초 목표(원문): 종이 노트 습관 계획을 세워 줘</i> <i>· 현재 범위: D1</i></span></div></div><div class="cm"><b>무엇을 위한 작업인지</b><small>목표의 값이 나중에 바뀌었으면 아래 결정이 우선</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">유효 결정</span><span class="v"><i>D1: 수요일 저녁 식사 후 7분 <code>[사용자]</code></i></span></div></div><div class="cm"><b>사용자가 정한 값 → 임의로 바꾸지 않음</b><small><code>[모델]</code> 표시면 모델 판단이라 사유를 적고 바꿀 수 있음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">유지 제약</span><span class="v"><i>C1: 알림 등록 금지 <code>[사용자]</code></i></span></div></div><div class="cm"><b>알림을 등록하지 않음</b><small>저장할 때 지켰다는 인용 또는 미반영 사유를 붙여야 함</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">대기</span><span class="v"><i>(없음)</i></span></div></div><div class="cm"><b>사용자 답변을 기다리는 항목 없음</b><small>있으면 먼저 확인하고 진행</small></div></div>
+    <div class="irow last"><div class="lcell"><div class="layer sub"><span class="k">다음 할 일</span><span class="v"><i>주간 계획 plan.md 작성</i></span></div></div><div class="cm"><b>이번 요청과 일치 → 이어서 진행</b><small>어디서부터 할지 다시 묻지 않음</small></div></div>
+  </div>
+  <div class="cards">
+    <div class="card">
+      <span class="t">ⓐ 뒤에 붙을 수 있는 경고</span>
+      <div class="chips">
+        <div class="chip"><b>갱신 안내</b><span>새 버전 있음</span></div>
+        <div class="chip"><b>worktree 경고</b><span><i>기록이 본 저장소와 갈라짐</i></span></div>
+        <div class="chip"><b>산출물 없음</b><span><i>이 세션이 기록한 파일이 사라짐</i></span></div>
+      </div>
+      <span class="note"><small><i>셋 다 "사용자에게 알린다"가 포함</i> <i class="a">모델이 전달</i></small></span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>6. Worklog가 있을 때 한 턴의 흐름 <small>4절의 "후"가 실제로 진행된 순서 · 위에서 아래로 · 열 = 누가 하는 일</small></h2>
+  <div class="lanes">
+    <div class="lh user">사용자</div><div class="lh wl">Worklog 도구</div><div class="lh model">모델 (Claude)</div>
+    <div class="step wl c2"><span class="t">1 · 세션 시작</span><span class="d"><i>기록을 읽어 ② 주입을 만듦</i> <i class="p">(자동 실행 장치 SessionStart 훅)</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step user c1"><span class="t">2 · 메시지</span><span class="d">guide 이어서. plan.md 써 줘.</span></div>
+    <div class="ar"><em>▼</em><span>규칙 블록 "작업 선택"에 따라</span></div>
+    <div class="step model c3"><span class="t">3 · <code>wl.py use guide</code> 실행</span><span class="d"><i>"guide 이어서"를 받아</i> <i>작업 선택을 요청</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step wl c2"><span class="t">4 · 현재 작업 현황 반환</span><span class="d"><i>이 세션의 작업을 guide로 지정</i> <i>· 목표·D1·C1·다음 할 일을 돌려줌</i></span></div>
+    <div class="ar"><em>▼</em><span>D1·C1을 반영해</span></div>
+    <div class="step model c3"><span class="t">5 · plan.md 작성</span><span class="d"><i>"매주 수요일 저녁 식사 후 7분 … 알림은 쓰지 않고"</i></span></div>
+    <div class="ar"><em>▼</em><span>규칙 블록 "저장"에 따라</span></div>
+    <div class="step model c3"><span class="t">6 · <code>wl.py save</code> 실행</span><span class="d"><i>산출물 plan.md</i> <i>· D1 인용, C1 미반영 사유</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step wl c2"><span class="t">7 · 검사 후 저장</span><span class="d"><i>인용이 본문에 실제로 있으면 저장</i> <i class="p">(E0002)</i><br><i>없으면 거부</i> <i class="a">모델이 고쳐서 다시 6번</i></span></div>
+    <div class="ar"><em>▼</em><span>모델이 답변을 마치려는 시점</span></div>
+    <div class="step wl c2"><span class="t">8 · Stop 훅 확인</span><span class="d"><i>이 턴에 save나 skip이 있으면 통과</i><br><i>없으면 턴 종료를 한 번 막고</i> <i>"save 또는 skip 후 마치라" 안내</i></span></div>
+    <div class="ar"><em>▼</em><span>통과</span></div>
+    <div class="step model c3"><span class="t">9 · 답변</span><span class="d"><i>plan.md 작성 완료</i> <i>· 기록된 결정·제약 반영</i><br><i>· 임의로 정한 부분은 의견 요청</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step user c1 recv"><span class="t">10 · 답변 받음</span><span class="d"><i>7분·수요일·알림 없음을</i> <i>다시 말한 적 없음</i></span></div>
+  </div>
+</section>
+
+<section>
+  <h2>7. 참고 사항</h2>
+  <div class="cards one">
+    <div class="card"><span class="t">Claude Code와 Codex가 동일하게 작동 <span class="badge">Pi 지원 예정</span></span>
+      <ul class="dots"><li><span><i>두 도구 모두 모델 입력에</i> <i>① 규칙 블록과 ② 주입이 같은 방식으로 들어감</i></span></li><li><span><i>두 도구가 한 프로젝트의 같은 <code>.worklog/</code> 기록을</i> <i>읽고 씀</i></span></li><li><span><i>다른 점은 설정 파일의 이름뿐</i>
+  <table class="mini"><tr><th></th><th>규칙 블록이 있는 파일</th><th>자동 실행 설정</th></tr>
+  <tr><td>Claude Code</td><td><code>CLAUDE.md</code></td><td><code>.claude/settings.local.json</code></td></tr>
+  <tr><td>Codex</td><td><code>AGENTS.md</code></td><td><code>.codex/hooks.json</code></td></tr></table></span></li></ul></div>
+  </div>
+  <div class="cards two">
+    <div class="card"><span class="t">다른 창에서 같은 작업을 고쳤다면?</span>
+      <ul class="dots"><li><span><i>② 주입은 세션 시작 때 한 번만 들어옴</i> <i>· 그 사이 다른 세션이 같은 작업을 저장할 수 있음</i></span></li><li><span><i>이 세션이 저장할 때 도구가 "기록이 바뀌었습니다"로 거부</i><br><i class="a">모델이 기록을 다시 읽고 반영해서 저장</i></span></li><li><span>사용자가 할 일 없음</span></li></ul></div>
+    <div class="card"><span class="t">제거(uninstall)</span>
+      <div class="row"><b>AI에게</b><span><code>이 프로젝트에서 Worklog 제거해 줘</code></span></div>
+      <div class="row"><b>AI가 묻는 것</b><span><i>어느 도구에서 뺄지</i> <i class="p">(Claude Code · Codex · 전부)</i> <i>· 마지막 도구를 뺄 때만, 기록 <code>.worklog/</code>를 남길지 지울지</i></span></div>
+      <div class="row"><b>되돌리는 것</b><span><i>규칙 블록 · 자동 실행 설정 3개 · 스킬 파일 · <code>.gitignore</code> 줄</i> <i>· 바꾼 파일은 백업</i></span></div>
+      <div class="row"><b>기록</b><span><i>남기면 다시 설치할 때 그대로 이어짐</i> <i>· 다른 도구가 남아 있으면 기록은 그대로</i></span></div>
+      <div class="row"><b>AI가 실행</b><span><div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --root /프로젝트/경로 --tool all --keep-records</pre><button type="button" class="copy" data-for="cmd-uninstall">복사</button></div><i class="p">예시 · 한 도구만은 <code>--tool codex</code> · 완전 제거와 옵션은 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a></i></span></div>
+    </div>
+  </div>
+  <p><small>근거·측정값: <code>worklog-control/shared/runs/checks-20261015/</code> · 검증 결과: <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/docs/VERIFICATION.md">docs/VERIFICATION.md</a></small></p>
+</section>
+</main>
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var pre = document.getElementById(btn.dataset.for); if(!pre) return;
+    var text = pre.textContent; var done = function(){ btn.textContent = '복사됨'; setTimeout(function(){ btn.textContent = '복사'; }, 1500); };
+    var fallback = function(){ try{ var r = document.createRange(); r.selectNodeContents(pre); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = '선택됨 · ⌘C'; setTimeout(function(){ btn.textContent = '복사'; }, 2000); }catch(e){} };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, fallback); } else { fallback(); }
+  });
+});
+</script>
