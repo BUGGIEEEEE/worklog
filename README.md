@@ -49,8 +49,4 @@ python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all
 
 ![7. Good to know](docs/img/en-07-notes.png)
 
-- The record detects accidental edits, not deliberate tampering.
-- Situations where the record and reality can drift (`/rewind`, git worktrees, a deleted artifact) are reported by the tool as warnings. Details: [docs/ADAPTERS.md](docs/ADAPTERS.md) (Korean).
-- Text source of the figures: [docs/figures.en.html](docs/figures.en.html).
-
 Details: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · MIT ([LICENSE](LICENSE))

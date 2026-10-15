@@ -47,8 +47,4 @@ python3 -B worklog/tools/uninstall_project.py --root /프로젝트/경로 --tool
 
 ![7. 참고 사항](docs/img/ko-07-notes.png)
 
-- 기록은 실수로 인한 변경은 감지하지만 의도적 변조는 막지 않습니다.
-- 되감기(`/rewind`)·git worktree·산출물 삭제처럼 기록과 실제가 어긋날 수 있는 상황은 도구가 경고로 알려 줍니다. 자세한 내용은 [docs/ADAPTERS.md](docs/ADAPTERS.md).
-- 그림의 글자 원본: [docs/figures.ko.html](docs/figures.ko.html).
-
 상세: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · 라이선스 MIT([LICENSE](LICENSE))
