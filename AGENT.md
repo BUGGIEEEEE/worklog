@@ -4,7 +4,7 @@ You are reading this because a user gave you this repository and asked you to in
 
 ## What to tell the user
 
-Human-facing explanations live in [README.md](README.md) (English) and [README.ko.md](README.ko.md) (Korean): purpose, how it works (figures), what changes in their project, the trust steps, pausing, update and removal. Point the user there or repeat it in their language. Two things to always say: the model-facing rules and CLI messages are Korean, and the first session starts with `새 작업: <title>` (the work id is built from the Latin letters and digits in the title; none → `work`).
+Human-facing explanations live in [README.md](README.md) (English) and [README.ko.md](README.ko.md) (Korean): purpose, how it works, what changes in their project, the trust steps, pausing, update and removal. Most of each README is figures (PNG); the same content as text, section by section, is in [docs/figures.en.html](docs/figures.en.html) and [docs/figures.ko.html](docs/figures.ko.html) — read those when you need to quote or explain it. Point the user to the README or repeat it in their language. Two things to always say: the model-facing rules and CLI messages are Korean, and the first session starts with `새 작업: <title>` (the work id is built from the Latin letters and digits in the title; none → `work`).
 
 ## Install
 
