@@ -13,6 +13,7 @@ You are reading this because a user gave you this repository and asked you to in
 
 ## Install
 
+0. **Ask which tools to install for, before anything else.** An agent tends to install only for itself; the user may use both. Look for `~/.claude` (Claude Code) and `~/.codex` (Codex) on this machine. If both exist, ask one question that says: which tools to install for (propose your own tool plus every other tool found); that both share the same `.worklog/`, so each sees the other's records; that Codex needs the user to trust the three hooks in `/hooks` after installing (you cannot do that); and that Claude Code shows a folder-trust dialog in a git repository. If only your own tool exists, install for it without asking. Do not install while the answer is pending: end your turn with the question. Pi is unverified: never propose it, install for it only when the user names it. Then run the installer once per chosen tool and never for a tool the user did not choose. Running it without `--tool` writes nothing and prints this same instruction plus which tools were found.
 1. Check: `python3 --version` is 3.9 or newer (the macOS Command Line Tools python3 is 3.9.6 and works), macOS or Linux.
 2. Clone to a permanent location. The hooks call `core/wl.py` by absolute path, so moving the clone later breaks them until the installer is re-run.
    ```sh
@@ -43,16 +44,17 @@ When an update changes how `state.md`/`state.json` are rendered (2026-10-09 did:
 
 ## Uninstall
 
-Ask the user first whether the records in `.worklog/` (`works/`, `index.json`, `project.md`) should stay or go; the script refuses without that choice outside a terminal.
+0. **Ask what to remove, before anything else.** First see what is installed in the project without writing anything: `--tool all --dry-run` (or run it without `--tool`: it refuses and lists the installed tools). If two or more tools are installed, ask one question: remove codex only, claude only, or all (add "pi only" once Pi is supported). Only when the last tool would go, the same question also asks whether the records in `.worklog/` (`works/`, `index.json`, `project.md`) should stay (`--keep-records`) or go (`--delete-records`); the script refuses without that choice outside a terminal. If one tool is installed, ask only about the records. Tell the user that removing one tool keeps the records and the shared state (lock, off marker, `.gitignore` line) for the other, and that Codex hook trust in `~/.codex/config.toml` is not touched. Do not run while the answer is pending.
 
 ```sh
-python3 -B worklog/tools/uninstall_project.py --root /path/to/project --keep-records --dry-run   # preview
-python3 -B worklog/tools/uninstall_project.py --root /path/to/project --keep-records             # or --delete-records
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records --dry-run   # preview
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool codex                          # one tool, another stays: no records choice needed
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records             # or --delete-records
 ```
 
-`--tool claude|codex|pi` removes one tool only (default: all); the records and shared state stay while another tool is installed, and `--delete-records` is refused then. It reverts the rules block, the three hooks (other hooks and settings in the same file stay), the skill folder, the `.gitignore` lines, the session files and the manifest; a later reinstall continues kept records. Files it edits or deletes are backed up as `.bak-worklog-<timestamp>` (`--no-backup` to skip; `--purge-backups` also deletes the installer's earlier backups). The output is JSON (`removed`, `changed`, `kept`, `backups`, `notes`); a refusal (exit 2, `error`) changed nothing.
+`--tool claude|codex|pi|all` is required with `--root`; the records and shared state stay while another tool is installed, and `--delete-records` is refused then. It reverts the rules block, the three hooks (other hooks and settings in the same file stay), the skill folder, the `.gitignore` lines, the session files and the manifest; a later reinstall continues kept records. Files it edits or deletes are backed up as `.bak-worklog-<timestamp>` (`--no-backup` to skip; `--purge-backups` also deletes the installer's earlier backups). The output is JSON (`removed`, `changed`, `kept`, `backups`, `notes`); a refusal (exit 2, `error`) changed nothing.
 
-To remove worklog completely: `--all-projects --delete-records --home` (or `--keep-records`) uninstalls every project listed in `~/.worklog/installs.json` and then deletes `~/.worklog`; projects installed before 2.17.0 are not listed, so pass them with `--root` first. The script never deletes the clone; tell the user the printed `rm -rf` command. It also never touches Codex hook trust in `~/.codex/config.toml` or Claude Code folder trust; Codex users can remove the stale trust entries themselves if they wish.
+To remove worklog completely: `--all-projects --delete-records --home` (or `--keep-records`; `--all-projects` means every tool) uninstalls every project listed in `~/.worklog/installs.json` and then deletes `~/.worklog`; projects installed before 2.17.0 are not listed, so pass them with `--root` first. The script never deletes the clone; tell the user the printed `rm -rf` command. It also never touches Codex hook trust in `~/.codex/config.toml` or Claude Code folder trust; Codex users can remove the stale trust entries themselves if they wish.
 
 ## Verify
 
