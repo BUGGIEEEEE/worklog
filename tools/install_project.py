@@ -2,6 +2,8 @@
 """Connect one project folder to the shared Worklog core for a given tool. Writes only inside --root.
 
 usage: install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
+Besides the project it appends {root: [tool]} to the registry ~/.worklog/installs.json (WL_HOME), which
+tools/uninstall_project.py --all-projects reads; uninstall_project.py reverses everything this script does.
 claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
 codex:  AGENTS.md block + three hooks in .codex/hooks.json + .agents/skills/worklog (user trust required)
 pi:     AGENTS.md block + .pi/skills/worklog        (Pi extensions need project trust → not installed; instructions path)
@@ -160,6 +162,32 @@ def manifest(worklog, tool):
     return path
 
 
+HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
+REGISTRY = HOME / "installs.json"
+
+
+def register(root, tool):
+    """Append {root: [tool, ...]} to ~/.worklog/installs.json so uninstall_project.py --all-projects can find this project.
+    Best effort: an unwritable home never fails the install (returns None)."""
+    try:
+        try:
+            data = json.loads(REGISTRY.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        tools = data.get(str(root))
+        tools = [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+        if tool not in tools:
+            tools.append(tool)
+        data[str(root)] = tools
+        HOME.mkdir(parents=True, exist_ok=True)
+        REGISTRY.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        return str(REGISTRY)
+    except OSError:
+        return None
+
+
 GITIGNORE_LINES = (".worklog/sessions/", ".worklog/.lock")
 
 
@@ -231,7 +259,8 @@ def main():
         wl_dir = root / ".worklog"
         if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
             changes.append(str(manifest(wl_dir, a.tool)))
-    print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes,
+        registry = register(root, a.tool)
+    print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes, "registry": None if a.dry_run else registry,
                       "next": "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"}, ensure_ascii=False, indent=1))
 
 
