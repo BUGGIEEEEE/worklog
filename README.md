@@ -26,7 +26,7 @@ project/
 ├── .worklog/works/<id>/state.md   current state: open it to see goal, decisions, constraints, next action
 ├── CLAUDE.md or AGENTS.md         one rules block for the model (your own content is kept)
 ├── 3 hooks                        read at session start, check for a save at turn end
-├── .gitignore                     git project only: adds .worklog/sessions/ and .worklog/.lock (commit works/, not session files)
+├── .gitignore                     git project only: adds .worklog/ (the record stays out of git: per-machine state that quotes you)
 └── skills/worklog/                skill file for `/worklog on|off` (Claude: .claude/, Codex: .agents/)
 ```
 
