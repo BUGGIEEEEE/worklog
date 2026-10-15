@@ -156,10 +156,14 @@ class Plan:
         self._set(path, ("write", text, b) if text else ("delete", b))
 
     def delete(self, path):
-        """Remove a file that is entirely Worklog's (no backup)."""
+        """Remove a file that is entirely Worklog's (no backup). A path planned as a write earlier in this run (install.json
+        with one tool's entry removed) becomes a delete, keeping the backup that write had planned, if any."""
         inside(self.root, path)
-        if path not in self.pending:
+        a = self.pending.get(path)
+        if a is None:
             self._set(path, ("delete", None))
+        elif a[0] == "write":
+            self._set(path, ("delete", a[-1]))
 
     def rmtree(self, path):
         inside(self.root, path)
@@ -369,7 +373,11 @@ def uninstall_root(root, a, when, memo):
 
 
 def main():
-    ap = argparse.ArgumentParser(epilog="--delete-records는 .worklog를 통째로 지웁니다. 되돌릴 수 없습니다.")
+    ap = argparse.ArgumentParser(
+        description="AGENT: before running this, ask the user which tool to remove (claude only / codex only / all) and, only when the last "
+                    "tool goes, whether to keep or delete the records in .worklog. Do not guess either: a wrong --tool removes another "
+                    "tool's install, and --delete-records cannot be undone. See AGENT.md 'Uninstall' in this repository.",
+        epilog="--delete-records는 .worklog를 통째로 지웁니다. 되돌릴 수 없습니다.")
     ap.add_argument("--tool", choices=[*TOOLS, "all"], help="--root와 함께 필수(없으면 거부하고 설치된 도구를 알림). --all-projects는 all")
     ap.add_argument("--root")
     ap.add_argument("--all-projects", action="store_true", help="registry에 적힌 모든 프로젝트")

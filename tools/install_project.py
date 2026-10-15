@@ -250,7 +250,11 @@ def detected_tools():
 
 
 def main():
-    ap = argparse.ArgumentParser(epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
+    ap = argparse.ArgumentParser(
+        description="AGENT: before running this, ask the user which tools to install for (claude, codex, or both; they share one "
+                    ".worklog) when this machine has more than your own tool (~/.claude, ~/.codex). Do not install for a tool the user "
+                    "did not choose. See AGENT.md 'Install' in this repository.",
+        epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
     ap.add_argument("--tool", choices=["claude", "codex", "pi"], help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
     ap.add_argument("--root", required=True)
     ap.add_argument("--dry-run", action="store_true")
