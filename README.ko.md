@@ -36,12 +36,12 @@ Claude Code와 Codex는 같은 `.worklog/`를 함께 씁니다.
 
 | 언제 | 할 일 |
 |---|---|
-| 설치 | 아래 명령. Codex는 프로젝트와 `/hooks`의 Hook 3개를 신뢰, Claude Code는 git 저장소면 폴더 신뢰 대화상자 수락 |
+| 설치 | 아래 명령(도구마다 한 번). 에이전트에게 맡기면 어느 도구에 설치할지 먼저 묻습니다. Codex는 프로젝트와 `/hooks`의 Hook 3개를 신뢰, Claude Code는 git 저장소면 폴더 신뢰 대화상자 수락 |
 | 첫 세션 | `새 작업: <제목>` |
 | 다음 세션 | 목록에서 골라 `<id> 이어서` |
 | 위임 | 에이전트에게 맡기라고 말하면 됩니다. 별도 세션을 직접 열 때는 첫 프롬프트를 `<id> 이어서. 하위 작업: <이름>`으로 시작하고, 상위 계획과 별개로 끝낼 독립 작업이면 `새 작업: <제목>`과 함께 이어받을 결정·제약을 적어 주세요. 기록은 에이전트가 규칙대로 남깁니다 |
 | 잠시 끄기 | `워크로그 꺼` (그 프로젝트 전체). `워크로그 켜`로 복귀. 꺼진 동안은 기록 없음 |
-| 제거 | `python3 -B worklog/tools/uninstall_project.py --root /프로젝트/경로 --keep-records`(기록 `.worklog/`는 남김) 또는 `--delete-records`(기록까지 삭제). 지침 블록·Hook 3개·스킬·`.gitignore` 줄을 되돌리고, 고치는 파일은 백업합니다. 모든 프로젝트와 `~/.worklog`까지 지우려면 `--all-projects --home`(2.17.0 이후 설치분만 목록에 있음). clone 폴더는 그 뒤 직접 지웁니다 |
+| 제거 | `python3 -B worklog/tools/uninstall_project.py --root /프로젝트/경로 --tool all --keep-records`(기록 `.worklog/`는 남김) 또는 `--delete-records`(기록까지 삭제). `--tool codex`처럼 한 도구만 뺄 수도 있습니다. 에이전트에게 맡기면 어느 도구를 뺄지·기록을 남길지 먼저 묻습니다. 지침 블록·Hook 3개·스킬·`.gitignore` 줄을 되돌리고, 고치는 파일은 백업합니다. 모든 프로젝트와 `~/.worklog`까지 지우려면 `--all-projects --home`(2.17.0 이후 설치분만 목록에 있음). clone 폴더는 그 뒤 직접 지웁니다 |
 | 업데이트 | git clone이면 하루 한 번 세션 시작 때 배경에서 origin의 tag를 확인하고(기다리지 않음), 새 버전이 있으면 다음 세션이 한 줄로 알린다. 스스로 바꾸는 것은 없다: `python3 -B worklog/core/wl.py update`를 치면 같은 주 번호의 최신 tag로 fast-forward 하고 현재 프로젝트를 재설치한다. `update rollback`은 되돌리기, `update --mode off`는 알림 끄기. 새 주 버전은 알리기만 한다. Hook은 그대로라 재신뢰 없음 |
 
 ```sh

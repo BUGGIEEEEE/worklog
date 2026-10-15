@@ -1581,6 +1581,41 @@ class UninstallTest(Base):
     def names(self, folder):
         return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else None
 
+    def test_installer_refuses_without_tool_and_reports_detected(self):
+        """2.19.0: --tool이 없으면 아무것도 쓰지 않고, 사용자에게 물으라는 메시지와 이 기기의 도구(~/.claude·~/.codex)를 알린다."""
+        home = Path(tempfile.mkdtemp())
+        (home / ".codex").mkdir()
+        before = sorted(p.name for p in self.root.rglob("*"))
+        p = subprocess.run([sys.executable, "-B", str(INST), "--root", str(self.root)], capture_output=True, text=True,
+                           env=dict(self.env, HOME=str(home)))
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        err = json.loads(p.stdout)["error"]
+        self.assertIn("어느 도구에 설치할지", err)
+        self.assertIn("claude=없음, codex=있음", err)
+        self.assertEqual(sorted(p.name for p in self.root.rglob("*")), before)
+        self.assertFalse((home / ".worklog").exists())  # registry도 안 쓴다
+
+    def test_uninstaller_requires_tool_and_lists_installed(self):
+        """2.19.0: --root만 주면 아무것도 쓰지 않고 설치된 도구를 알린다. --all-projects는 all."""
+        self.install("claude")
+        self.install("codex")
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        code, out = self.uninstall("--keep-records")
+        self.assertEqual(code, 2)
+        self.assertIn("어느 도구를 제거할지", out["projects"][0]["error"])
+        self.assertIn("설치됨: claude, codex", out["projects"][0]["error"])
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
+        code, out = self.uninstall("--tool", "codex")  # 다른 도구가 남으면 기록 선택 불필요
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(json.loads((self.d / "install.json").read_text())), ["claude"])  # claude 설치는 그대로
+        self.assertIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())
+        code, out = self.uninstall("--tool", "claude")  # 마지막 도구: 기록 선택 필수
+        self.assertEqual(code, 2)
+        self.assertIn("--keep-records 또는 --delete-records", out["projects"][0]["error"])
+        code, out = self.uninstall("--all-projects", "--keep-records", root=False)  # --all-projects = 모든 도구
+        self.assertEqual((code, out["projects"][0]["tool"]), (0, "all"))
+        self.assertNotIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())
+
     def test_installer_writes_registry(self):
         self.assertEqual(self.install("claude")["registry"], str(self.home / "installs.json"))
         self.install("codex")
@@ -1593,10 +1628,10 @@ class UninstallTest(Base):
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
         hook(self.root, "stop-hook", env={"WL_HOME": str(self.home)})
         self.assertTrue((self.d / ".lock").exists() and session_file(self.root).exists())
-        code, out = self.uninstall("--keep-records", "--dry-run")
+        code, out = self.uninstall("--tool", "all", "--keep-records", "--dry-run")
         self.assertEqual((code, out["dry_run"]), (0, True))
         self.assertIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())  # dry-run은 아무것도 안 바꾼다
-        code, out = self.uninstall("--keep-records")
+        code, out = self.uninstall("--tool", "all", "--keep-records")
         self.assertEqual(code, 0, out)
         p = out["projects"][0]
         self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 기존 내용\n")  # 블록만 빠지고 원래 내용은 그대로
@@ -1656,12 +1691,12 @@ class UninstallTest(Base):
 
     def test_requires_records_choice_and_refuses_before_writing(self):
         self.install("claude")
-        code, out = self.uninstall()  # 터미널이 아니면 기록 처리를 정하라고 거부
+        code, out = self.uninstall("--tool", "all")  # 터미널이 아니면 기록 처리를 정하라고 거부
         self.assertEqual(code, 2)
-        self.assertIn("--keep-records 또는 --delete-records", out["error"])
+        self.assertIn("--keep-records 또는 --delete-records", out["projects"][0]["error"])
         (self.root / ".claude/settings.local.json").write_text("{broken")
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        code, out = self.uninstall("--delete-records")
+        code, out = self.uninstall("--tool", "all", "--delete-records")
         self.assertEqual(code, 2)
         self.assertIn("읽을 수 없습니다", out["projects"][0]["error"])
         self.assertEqual({p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}, before)  # 거부 전에 쓴 것 없음
@@ -1670,13 +1705,13 @@ class UninstallTest(Base):
     def test_guide_only_block_is_deleted_and_middle_block_keeps_both_sides(self):
         (self.root / "CLAUDE.md").unlink()
         self.install("claude")
-        self.assertEqual(self.uninstall("--keep-records")[0], 0)
+        self.assertEqual(self.uninstall("--tool", "all", "--keep-records")[0], 0)
         self.assertFalse((self.root / "CLAUDE.md").exists())  # 블록뿐이던 파일은 삭제(백업 1개)
         self.assertEqual(len(list(self.root.glob("CLAUDE.md.bak-worklog-*"))), 1)
         self.install("claude")
         text = (self.root / "CLAUDE.md").read_text()
         (self.root / "CLAUDE.md").write_text("# 위\n\n" + text + "\n# 아래\n")
-        self.assertEqual(self.uninstall("--keep-records")[0], 0)
+        self.assertEqual(self.uninstall("--tool", "all", "--keep-records")[0], 0)
         self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 위\n\n# 아래\n")
 
 

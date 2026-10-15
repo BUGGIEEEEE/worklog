@@ -2,6 +2,8 @@
 """Connect one project folder to the shared Worklog core for a given tool. Writes only inside --root.
 
 usage: install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
+Without --tool nothing is written: the refusal (exit 2) tells the agent to ask the user which tools to install for and
+reports which tools this machine seems to have (~/.claude, ~/.codex), since an agent tends to install only for itself.
 Besides the project it appends {root: [tool]} to the registry ~/.worklog/installs.json (WL_HOME), which
 tools/uninstall_project.py --all-projects reads; uninstall_project.py reverses everything this script does.
 claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
@@ -242,15 +244,24 @@ def plan(root, tool, worklog_dir, when):
     return [(p, t, backup_path(root, p, when) if p.exists() else None) for p, t in changed], (worklog if make_dir else None)
 
 
+def detected_tools():
+    """Which tools this machine seems to use: their home folders exist. A hint for the agent's question, not a decision."""
+    return {t: (Path.home() / f".{t}").is_dir() for t in ("claude", "codex")}
+
+
 def main():
     ap = argparse.ArgumentParser(epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
-    ap.add_argument("--tool", choices=["claude", "codex", "pi"], required=True)
+    ap.add_argument("--tool", choices=["claude", "codex", "pi"], help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
     ap.add_argument("--root", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-worklog-dir", action="store_true", help="shared parent folder: do not create .worklog here")
     a = ap.parse_args()
     root = Path(a.root).resolve()
     try:
+        if not a.tool:
+            found = ", ".join(f"{t}={'있음' if v else '없음'}" for t, v in detected_tools().items())
+            raise Refuse("사용자에게 어느 도구에 설치할지 확인한 뒤 도구별로 실행하세요: --tool claude | codex (pi는 미검증). "
+                         f"이 기기에서 발견: {found}. 두 도구는 같은 .worklog를 공유하며, Codex는 설치 뒤 /hooks 신뢰가 필요합니다.")
         files, worklog = plan(root, a.tool, not a.no_worklog_dir, stamp())
     except Refuse as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))

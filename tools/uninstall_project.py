@@ -3,16 +3,18 @@
 manifest and this tool's session files, and, when asked, the records in .worklog. Writes only inside --root, plus the
 install registry and (with --home) the state folder ~/.worklog (WL_HOME).
 
-usage: uninstall_project.py --root <project> [--tool claude|codex|pi|all] (--keep-records | --delete-records)
+usage: uninstall_project.py --root <project> --tool claude|codex|pi|all (--keep-records | --delete-records)
                             [--no-backup] [--purge-backups] [--dry-run]
        uninstall_project.py --all-projects (--keep-records | --delete-records) [--home] [--no-backup] [--purge-backups] [--dry-run]
        uninstall_project.py --home [--dry-run]
---tool all (default) removes every tool's install. A single tool leaves what the other tools share (.worklog/.lock, off
-marker, the .gitignore line, records) while another tool is still installed there.
+--tool is required with --root: without it nothing is written and the refusal lists which tools are installed in that
+project, so the agent can ask the user what to remove (one tool, or all). --all-projects means every tool. A single tool
+leaves what the other tools share (.worklog/.lock, off marker, the .gitignore line, records) while another tool is still
+installed there, and then the records choice is not needed.
 --keep-records   keeps .worklog/works/, index.json and project.md (a later reinstall continues them). Everything else of
                  Worklog in .worklog (sessions, lock, off marker, install.json) goes once no tool remains installed.
 --delete-records removes .worklog entirely. Refused while another tool is still installed (use --tool all).
-Neither flag: asks on a terminal, otherwise refuses — an agent must ask the user first.
+Neither flag: asks on a terminal, otherwise refuses — an agent must ask the user first. Only needed when the last tool goes.
 Files it edits or deletes (CLAUDE.md/AGENTS.md, hook settings, .gitignore) are backed up as <file>.bak-worklog-<stamp>
 unless --no-backup. Earlier backups left by the installer stay unless --purge-backups (every *.bak-worklog-* the installer
 can have made: project root, .claude/, .codex/, the three skill folders).
@@ -332,25 +334,43 @@ def ask_records():
     raise Refuse("k 또는 d로 답하세요.")
 
 
-def uninstall_root(root, a, when, delete_records):
+def records_choice(a, remaining, memo):
+    """True = delete, False = keep. Asked (or required) only when no tool remains: with another tool installed the records
+    stay anyway. The terminal answer is remembered across --all-projects roots."""
+    if a.delete_records:
+        return True
+    if a.keep_records or remaining:
+        return False
+    if "answer" not in memo:
+        memo["answer"] = ask_records()
+    return memo["answer"]
+
+
+def uninstall_root(root, a, when, memo):
     root = Path(root).resolve()
     if not root.is_dir():
         return {"root": str(root), "error": "폴더가 없습니다"}
-    tools = list(TOOLS) if a.tool == "all" else [a.tool]
+    tool = a.tool or ("all" if a.all_projects else None)
     try:
-        plan = plan_project(root, tools, delete_records, not a.no_backup, a.purge_backups, when)
+        present = [t for t in TOOLS if installed(root, t)]
+        if not tool:
+            raise Refuse("사용자에게 어느 도구를 제거할지 확인한 뒤 실행하세요: --tool claude | codex | all. "
+                         f"이 프로젝트에 설치됨: {', '.join(present) or '없음'}")
+        tools = list(TOOLS) if tool == "all" else [tool]
+        remaining = [t for t in present if t not in tools]
+        plan = plan_project(root, tools, records_choice(a, remaining, memo), not a.no_backup, a.purge_backups, when)
     except Refuse as e:
         return {"root": str(root), "error": str(e)}
     if not a.dry_run:
         plan.run()
         unregister(root, tools)
-    return {"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "removed": plan.removed, "changed": plan.changed,
+    return {"tool": tool, "root": str(root), "dry_run": a.dry_run, "removed": plan.removed, "changed": plan.changed,
             "kept": plan.kept, "backups": plan.backups, "notes": plan.notes}
 
 
 def main():
     ap = argparse.ArgumentParser(epilog="--delete-records는 .worklog를 통째로 지웁니다. 되돌릴 수 없습니다.")
-    ap.add_argument("--tool", choices=[*TOOLS, "all"], default="all")
+    ap.add_argument("--tool", choices=[*TOOLS, "all"], help="--root와 함께 필수(없으면 거부하고 설치된 도구를 알림). --all-projects는 all")
     ap.add_argument("--root")
     ap.add_argument("--all-projects", action="store_true", help="registry에 적힌 모든 프로젝트")
     ap.add_argument("--home", action="store_true", help="~/.worklog(WL_HOME) 삭제: registry가 비어 있을 때만")
@@ -370,16 +390,13 @@ def main():
             roots += [r for r in load_registry() if r not in roots]
             if not roots:
                 out["notes"].append("registry에 프로젝트가 없습니다(2.17.0 이전 설치본은 적히지 않음: --root로 지정)")
-        delete_records = None
-        if roots:
-            delete_records = True if a.delete_records else False if a.keep_records else ask_records()
-        when = stamp()
+        when, memo = stamp(), {}
         for r in roots:
-            out["projects"].append(uninstall_root(r, a, when, delete_records))
+            out["projects"].append(uninstall_root(r, a, when, memo))
         if a.home:
             left = load_registry() if a.dry_run else {r: ts for r, ts in load_registry().items() if ts}
             if a.dry_run:
-                left = {r: [t for t in ts if not (r in roots and (a.tool == "all" or t == a.tool))] for r, ts in left.items()}
+                left = {r: [t for t in ts if not (r in roots and (a.tool in ("all", None) or t == a.tool))] for r, ts in left.items()}
                 left = {r: ts for r, ts in left.items() if ts}
             if left:
                 raise Refuse(f"registry에 아직 설치된 프로젝트가 있습니다: {', '.join(left)}. 먼저 제거하세요(--all-projects).")
