@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.20.1 — 2026-10-15
+Tests only: the 2.20.0 regression test compared an unresolved temp path with the uninstaller's resolved output (`/var` vs `/private/var` on macOS) and failed; 2.20.0 was merged with that failure by mistake (the behaviour it checks was correct). Nothing the model can notice.
+테스트만: 2.20.0의 회귀 테스트가 resolve하지 않은 임시 경로를 제거기의 resolve된 출력(`/var` 대 `/private/var`)과 비교해 실패했고, 2.20.0은 그 실패를 안은 채 실수로 병합됐다(검사하는 동작 자체는 정상). 모델이 알아챌 변경 없음.
+
 ## 2.20.0 — 2026-10-15
 Uninstaller fix: with two tools installed, `--tool all --keep-records` left `.worklog/install.json` holding the second tool's entry (the first tool's step planned a rewrite of the file, and a later delete of an already-planned path was ignored). Found by the M-uninstall run's agent. Now a later delete replaces the planned write. `--help` of both scripts now opens with the instruction to ask the user first (which tools to install for; which tool to remove and, when the last one goes, whether to keep the records): in the M runs the agents read `--help` and the README but not AGENT.md, so the instruction has to be where they look. Core: version only.
 제거기 수정: 두 도구가 설치된 상태에서 `--tool all --keep-records`를 돌리면 `.worklog/install.json`이 둘째 도구 항목을 가진 채 남았다(첫 도구 단계가 파일 재작성을 계획하고, 이미 계획된 경로에 대한 뒤의 삭제를 무시했음). M-uninstall 실행의 에이전트가 발견. 이제 뒤의 삭제가 계획된 쓰기를 대체한다. 두 스크립트의 `--help`가 "먼저 사용자에게 물어라"(설치: 어느 도구 / 제거: 어느 도구와, 마지막 도구면 기록 유지 여부)로 시작한다. M 실행에서 에이전트들이 AGENT.md는 읽지 않고 `--help`와 README를 읽었으므로, 지시는 그들이 보는 곳에 있어야 한다. 코어: 버전만.
