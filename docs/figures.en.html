@@ -1,0 +1,502 @@
+<!-- Source of the README figures. Regenerate: python3 -B worklog-control/shared/tools/make_readme_figures.py --html docs/figures.en.html --lang en --out docs/img (no GitHub Pages; this file is not linked) -->
+<title>Worklog Prompt Anatomy</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* README 보강용. GitHub Primer 팔레트(다크 우선). 기준: 한눈에 읽히는가. 라벨 칸은 맥락별로 맞추되 한 절 안에서는 같은 폭. 표현 단위 줄바꿈(<i>), 매달린 들여쓰기. */
+:root{
+  --label:150px; --num:64px; --brace:76px;
+  --bg:#0d1117; --surface:#161b22; --surface2:#1c2128; --line:#30363d; --fg:#e6edf3; --muted:#8b949e;
+  --sys:#1c2128; --sys-fg:#c9d1d9;
+  --rule:rgba(56,139,253,.12); --rule-fg:#79c0ff; --rule-line:rgba(56,139,253,.45);
+  --wl:rgba(47,143,138,.16); --wl-fg:#7fd1ca; --wl-line:#2f8f8a;
+  --user:rgba(210,153,34,.16); --user-fg:#e3b341; --user-line:rgba(210,153,34,.45);
+  --tool:rgba(163,113,245,.15); --tool-fg:#d2a8ff; --tool-line:rgba(163,113,245,.45);
+  --bad:rgba(248,81,73,.14); --bad-fg:#ffa198; --bad-line:rgba(248,81,73,.45);
+  --code:#1c2128; --link:#58a6ff;
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#ffffff; --surface:#f6f8fa; --surface2:#eef1f4; --line:#d0d7de; --fg:#1f2328; --muted:#636c76;
+  --sys:#eef1f4; --sys-fg:#24292f;
+  --rule:#ddf4ff; --rule-fg:#0969da; --rule-line:#54aeff;
+  --wl:#d9f2f0; --wl-fg:#0f6e68; --wl-line:#2a9d96;
+  --user:#fff8c5; --user-fg:#7d4e00; --user-line:#d4a72c;
+  --tool:#fbefff; --tool-fg:#6639ba; --tool-line:#c297ff;
+  --bad:#ffebe9; --bad-fg:#a40e26; --bad-line:#ff8182;
+  --code:#eef1f4; --link:#0969da; color-scheme:light } }
+:root[data-theme="light"]{
+  --bg:#ffffff; --surface:#f6f8fa; --surface2:#eef1f4; --line:#d0d7de; --fg:#1f2328; --muted:#636c76;
+  --sys:#eef1f4; --sys-fg:#24292f;
+  --rule:#ddf4ff; --rule-fg:#0969da; --rule-line:#54aeff;
+  --wl:#d9f2f0; --wl-fg:#0f6e68; --wl-line:#2a9d96;
+  --user:#fff8c5; --user-fg:#7d4e00; --user-line:#d4a72c;
+  --tool:#fbefff; --tool-fg:#6639ba; --tool-line:#c297ff;
+  --bad:#ffebe9; --bad-fg:#a40e26; --bad-line:#ff8182;
+  --code:#eef1f4; --link:#0969da; color-scheme:light }
+body{background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5;font-size:16px;padding-block:32px 64px;padding-inline:16px;overflow-wrap:anywhere}
+main{max-width:1120px;margin:0 auto;display:grid;gap:48px}
+header{display:grid;gap:8px}
+h1{font-size:1.9rem;line-height:1.2;margin:0;text-wrap:balance}
+h2{font-size:1.25rem;margin:0;text-wrap:balance}
+h2 small{font-weight:500;color:var(--muted);font-size:.85rem}
+.intro{margin-top:8px;border:1px solid var(--wl-line);border-left:4px solid var(--wl-line);background:var(--wl);border-radius:8px;padding:12px 16px;display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
+.intro .name{font-size:2.1rem;font-weight:700;color:var(--wl-fg);letter-spacing:.01em;line-height:1}
+.intro .desc{font-size:.95rem;line-height:1.55}
+@media (max-width:640px){.intro{grid-template-columns:1fr;gap:8px}}
+section{display:grid;gap:14px}
+.eyebrow{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+code{font-family:var(--mono);font-size:.82em;background:var(--code);border:1px solid var(--line);padding:0 4px;border-radius:4px;white-space:nowrap}
+a{color:var(--link)}
+small{color:var(--muted)}
+i{font-style:normal;display:inline-block}
+i.a::before{content:"→ ";color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:.84rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid var(--line)}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:.84rem;line-height:1.55;margin:0;color:var(--fg)}
+ul.dots{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+ul.dots li{display:grid;grid-template-columns:14px 1fr}
+ul.dots li::before{content:"·";color:var(--muted)}
+/* 예시 타임라인 */
+.tl{display:grid;grid-template-columns:1fr 92px 1fr;gap:10px;align-items:stretch}
+.tl .box{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:.9rem;display:grid;gap:8px;align-content:start}
+.tl .box .t{font-weight:700}
+.tl .box .q{font-family:var(--mono);font-size:.82rem;background:var(--code);border:1px solid var(--line);border-radius:4px;padding:4px 8px}
+.tl .mid{display:grid;place-items:center;text-align:center;color:var(--muted);font-size:.8rem;gap:4px}
+.tl .mid b{font-size:1.4rem;color:var(--wl-line);display:block}
+.keep{border:1px dashed var(--wl-line);color:var(--wl-fg);border-radius:6px;padding:6px 10px;font-size:.84rem}
+/* 문맥 창 그림 */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:28px;align-items:start}
+.stack{display:grid;gap:6px;min-width:0}
+.cap{font-weight:700;font-size:.95rem;display:grid;grid-template-columns:1fr auto;gap:8px;padding-bottom:4px;border-bottom:2px solid var(--line);margin-right:calc(var(--brace) + 8px)}
+.cap small{font-weight:500}
+.group{display:grid;grid-template-columns:1fr var(--brace);gap:8px}
+.group.left{grid-template-columns:var(--brace) 1fr}
+.group .layers{display:grid;gap:6px;min-width:0}
+.brace{position:relative;display:grid;place-items:center;font-size:.74rem;color:var(--muted);text-align:center;line-height:1.3}
+.brace::before{content:"";position:absolute;top:6px;bottom:6px;left:0;width:14px;border:2px solid var(--line);border-left:none;border-radius:0 8px 8px 0}
+.group.left .brace::before{left:auto;right:0;border:2px solid var(--line);border-right:none;border-radius:8px 0 0 8px}
+.brace.wl::before{border-color:var(--wl-line)}
+.brace span{position:relative;background:var(--bg);padding:2px 0;margin-left:14px}
+.group.left .brace span{margin-left:0;margin-right:14px}
+.group.left .total{grid-column:2}
+.brace b{display:block;font-family:var(--mono);font-weight:500;color:var(--fg)}
+.cap.left{margin-right:0;margin-left:calc(var(--brace) + 8px)}
+/* 1절 카드: 왼쪽 1열(규칙 블록) + 오른쪽 2행(주입, 비용) */
+.cards.split{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cards.split .col{display:grid;gap:12px;align-content:start}
+@media (max-width:720px){.cards.split{grid-template-columns:1fr}}
+mark.w{background:var(--wl);color:var(--wl-fg);border:1px solid var(--wl-line);border-radius:4px;padding:0 5px;font-weight:700}
+.tl+.tl{margin-top:10px}
+.tl .lab{grid-column:1/-1;font-size:.84rem;color:var(--muted);font-weight:600}
+.layer{border-radius:6px;padding:7px 10px;font-size:.88rem;min-width:0;border:1px solid var(--line);display:grid;grid-template-columns:var(--label) 1fr var(--num);gap:8px;align-items:center;min-height:44px;background:var(--surface)}
+.layer.nonum{grid-template-columns:var(--label) 1fr}
+.layer .k{font-weight:600}
+.layer .v{font-size:.84rem;color:var(--fg);opacity:.9}
+.layer .n{font-family:var(--mono);font-size:.78rem;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.l-sys{background:var(--sys);color:var(--sys-fg)}
+.l-rule{background:var(--rule);border-color:var(--rule-line)} .l-rule .k{color:var(--rule-fg)}
+.l-wl{background:var(--wl);border-color:var(--wl-line);border-left-width:4px} .l-wl .k{color:var(--wl-fg)}
+.l-user{background:var(--user);border-color:var(--user-line)} .l-user .k{color:var(--user-fg)}
+.l-tool{background:var(--tool);border-color:var(--tool-line)} .l-tool .k{color:var(--tool-fg)}
+.l-bad{background:var(--bad);border-color:var(--bad-line)} .l-bad .k{color:var(--bad-fg)}
+/* 중첩 상자: 지침 파일 안에 규칙 블록 */
+.wrap{border-radius:6px;border:1px solid var(--rule-line);background:var(--rule);padding:7px 10px 8px;display:grid;gap:6px;min-width:0}
+.wrap .head{display:grid;grid-template-columns:var(--label) 1fr var(--num);gap:8px;align-items:center;font-size:.88rem;min-height:28px}
+.wrap .head .k{font-weight:600;color:var(--rule-fg)}
+.wrap .head .v{font-size:.84rem;opacity:.9}
+.wrap .head .n{font-family:var(--mono);font-size:.78rem;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.wrap .layer{min-height:40px;grid-template-columns:calc(var(--label) - 10px) 1fr var(--num)}
+.wrap .layer.nonum{grid-template-columns:calc(var(--label) - 10px) 1fr}
+.wrap .layer.plain{background:var(--surface);border-color:var(--line)}
+/* 보조 설명(괄호·참고)은 한 단계 작게 */
+i.p{font-size:.92em;color:var(--muted)}
+/* 참고 사항: 2×2 */
+.cards.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+ul.dots li>span{min-width:0}
+@media (max-width:640px){.cards.two{grid-template-columns:1fr}}
+.total{grid-column:1;display:grid;grid-template-columns:1fr var(--num);gap:8px;font-size:.84rem;padding:4px 10px;border-top:2px solid var(--line);color:var(--muted)}
+.total .n{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;color:var(--fg)}
+.total.wl{border-top-color:var(--wl-line)}
+/* 카드 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:.9rem;min-width:0;display:grid;gap:7px;align-content:start}
+.card .t{font-weight:700;font-size:.95rem}
+.card .row{display:grid;grid-template-columns:minmax(72px,max-content) 1fr;gap:10px;align-items:start}
+.card .row b{font-weight:600;color:var(--muted);font-size:.82rem;padding-top:2px;white-space:nowrap}
+.card.wl{border-left:4px solid var(--wl-line)} .card.wl .t{color:var(--wl-fg)}
+.chips{display:grid;gap:6px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:4px 10px;font-size:.84rem;background:var(--surface2);display:grid;grid-template-columns:max-content 1fr;gap:10px}
+.chip b{font-weight:600}
+/* 주입 구조: 행마다 [왼쪽 층 | 오른쪽 주석]을 한 그리드 행에 두어 항상 같은 높이. 왼쪽 열은 청록 상자처럼 보이게 테두리를 이어 그림 */
+.inj{display:grid;gap:0}
+.irow{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px;align-items:stretch}
+.irow .lcell{background:var(--wl);border-left:4px solid var(--wl-line);border-right:1px solid var(--wl-line);padding:3px 10px;min-width:0;display:grid;align-items:center}
+.irow.head .lcell{border-top:1px solid var(--wl-line);border-radius:6px 6px 0 0;padding-top:8px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
+.irow.last .lcell{border-bottom:1px solid var(--wl-line);border-radius:0 0 6px 6px;padding-bottom:8px}
+.irow .layer{min-height:40px;grid-template-columns:var(--label) 1fr;background:var(--surface);border-color:var(--line)}
+.irow .layer .k{color:var(--fg)}
+.irow .layer.sub .k{padding-left:22px}
+.irow .layer.sub .k::before{content:"└ ";color:var(--muted)}
+/* 오른쪽 주석: 핵심(굵게) + 근거(작게) 두 줄, 행과 같은 높이의 상자 */
+.cm{font-size:.84rem;color:var(--muted);border:1px solid var(--line);border-left:3px solid var(--wl-line);background:var(--surface);border-radius:6px;padding:6px 12px;margin:3px 0;display:grid;align-content:center;min-width:0}
+.cm b{display:block;color:var(--fg);font-weight:600;font-size:.88rem}
+.cm small{display:block;color:var(--muted);font-size:.8rem;line-height:1.4}
+.irow.head .blank{display:grid;align-items:end;padding:0 12px 6px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
+/* 제목 옆 배지(예정 등): 사용자 메시지 색 계열 */
+.badge{display:inline-block;font-size:.74rem;font-weight:600;color:var(--user-fg);background:var(--user);border:1px solid var(--user-line);border-radius:999px;padding:1px 9px;margin-left:8px;vertical-align:middle}
+/* 0절: 파일 강조 블록 (이력 = 보라, 현재 상태 = 청록) */
+pre b.f-ev{color:var(--tool-fg);font-weight:600}
+pre b.f-st{color:var(--wl-fg);font-weight:600}
+.files{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.fbox{border-radius:6px;padding:8px 12px;font-size:.88rem;display:grid;gap:4px;min-width:0;border:1px solid}
+.fbox .q{font-family:var(--mono);font-size:.82rem;font-weight:600}
+.fbox.ev{background:var(--tool);border-color:var(--tool-line)} .fbox.ev .q{color:var(--tool-fg)}
+.fbox.st{background:var(--wl);border-color:var(--wl-line)} .fbox.st .q{color:var(--wl-fg)}
+.fbox span{font-size:.84rem}
+/* 1절 층: 라벨 칸을 좁혀 본문이 한 줄에 */
+.cols.ctx{--label:118px}
+/* 카드 행 간격 */
+.card{gap:10px}
+/* 상태값 카드: 라벨 칸을 2절 층의 본문 시작선에 맞춤 */
+.card.states .row{grid-template-columns:158px 1fr}
+/* 2절: 왼쪽 열을 아래 카드와 같은 너비로. 본문 시작선을 2절 층·상태값 카드·3절 흐름도가 공유 (x ≈ 160px) */
+.irow{grid-template-columns:repeat(2,minmax(0,1fr))}
+.irow.head .blank{border:none}
+.inj{--label:128px}
+.card.states .row{grid-template-columns:136px 1fr}
+/* 경고 카드: 항목명 칸 고정으로 설명 시작선 통일, 꼬리 문장은 항목명 글자 시작선에 */
+.chip{grid-template-columns:116px 1fr}
+.card .note{padding-left:11px}
+/* 1절: 왼쪽(트리 + 파일 블록) 세로 길이를 오른쪽 카드에 맞춤, 줄 간격 확대 */
+.cols.units{align-items:stretch}
+.stack.units{grid-template-rows:1fr auto;gap:10px}
+.stack.units pre{line-height:1.75;padding:12px 14px}
+.fbox{padding:12px 14px;gap:6px;line-height:1.6}
+.fbox span:not(.q){padding-left:8px}
+/* 복사 가능한 명령 블록 */
+.cmd{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:stretch;min-width:0}
+.cmd pre{font-size:.8rem;padding:8px 10px;line-height:1.5;white-space:pre;overflow-x:auto;min-width:0}
+.cmd .copy{font:inherit;font-size:.78rem;padding:0 10px;border-radius:6px;border:1px solid var(--line);background:var(--surface2);color:var(--fg);cursor:pointer}
+.cmd .copy:focus-visible{outline:2px solid var(--wl-line)}
+.card .row span>.cmd{margin:2px 0}
+.cards.one{grid-template-columns:1fr}
+.cards.one .card .row{grid-template-columns:110px 1fr}
+/* 3절: 전·후의 "그 뒤" 묶음이 같은 높이에서 시작하도록, 첫 묶음을 같은 높이로 늘리되 층은 위에 붙임 */
+.cols.ctx{align-items:stretch}
+.cols.ctx .stack{grid-template-rows:auto 1fr auto}
+.cols.ctx .group{align-content:start}
+/* 규칙 블록 카드: 줄 간격 확대 */
+.cards.split .card.wl:first-child{gap:16px}
+.cards.split .card.wl:first-child .row{line-height:1.65}
+/* 6절 미니 표 (2×2) */
+table.mini{margin-top:6px;font-size:.84rem;width:auto}
+table.mini th,table.mini td{padding:3px 10px 3px 0;border-bottom:1px solid var(--line)}
+table.mini th{font-size:.76rem}
+table.mini td:first-child{color:var(--muted);font-weight:600}
+/* 1절: 제목과 블록 사이 간격 축소, 카드 줄 간격 확대 */
+section.units{gap:10px}
+section.units .card{gap:14px}
+section.units .card .row{line-height:1.6}
+/* 3절: 전·후 모델 답변 상자 높이 통일(4줄 기준) */
+.cols.ctx .l-bad{min-height:112px}
+/* 5절: 수영 레인(열 = 사용자 / 모델 / Worklog 도구, 행 = 시간 순) */
+.lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:14px;row-gap:0;align-items:stretch}
+.lanes .lh{font-size:.8rem;font-weight:600;letter-spacing:.04em;text-align:center;padding:4px 0 6px;border-bottom:2px solid var(--line);color:var(--muted)}
+.lanes .lh.user{color:var(--user-fg)} .lanes .lh.model{color:var(--tool-fg)} .lanes .lh.wl{color:var(--wl-fg)}
+.lanes .step{border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:.86rem;min-width:0;display:grid;gap:2px;align-content:center;background:var(--surface);margin:6px 0}
+.lanes .step .t{font-weight:600}
+.lanes .step .d{font-size:.82rem;opacity:.9}
+.lanes .c1{grid-column:1} .lanes .c2{grid-column:2} .lanes .c3{grid-column:3}
+.lanes .step.user{background:var(--user);border-color:var(--user-line)} .lanes .step.user .t{color:var(--user-fg)}
+.lanes .step.model{background:var(--tool);border-color:var(--tool-line)} .lanes .step.model .t{color:var(--tool-fg)}
+.lanes .step.wl{background:var(--wl);border-color:var(--wl-line)} .lanes .step.wl .t{color:var(--wl-fg)}
+.lanes .step.recv{border-style:dashed}
+/* 행 구분: 점선 가운데에 다음 단계로 넘어가는 이유를 얹음 (화살표 없음) */
+.lanes .ar{grid-column:1/-1;position:relative;display:grid;place-items:center;height:30px;color:var(--muted)}
+.lanes .ar::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px dashed var(--line)}
+.lanes .ar em{display:none}
+.lanes .ar span{position:relative;font-size:.78rem;white-space:nowrap;background:var(--bg);padding:0 12px}
+@media (max-width:720px){.lanes{grid-template-columns:1fr}.lanes .lh{display:none}.lanes .c1,.lanes .c2,.lanes .c3{grid-column:1}.lanes .ar{padding-left:12px}}
+/* 세로 흐름도 */
+.vflow{display:grid;gap:0;--label:142px}
+.vstep .box{border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:.88rem;min-width:0;display:grid;grid-template-columns:var(--label) 1fr;gap:8px;align-items:center;background:var(--surface)}
+.vstep .box .t{font-weight:600}
+.vstep .box .d{font-size:.86rem;opacity:.9}
+.vstep .arrow{height:28px;display:grid;grid-template-columns:var(--label) 1fr;gap:8px;align-items:center;padding:0 10px;color:var(--muted)}
+.vstep .arrow em{font-style:normal;text-align:center;font-size:1.05rem}
+.vstep .arrow span{font-size:.78rem}
+.vstep.wl .box{background:var(--wl);border-color:var(--wl-line)} .vstep.wl .t{color:var(--wl-fg)}
+.vstep.user .box{background:var(--user);border-color:var(--user-line)} .vstep.user .t{color:var(--user-fg)}
+.vstep.tool .box{background:var(--tool);border-color:var(--tool-line)} .vstep.tool .t{color:var(--tool-fg)}
+.vstep.ans .box{background:var(--surface2)}
+@media (max-width:720px){
+  :root{--label:120px;--brace:60px}
+  .inj{grid-template-columns:1fr}.cms{padding-top:0}.cm{border-left:none;padding:0 0 4px 24px;min-height:0}
+  .tl{grid-template-columns:1fr}.tl .mid b{transform:rotate(90deg)}
+}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">README companion · final · measured 2026-10-15</div>
+  <div class="intro">
+    <span class="name">Worklog</span>
+    <span class="desc"><i>Keeps Claude Code and Codex from forgetting</i> <i>what was decided,</i> <i>even after the conversation is compacted or a new session starts.</i><br><i>This page goes from install and everyday use</i> <i>to how the record reaches the model.</i></span>
+  </div>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--sys)"></i>system · tools</span>
+    <span><i class="sw" style="background:var(--rule);border-color:var(--rule-line)"></i>instruction files</span>
+    <span><i class="sw" style="background:var(--wl);border-color:var(--wl-line)"></i>added by Worklog</span>
+    <span><i class="sw" style="background:var(--user);border-color:var(--user-line)"></i>user message</span>
+    <span><i class="sw" style="background:var(--tool);border-color:var(--tool-line)"></i>tool calls · results</span>
+    <span><i class="sw" style="background:var(--bad);border-color:var(--bad-line)"></i>model answer</span>
+  </div>
+  <p class="note"><small>In the real tool, the phrases you type and the text injected for the model are Korean. This page shows English translations, with the Korean original in parentheses where you need to type it.</small></p>
+</header>
+
+<section class="units">
+  <h2>1. What gets recorded, and where</h2>
+  <div class="cols units" style="margin-top:-2px">
+    <div class="stack units">
+<pre>project folder/
+└── .worklog/                 one per project (created at install)
+    └── works/                one folder per work
+        ├── guide/            work 1  paper-notebook habit plan
+        │   ├── <b class="f-ev">events.jsonl</b>    history
+        │   └── <b class="f-st">state.md</b>        current state
+        ├── report/           work 2  write the report
+        ├── api-docs/         work 3  tidy the API docs
+        └── …/                work n</pre>
+      <div class="files">
+        <div class="fbox ev"><span class="q">events.jsonl · history</span><span><i>every decision and result, in order</i> <i>· only ever appended to, never erased</i></span></div>
+        <div class="fbox st"><span class="q">state.md · current state</span><span><i>the goal, decisions, constraints and next step that apply right now</i> <i>· this is what injection ② shows the model (§5)</i></span></div>
+      </div>
+    </div>
+    <div class="card">
+      <span class="t">Works and their records</span>
+      <div class="row"><b>One work, one folder</b><span><i>a "work" is one task with its own record</i> <i>· decisions and constraints of one work never leak into another</i> <i>· a session attaches to exactly one work</i> <i class="p">(§2)</i></span></div>
+      <div class="row"><b>History vs. current</b><ul class="dots"><li><span>every save appends one line to the history</span></li><li><span>the current state is recomputed from the history</span></li><li><span><i>when a value changes, the old decision stays in the history</i> <i>and only the newest one is in the current state</i></span></li></ul></div>
+      <div class="row"><b>How to see it</b><span><i>ask the AI "show the current work state"</i> <i class="p">(현재 작업 상태 보여 줘)</i> <i>· or open <code>state.md</code></i> <i>· the model gets it automatically at session start</i> <i class="p">(§4–5)</i></span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>2. How to use it <small>ask the AI to install it; after that you only name the work you want to continue</small></h2>
+  <div class="cards one">
+    <div class="card">
+      <span class="t">Install — ask the AI to do it</span>
+      <div class="row"><b>Say to the AI</b><span><code>Clone https://github.com/BUGGIEEEEE/worklog and install Worklog in this project</code> <i class="p">(the AI reads AGENT.md and first asks which tools to install for)</i></span></div>
+      <div class="row"><b>The AI runs</b><span><div class="cmd"><pre id="cmd-install">git clone https://github.com/BUGGIEEEEE/worklog.git                                   # once
+python3 -B worklog/tools/install_project.py --tool claude --root /path/to/project      # once per project
+python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project</pre><button type="button" class="copy" data-for="cmd-install">Copy</button></div><i class="p">clone once · connect each project once · nothing to do after that</i></span></div>
+      <div class="row"><b>Only you can do</b><span><i>Codex: in the first session, trust the project, then run <code>/hooks</code> and trust the three hooks it lists</i> <i>· Claude Code: accept the folder-trust dialog if the project is a git repository</i></span></div>
+      <div class="row"><b>Check</b><span><i>ask the AI "check the Worklog version"</i> <i class="p">(Worklog 버전 확인해 줘)</i> <i class="a"><code>wl.py version</code> prints it</i></span></div>
+    </div>
+  </div>
+  <div class="cards two">
+      <div class="card">
+        <span class="t">What you say while working</span>
+        <div class="row"><b>First session</b><span>"New work: paper-notebook habit plan guide" <i class="p">(새 작업: 종이 노트 습관 계획 guide)</i> <i class="a">creates the work <code>guide</code></i> <i class="p">(the id is built from the Latin letters and digits in the title; none → work)</i></span></div>
+        <div class="row"><b>Next session</b><span>"Continue guide. Write plan.md." <i class="p">(guide 이어서. plan.md 써 줘.)</i> <i class="a">the record is loaded and the work picks up where it left off</i></span></div>
+        <div class="row"><b>Refer to another work</b><span>"Use the time split decided in guide" <i class="p">(guide에서 정한 시간 배분을 참고해 줘)</i><br><i class="a">the model reads guide's record</i> <i>· only what you asked for is brought over</i></span></div>
+        <div class="row"><b>Delegating</b><span><i>just tell the AI to delegate</i> <i>· if you open a separate session yourself, start it with "continue guide. subtask: 〈name〉"</i> <i class="p">(guide 이어서. 하위 작업: 〈name〉)</i></span></div>
+        <div class="row"><b>Several works</b><span><i>the model lists them at session start and asks which one to continue</i></span></div>
+        <div class="row"><b>Saving</b><span><i>nothing for you to do</i> <i>· the model saves, or records a skip, at the end of every turn</i></span></div>
+      </div>
+      <div class="card">
+        <span class="t">Now and then</span>
+        <div class="row"><b>Pause</b><span>"Worklog off" / "Worklog on" <i class="p">(워크로그 꺼 / 워크로그 켜 · whole project · nothing is recorded while off)</i></span></div>
+        <div class="row"><b>Update</b><span><i>a new version is announced in one line at session start</i> <i class="a">"update Worklog"</i> <i class="p">(Worklog 업데이트해 줘 · runs wl.py update)</i></span></div>
+        <div class="row"><b>Current state</b><span>"show the current work state" <i class="p">(현재 작업 상태 보여 줘)</i> <i class="a">goal · decisions · constraints · next step</i></span></div>
+      </div>
+  </div>
+</section>
+
+<section>
+  <h2>3. The example <small>every figure on this page assumes this situation</small></h2>
+  <div class="tl">
+    <div class="lab">Case 1 · a new session continues the same work</div>
+    <div class="box"><span class="t">Session 1 · work <mark class="w">guide</mark> begins</span><span class="q">New work: paper-notebook habit plan guide <i class="p">(새 작업: 종이 노트 습관 계획 guide)</i></span>
+      <ul class="dots"><li><span>decision: Wednesdays after dinner, 7 minutes</span></li><li><span>constraint: no reminders or alarms</span></li><li><span>next step: write plan.md</span></li></ul></div>
+    <div class="mid"><b>→</b><span>session ends</span></div>
+    <div class="box"><span class="t">Session 2 · the same work <mark class="w">guide</mark> continues</span><span class="q">Continue <mark class="w">guide</mark>. Write plan.md. <i class="p">(guide 이어서. plan.md 써 줘.)</i></span>
+      <span class="keep"><i>session 1's decisions and constraints still apply without being restated:</i> <i>7 minutes, Wednesdays, no reminders</i></span></div>
+  </div>
+  <div class="tl">
+    <div class="lab">Case 2 · one long session, compacted several times</div>
+    <div class="box"><span class="t">Session 1, early · work <mark class="w">guide</mark></span><span class="q">New work: paper-notebook habit plan guide <i class="p">(새 작업: 종이 노트 습관 계획 guide)</i></span>
+      <ul class="dots"><li><span>decision: Wednesdays after dinner, 7 minutes</span></li><li><span>constraint: no reminders or alarms</span></li></ul></div>
+    <div class="mid"><b>→</b><span>long conversation,<br>compacted n times</span></div>
+    <div class="box"><span class="t">Session 1, late · the same work <mark class="w">guide</mark></span><span class="q">Write plan.md. <i class="p">(plan.md 써 줘.)</i></span>
+      <span class="keep"><i>injection ② is re-sent after every compaction</i> <i class="a">7 minutes, Wednesdays and no reminders never fade</i></span></div>
+  </div>
+</section>
+
+<section>
+  <h2>4. What the model receives on the first turn of session 2 — without / with Worklog <small>turn = one request and its answer · numbers on the right are character counts of the Korean originals · measured 2026-10-15, Claude opus, one run each</small></h2>
+  <div class="cols ctx">
+    <div class="stack">
+      <div class="cap left"><span>Without Worklog</span><small>4 layers</small></div>
+      <div class="group left">
+        <div class="brace"><span>model input<b>25,085</b></span></div>
+        <div class="layers">
+          <div class="layer l-sys"><span class="k">System prompt</span><span class="v"><i>Claude Code's own instructions</i> <i>and environment info</i></span><span class="n">17,666</span></div>
+          <div class="wrap">
+            <div class="head"><span class="k">Instruction files</span><span class="v"></span><span class="n">7,396</span></div>
+            <div class="layer plain nonum"><span class="k">Global</span><span class="v"><i>CLAUDE.md · AGENTS.md</i></span></div>
+          </div>
+          <div class="layer l-sys"><span class="k">Tool definitions</span><span class="v"><i>Bash, Read, Edit, …</i></span><span class="n">—</span></div>
+          <div class="layer l-user"><span class="k">User message</span><span class="v"><i>Continue guide. Write plan.md.</i> <i class="p">(guide 이어서. plan.md 써 줘.)</i></span><span class="n">23</span></div>
+        </div>
+        <div class="total"><span>first-turn total <i class="p">(tool definitions excluded)</i></span><span class="n">25,085</span></div>
+      </div>
+      <div class="group left">
+        <div class="brace"><span>then<b>26.5 s</b></span></div>
+        <div class="layers">
+          <div class="layer l-tool"><span class="k">Tool calls</span><span class="v"><i>searches the folder and its memory</i> <i class="a">finds no record of "guide"</i></span><span class="n">2</span></div>
+          <div class="layer l-bad nonum"><span class="k">Model answer</span><span class="v"><i>does not write the file</i><br><i>· "inventing values would put in things you never decided"</i><br><i>· asks for the goal, the time and the constraints</i></span></div>
+        </div>
+        <div class="total"><span>response time</span><span class="n">26.5 s</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="cap"><span>With Worklog</span><small>2 additions <i class="p">(teal)</i></small></div>
+      <div class="group">
+        <div class="layers">
+          <div class="layer l-sys"><span class="k">System prompt</span><span class="v"><i>unchanged</i></span><span class="n">17,666</span></div>
+          <div class="wrap">
+            <div class="head"><span class="k">Instruction files</span><span class="v"></span><span class="n">15,267</span></div>
+            <div class="layer plain"><span class="k">Global</span><span class="v"><i>unchanged</i></span><span class="n">7,396</span></div>
+            <div class="layer l-wl"><span class="k">① Rules block</span><span class="v"><i>Worklog's rules of conduct, which the installer wrote into the project's CLAUDE.md</i> <i>· identical every session</i></span><span class="n">7,871</span></div>
+          </div>
+          <div class="layer l-sys"><span class="k">Tool definitions</span><span class="v"><i>unchanged</i> <i class="p">(+ one line naming the worklog skill)</i></span><span class="n">—</span></div>
+          <div class="layer l-wl"><span class="k">② Injection</span><span class="v"><i>a summary of the record, attached automatically at session start</i> <i>· different every session</i></span><span class="n">405</span></div>
+          <div class="layer l-user"><span class="k">User message</span><span class="v"><i>Continue guide. Write plan.md.</i> <i class="p">(unchanged)</i></span><span class="n">23</span></div>
+        </div>
+        <div class="brace wl"><span>model input<b>33,361</b>+33%</span></div>
+        <div class="total wl"><span>first-turn total <i class="p">(tool definitions excluded)</i> · +8,276</span><span class="n">33,361</span></div>
+      </div>
+      <div class="group">
+        <div class="layers">
+          <div class="layer l-tool"><span class="k">Tool calls</span><span class="v"><i>use</i> <i class="a">Write plan.md</i> <i class="a">save</i></span><span class="n">4</span></div>
+          <div class="layer l-bad nonum"><span class="k">Model answer</span><span class="v"><i>writes plan.md</i><br><i>· Wednesdays and 7 minutes applied</i><br><i>· no reminders</i><br><i>· asks nothing before writing</i></span></div>
+        </div>
+        <div class="brace"><span>then<b>32.1 s</b></span></div>
+        <div class="total"><span>response time</span><span class="n">32.1 s</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cards split">
+    <div class="card wl">
+      <span class="t">① Rules block — how the model is told to handle the record</span>
+      <div class="row"><b>Where</b><span><i>the project's <code>CLAUDE.md</code></i> <i class="p">(the instruction file Claude Code reads every session)</i> <i>· written once by the installer</i></span></div>
+      <div class="row"><b>Turn start</b><span><i>if injection ② is present, treat it as the current state</i> <i>· otherwise read the record with <code>show</code></i></span></div>
+      <div class="row"><b>Choosing a work</b><span><i>only when the user says "continue 〈id〉" or "new work: 〈title〉"</i> <i class="p">(〈id〉 이어서 · 새 작업: 〈title〉)</i> <i>· never on its own initiative</i></span></div>
+      <div class="row"><b>Saving</b><span><i>run <code>save</code> before the turn ends</i> <i>· for each decision and constraint, quote the line of the artifact that honors it,</i> <i>or state why it does not apply</i></span></div>
+      <div class="row"><b>Changes</b><span><i>kept exactly as installed</i> <i>· a new version is applied by reinstalling</i></span></div>
+    </div>
+    <div class="col">
+    <div class="card wl">
+      <span class="t">② Injection — the record summary</span>
+      <div class="row"><b>When</b><span><i>at session start, on resume, after compaction and on fork (session copy)</i> <i>· once at each of these events, not every turn</i></span></div>
+      <div class="row"><b>What</b><span><i>the list of works</i> <i>+ the current work's goal, decisions, constraints, waiting items and next step</i> <i class="p">(§5)</i></span></div>
+      <div class="row"><b>Size</b><span><i>about 400 characters on the first turn</i> <i class="p">(before a work is chosen)</i> <i>· about 900 on resume or after compaction, once a work is chosen</i></span></div>
+      <div class="row"><b>Afterwards</b><span><i>the only additions per turn are</i> <i>the use·save results the model asked for</i></span></div>
+    </div>
+    <div class="card">
+      <span class="t">Cost — first turn</span>
+      <div class="row"><b>Characters</b><span><i>+8,276 (+33%)</i> <i>· almost all of it is ① the rules block</i></span></div>
+      <div class="row"><b>Calls</b><span><i>tool calls 2 → 4</i> <i class="p">(use and save added)</i></span></div>
+      <div class="row"><b>Time</b><span><i>26.5 s → 32.1 s</i> <i class="p">(one run each)</i></span></div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>5. Inside injection ② <small>the teal ② layer of §4, unfolded · left = the actual text · right = what the model takes from it</small></h2>
+  <div class="inj">
+    <div class="irow head"><div class="lcell">② Injection</div><div class="blank">What the model takes from it</div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ Header</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>No need to read the record separately</b><small>this is the case the rules block calls "injection ② is present"</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓑ Notice</span><span class="v"><i>"This is working material read from the record,</i> <i>not a new approval."</i></span></div></div><div class="cm"><b>A past record, not a new command</b><small>decisions in the record are not mistaken for instructions just given</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ Work list</span><span class="v"><i>- guide · paper-notebook habit plan · ACTIVE</i> <i>· next: write plan.md</i></span></div></div><div class="cm"><b>"Continue guide" → run <code>use guide</code></b><small>only a work from this list can be chosen</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ Current work</span><span class="v"><i>guide · paper-notebook habit plan</i> <i class="p">(seq 3 · last save time · session)</i></span></div></div><div class="cm"><b>The work this session continues</b><small>included only after a work is chosen: on resume or after compaction</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Goal</span><span class="v"><i>original goal (verbatim): make a paper-notebook habit plan</i> <i>· current scope: D1</i></span></div></div><div class="cm"><b>What the work is for</b><small>if a value in the goal was changed later, the decisions below win</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Decisions in force</span><span class="v"><i>D1: Wednesdays after dinner, 7 minutes <code>[user]</code></i></span></div></div><div class="cm"><b>Set by the user → never changed on the model's own initiative</b><small>a <code>[model]</code> tag means it was the model's judgment: it may change it, stating a reason</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Constraints in force</span><span class="v"><i>C1: no reminders or alarms <code>[user]</code></i></span></div></div><div class="cm"><b>No reminders are set up</b><small>when saving, attach a quote showing it was honored, or a reason it does not apply</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Waiting</span><span class="v"><i>(none)</i></span></div></div><div class="cm"><b>Nothing is waiting on the user</b><small>if something were, confirm it first</small></div></div>
+    <div class="irow last"><div class="lcell"><div class="layer sub"><span class="k">Next step</span><span class="v"><i>write the weekly plan, plan.md</i></span></div></div><div class="cm"><b>Matches this request → carry on</b><small>no need to ask where to start</small></div></div>
+  </div>
+  <div class="cards">
+    <div class="card">
+      <span class="t">Warnings that can follow ⓐ</span>
+      <div class="chips">
+        <div class="chip"><b>Update notice</b><span>a new version is available</span></div>
+        <div class="chip"><b>Worktree warning</b><span><i>the record here diverges from the main checkout</i></span></div>
+        <div class="chip"><b>Missing artifact</b><span><i>a file this session recorded has disappeared</i></span></div>
+      </div>
+      <span class="note"><small><i>all three say "tell the user"</i> <i class="a">the model passes them on</i></small></span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>6. One turn with Worklog <small>the order in which §4 "with Worklog" actually ran · top to bottom · column = who acts</small></h2>
+  <div class="lanes">
+    <div class="lh user">User</div><div class="lh wl">Worklog tool</div><div class="lh model">Model (Claude)</div>
+    <div class="step wl c2"><span class="t">1 · Session start</span><span class="d"><i>reads the record and builds injection ②</i> <i class="p">(the SessionStart hook)</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step user c1"><span class="t">2 · Message</span><span class="d">Continue guide. Write plan.md. <i class="p">(guide 이어서. plan.md 써 줘.)</i></span></div>
+    <div class="ar"><em>▼</em><span>following the rules block: "choosing a work"</span></div>
+    <div class="step model c3"><span class="t">3 · Runs <code>wl.py use guide</code></span><span class="d"><i>takes "continue guide"</i> <i>and asks the tool for that work</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step wl c2"><span class="t">4 · Returns the current state</span><span class="d"><i>sets this session's work to guide</i> <i>· returns the goal, D1, C1 and the next step</i></span></div>
+    <div class="ar"><em>▼</em><span>applying D1 and C1</span></div>
+    <div class="step model c3"><span class="t">5 · Writes plan.md</span><span class="d"><i>"every Wednesday after dinner, 7 minutes … no reminders"</i></span></div>
+    <div class="ar"><em>▼</em><span>following the rules block: "saving"</span></div>
+    <div class="step model c3"><span class="t">6 · Runs <code>wl.py save</code></span><span class="d"><i>artifact plan.md</i> <i>· a quote for D1, a reason for C1</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step wl c2"><span class="t">7 · Checks, then saves</span><span class="d"><i>saves only if the quote is actually in the file</i> <i class="p">(then event E0002)</i><br><i>otherwise refuses</i> <i class="a">the model fixes it and repeats step 6</i></span></div>
+    <div class="ar"><em>▼</em><span>when the model is about to finish its answer</span></div>
+    <div class="step wl c2"><span class="t">8 · Stop hook</span><span class="d"><i>lets the turn end if it contains a save or a skip</i><br><i>otherwise blocks the end once</i> <i>and says "save or skip before finishing"</i></span></div>
+    <div class="ar"><em>▼</em><span>passed</span></div>
+    <div class="step model c3"><span class="t">9 · Answer</span><span class="d"><i>plan.md written</i> <i>· recorded decisions and constraints applied</i><br><i>· asks for feedback on the parts it chose itself</i></span></div>
+    <div class="ar"><em>▼</em></div>
+    <div class="step user c1 recv"><span class="t">10 · Answer received</span><span class="d"><i>the user never had to repeat</i> <i>"7 minutes, Wednesdays, no reminders"</i></span></div>
+  </div>
+</section>
+
+<section>
+  <h2>7. Good to know</h2>
+  <div class="cards one">
+    <div class="card"><span class="t">Claude Code and Codex work the same way <span class="badge">Pi support planned</span></span>
+      <ul class="dots"><li><span><i>in both tools the model input gets</i> <i>① the rules block and ② the injection in the same way</i></span></li><li><span><i>both tools read and write the same <code>.worklog/</code></i> <i>of a project</i></span></li><li><span><i>only the settings file names differ</i>
+  <table class="mini"><tr><th></th><th>file that holds the rules block</th><th>hook settings</th></tr>
+  <tr><td>Claude Code</td><td><code>CLAUDE.md</code></td><td><code>.claude/settings.local.json</code></td></tr>
+  <tr><td>Codex</td><td><code>AGENTS.md</code></td><td><code>.codex/hooks.json</code></td></tr></table></span></li></ul></div>
+  </div>
+  <div class="cards two">
+    <div class="card"><span class="t">What if another window changed the same work?</span>
+      <ul class="dots"><li><span><i>injection ② is not re-sent on every turn: it arrives at session start (and after compaction)</i> <i>· another session may save the same work in the meantime</i></span></li><li><span><i>when this session saves, the tool refuses with "the record has changed"</i><br><i class="a">the model re-reads the record, merges, and saves again</i></span></li><li><span>nothing for you to do</span></li></ul></div>
+    <div class="card"><span class="t">Uninstall</span>
+      <ul class="dots"><li><span><i>say to the AI "remove Worklog"</i> <i class="p">(Worklog 제거해 줘)</i> <i class="a">it asks which tool to remove and, only when the last tool goes, whether to keep the records in .worklog/, then runs the uninstaller</i></span></li><li><span><i>everything the installer changed is reverted</i> <i class="p">(rules block, hooks, skill files, .gitignore line)</i></span></li><li><span><i><code>--keep-records</code> keeps the records so a later install continues from them</i> <i>· <code>--delete-records</code> removes them</i></span></li></ul>
+      <div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records</pre><button type="button" class="copy" data-for="cmd-uninstall">Copy</button></div>
+      <span><small>one tool only: <code>--tool codex</code> (the records stay while another tool is still installed) · full removal and options: AGENT.md</small></span></div>
+  </div>
+</section>
+</main>
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var pre = document.getElementById(btn.dataset.for); if(!pre) return;
+    var text = pre.textContent; var done = function(){ btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = 'Copy'; }, 1500); };
+    var fallback = function(){ try{ var r = document.createRange(); r.selectNodeContents(pre); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = 'Selected · ⌘C'; setTimeout(function(){ btn.textContent = 'Copy'; }, 2000); }catch(e){} };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, fallback); } else { fallback(); }
+  });
+});
+</script>

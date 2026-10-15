@@ -2,14 +2,9 @@
 
 You are reading this because a user gave you this repository and asked you to install or update it. Explain things to the user in their language. Human-facing overview: [README.md](README.md) / [README.ko.md](README.ko.md).
 
-## What to tell the user (the essentials)
+## What to tell the user
 
-- **Purpose.** Coding agents lose decisions when a conversation is compacted or a new session starts. worklog makes the agent write each work's goal, decisions, constraints and next action into `.worklog/` in the project, and read it back at session start and after compaction.
-- **How it works.** Three hooks per project: SessionStart injects the current state, UserPromptSubmit counts the turn, Stop blocks a turn that ended without a save (or an explicit read-only `skip`). Records live in `.worklog/works/<id>/`: an append-only, hash-chained `events.jsonl` plus `state.json`/`state.md` rebuilt from it. One project can hold several works; the user names the work (`<id> 이어서` / `새 작업: <title>`) and the agent never guesses.
-- **What changes in their project.** Claude Code: a rules block in `CLAUDE.md`, hooks in `.claude/settings.local.json`, a skill in `.claude/skills/worklog/`, an empty `.worklog/`, and in a git repository one `.gitignore` line (`.worklog/`; the whole record stays out of git, since 2.18.0). A project that already tracks `.worklog/` keeps tracking it until the user runs `git rm -r --cached .worklog` once. Codex: a rules block in `AGENTS.md`, hooks in `.codex/hooks.json`, a skill in `.agents/skills/worklog/`, an empty `.worklog/`. Outside the project only `~/.worklog/installs.json` is written (the list of installed projects, for the uninstaller). Every changed file is backed up as `<file>.bak-worklog-<timestamp>`.
-- **What they must do themselves.** Codex: trust the project, then trust the three hooks in `/hooks`. Claude Code: accept the folder-trust dialog on first start if the project is a git repository. You cannot do these for them; do not edit `~/.codex/config.toml` or any global settings.
-- **Pausing.** Saying `워크로그 꺼` pauses the whole project (marker file `.worklog/off`); `워크로그 켜` resumes. Time spent off is not recorded. Only the user's words can turn it off.
-- The model-facing rules and CLI messages are written in Korean.
+Human-facing explanations live in [README.md](README.md) (English) and [README.ko.md](README.ko.md) (Korean): purpose, how it works, what changes in their project, the trust steps, pausing, update and removal. Most of each README is figures (PNG); the same content as text, section by section, is in [docs/figures.en.html](docs/figures.en.html) and [docs/figures.ko.html](docs/figures.ko.html) — read those when you need to quote or explain it. Point the user to the README or repeat it in their language. Two things to always say: the model-facing rules and CLI messages are Korean, and the first session starts with `새 작업: <title>` (the work id is built from the Latin letters and digits in the title; none → `work`).
 
 ## Install
 

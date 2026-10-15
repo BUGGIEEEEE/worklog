@@ -2,47 +2,19 @@
 
 [한국어](README.ko.md) · AI agent? Read [AGENT.md](AGENT.md)
 
-**Keeps Claude Code and Codex from forgetting what was decided after a compaction or a new session.** Install once per project. After that there is nothing to do.
+**Keeps Claude Code and Codex from forgetting what was decided, even after a compaction or a new session.** Ask the AI to install it; after that you only name the work you want to continue.
 
-## How it works
+![1. What gets recorded, and where](docs/img/en-01-units.png)
 
-```
-Install (once per project)
-   │
-   ▼
-Session start ── the model reads the record in .worklog/
-   │               several works? it asks → you: "<id> 이어서" (continue) or "새 작업: <title>" (new work)
-   ▼
-Working ──────── every turn it saves goal, decisions, constraints, next action
-   │               a turn cannot end without a save (a hook sends it back)
-   ▼
-Compaction or new session ── it reads the record again and continues
-```
+In a git project `.worklog/` is added to `.gitignore` (the record is per-machine state and quotes you, so it stays out of git). Also added to the project: one rules block in `CLAUDE.md` or `AGENTS.md` (your own content is kept), 3 hooks, `skills/worklog/` (Claude: `.claude/`, Codex: `.agents/`).
 
-## What appears in your project
+The phrases you type are Korean, and so are the model-facing rules and messages. They are short; copy them from here.
 
-```
-project/
-├── .worklog/works/<id>/state.md   current state: open it to see goal, decisions, constraints, next action
-├── CLAUDE.md or AGENTS.md         one rules block for the model (your own content is kept)
-├── 3 hooks                        read at session start, check for a save at turn end
-├── .gitignore                     git project only: adds .worklog/ (the record stays out of git: per-machine state that quotes you)
-└── skills/worklog/                skill file for `/worklog on|off` (Claude: .claude/, Codex: .agents/)
-```
+![2. How to use it](docs/img/en-02-usage.png)
 
-Claude Code and Codex share the same `.worklog/`.
+Phrases to copy: `새 작업: <title>` (new work) · `<id> 이어서` (continue) · `<id>에서 정한 <thing>을 참고해 줘` (use what was decided in another work) · `워크로그 꺼` / `워크로그 켜` (off / on) · `Worklog 업데이트해 줘` (update) · `현재 작업 상태 보여 줘` (show the current work state) · `Worklog 제거해 줘` (remove)
 
-## What you do
-
-| When | What |
-|---|---|
-| Install | commands below, once per tool. An agent asked to install asks you first which tools to install for. Codex: trust the project and the 3 hooks in `/hooks`. Claude Code: accept the folder-trust dialog if the project is a git repository |
-| First session | `새 작업: <title>` |
-| Later sessions | pick from the list: `<id> 이어서` |
-| Delegating | Just tell the agent to delegate. If you open a separate session yourself, start its first prompt with `<id> 이어서. 하위 작업: <name>`; for an independent work that finishes on its own, use `새 작업: <title>` and list which decisions and constraints carry over. The agent records the result by the rules |
-| Pause | `워크로그 꺼` ("worklog off", whole project). `워크로그 켜` resumes. Nothing is recorded while off |
-| Remove | `python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records` (keeps the records in `.worklog/`) or `--delete-records` (removes them too); `--tool codex` removes one tool only. An agent asked to remove asks you first which tools and whether to keep the records. Reverts the rules block, the 3 hooks, the skill and the `.gitignore` lines; files it edits are backed up. `--all-projects --home` removes every registered project (installs since 2.17.0) and `~/.worklog`; then delete the clone folder yourself |
-| Update | a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. Nothing changes by itself: run `python3 -B worklog/core/wl.py update` to fast-forward to the newest tag of the same major version and reinstall the current project; `update rollback` goes back; `update --mode off` silences the line. A new major version is announced only. Hooks stay unchanged, so no re-trust |
+Install — the commands the AI runs (you can run them yourself; clone once, install once per project and tool):
 
 ```sh
 git clone https://github.com/BUGGIEEEEE/worklog.git
@@ -50,16 +22,31 @@ python3 -B worklog/tools/install_project.py --tool claude --root /path/to/projec
 python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project
 ```
 
-Check the install: `python3 -B worklog/core/wl.py version` prints the core version (see `CHANGELOG.md`). The installer also lists the project in `~/.worklog/installs.json` (used by the uninstaller).
+Check the install — it prints the core version (see `CHANGELOG.md`):
 
-Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project and backs up every file it changes.
+```sh
+python3 -B worklog/core/wl.py version
+```
 
-## Good to know
+Remove — the agent asks which tool to remove and, only when the last tool goes, whether to keep the records. Example (`--delete-records` removes the records too; `--tool codex` removes one tool only):
 
-- `save` results tell you whether the hooks are alive (`hooks`, and a `warning` when they are not) and whether a `check` quote merely repeated the rule's own text (`self_quoted`, not evidence that the rule was followed).
-- The record detects accidental edits, not deliberate tampering.
-- A `/rewind` code restore reverts files only; the record stays. An artifact this session recorded whose file is gone shows up in the next `show`/save result as `[Worklog 산출물 없음]`/`artifacts_missing` (2.15.0); `verify` checks every artifact's existence and hash. Re-saving the same turn after a conversation restore is refused by the core, which points to `show` (2.13.0).
-- A record written inside a git worktree (isolated fork) diverges from the main checkout and conflicts on merge (`.worklog/works/*/events.jsonl`). The core warns with `warning_worktree`; record from the main checkout instead.
-- Pi is untested. The model-facing rules and messages are in Korean.
+```sh
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records
+```
+
+- Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project, backs up every file it changes, and lists the project in `~/.worklog/installs.json` (used by the uninstaller).
+- Update: a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. `wl.py update` fast-forwards to the newest tag of the same major version and reinstalls the current project; `update rollback` undoes it, `update --mode off` silences the notice.
+- Delegating: just tell the agent to delegate. If you open a separate session yourself, start its first prompt with `<id> 이어서. 하위 작업: <name>` ("continue <id>. subtask: <name>"); for an independent work that finishes on its own, use `새 작업: <title>` and list which decisions and constraints it inherits. The agent keeps the record as the rules say.
+- Full removal (every project plus `~/.worklog`) and all uninstall options: [AGENT.md](AGENT.md).
+
+![3. The example](docs/img/en-03-example.png)
+
+![4. What the model receives on the first turn of session 2 — without / with Worklog](docs/img/en-04-context.png)
+
+![5. Inside the injected record summary](docs/img/en-05-injection.png)
+
+![6. One turn with Worklog](docs/img/en-06-flow.png)
+
+![7. Good to know](docs/img/en-07-notes.png)
 
 Details: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · MIT ([LICENSE](LICENSE))
