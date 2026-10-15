@@ -20,6 +20,7 @@ def load_wl():
 
 TEST_HOME = Path(tempfile.mkdtemp())  # WL_HOME for every run: update mode off, so no test starts a background update check
 (TEST_HOME / "config.json").write_text('{"update": "off"}')
+os.environ["WL_HOME"] = str(TEST_HOME)  # also for installer runs without an explicit env and in-process imports: the installer writes the registry there (2.17.0), never into the real ~/.worklog
 
 
 def clean_env():
