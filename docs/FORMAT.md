@@ -84,7 +84,7 @@ save 순서: 잠금 → 선택 작업 원장 읽기·해시 연결 확인 → �
 
 텍스트 산출물이 있는 save는 유효 결정·제약마다 check를 넣는다. 규칙이 지켜졌음을 보여 주는 본문 구절을 4자 이상 따옴표로 인용하거나 `미반영: <이유>`를 적는다. 공백 정규화 후 본문에 없는 인용은 거부한다. 미반영은 저장 결과의 `unreflected`에 표시하며, 작업 방식 제약이나 그림·압축 파일처럼 인용할 수 없는 것은 미반영이 정상이다. 인용이 규칙 문장과 같으면 저장은 되지만 `self_quoted`에 표시한다. 규칙 문장을 본문에 써 넣어 통과시키는 것은 반영의 증거가 아니다. 산출물이 모두 비텍스트면 인용 대조 없이 해시만 남기고, check는 선택이며 미반영만 받는다.
 
-save·skip·new-work 결과에는 `hooks`(이 세션에서 SessionStart·UserPromptSubmit·Stop Hook이 돌았는지)가 붙고, UserPromptSubmit 기록이 없으면 `warning`(Hook 미작동 의심)이 붙는다. use는 같은 경우 본문 앞에 `[Worklog Hook 경고]` 줄을 더한다. Pi는 Hook이 없어 표시하지 않는다. `new-work` 결과의 `notice`는 다른 작업의 유효 제약이 새 작업에 적용되지 않음을 알린다.
+save·skip·new-work 결과에는 `hooks`(이 세션에서 SessionStart·UserPromptSubmit·Stop Hook이 돌았는지)가 붙고, 세 Hook 기록이 하나도 없으면 `warning`(Hook 미작동 의심)이 붙는다(2.16.0; UserPromptSubmit만 없는 것은 `!` 셸 입력·다른 세션의 알림으로 시작한 턴에서 정상이라 경고하지 않는다). use는 같은 경우 본문 앞에 `[Worklog Hook 경고]` 줄을 더한다. Pi는 Hook이 없어 표시하지 않는다. 세션 파일의 `turn`은 UserPromptSubmit과, 턴을 끝내 주는 Stop Hook이 각각 1씩 올린다(번호는 건너뛸 수 있고 턴마다 다르기만 하면 된다). `new-work` 결과의 `notice`는 다른 작업의 유효 제약이 새 작업에 적용되지 않음을 알린다.
 
 ## 작업 선택 규칙
 

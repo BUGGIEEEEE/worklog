@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.15.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.16.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -28,8 +28,8 @@ ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
 NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
 WORKTREE_WARNING = ("git worktree 안입니다. 여기서 저장한 기록은 본 저장소와 갈라져 병합 때 .worklog/works/*/events.jsonl이 충돌합니다. "
                     "기록은 본 저장소 세션에서 하고, 여기서 저장했다면 병합 전에 충돌을 사람이 정리하세요.")
-HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 UserPromptSubmit Hook 기록이 없습니다. Hook이 꺼져 있거나 신뢰되지 않았거나 "
-                "세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
+HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 Hook 기록이 하나도 없습니다(SessionStart·UserPromptSubmit·Stop). Hook이 꺼져 있거나 "
+                "신뢰되지 않았거나 세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
 NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
                  "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
 
@@ -382,8 +382,10 @@ def worktree_report(d):
 
 
 def hooks_report(d, tool, sid):
-    """{"hooks": {...}} for JSON results, plus "warning" when this session has no UserPromptSubmit hook record
-    and "warning_worktree" inside a git worktree. Pi has no hooks, so only the worktree warning is reported for it."""
+    """{"hooks": {...}} for JSON results, plus "warning" when this session has no hook record at all (none of the three ran:
+    not trusted, not installed, or another session id) and "warning_worktree" inside a git worktree. Pi has no hooks, so only
+    the worktree warning is reported for it. A missing UserPromptSubmit alone is not a warning: a turn started by `!` shell
+    input or by another session's notification does not fire it (observed 2026-10-15), while SessionStart and Stop still run."""
     if tool == "pi":
         return worktree_report(d)
     try:
@@ -392,7 +394,7 @@ def hooks_report(d, tool, sid):
         s = new_session()
     seen = s["hooks_seen"]
     out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
-    if "UserPromptSubmit" not in seen:
+    if not seen:
         out["warning"] = HOOK_WARNING
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
@@ -1288,19 +1290,23 @@ def cmd_turn_start(args):
 
 
 def cmd_stop_hook(args):
-    """Stop hook: block once if this turn has no save, skip or work selection. Does nothing while off."""
+    """Stop hook: block once if this turn has no save, skip or work selection. Does nothing while off.
+    When the turn ends (satisfied, or already blocked once: stop_hook_active) the turn counter advances here too, so a next
+    turn that starts without UserPromptSubmit (`!` shell input, another session's notification) still needs its own save or skip."""
     d, who, event = hook_input(args)
-    if not (d and who) or is_off(d) or event.get("stop_hook_active") is True:
+    if not (d and who) or is_off(d):
         return
     try:
-        s = load_session(d, *who) or new_session()
         with locked(d):
-            mark_hook(d, who, "Stop")
+            s = load_session(d, *who) or new_session()
+            done = s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]) or event.get("stop_hook_active") is True
+            update_session(d, *who, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"turn": s["turn"] + 1} if done else {}))
     except SessionCorrupt as e:
-        print(json.dumps({"decision": "block", "reason": f"Worklog: 세션 파일을 읽을 수 없습니다({e}). "
-                          "save 또는 skip으로 다시 만든 뒤 마치세요."}, ensure_ascii=False))
+        if event.get("stop_hook_active") is not True:  # 한 번 막힌 뒤에는 다시 막지 않는다(무한 반복 방지)
+            print(json.dumps({"decision": "block", "reason": f"Worklog: 세션 파일을 읽을 수 없습니다({e}). "
+                              "save 또는 skip으로 다시 만든 뒤 마치세요."}, ensure_ascii=False))
         return
-    if s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]):
+    if done:
         return
     q = shlex.quote
     skip = f'python3 -B {q(str(Path(__file__).resolve()))} skip "이유" --tool {q(who[0])} --session {q(who[1])} --root {q(str(d.parent))}'
