@@ -27,7 +27,7 @@ You are reading this because a user gave you this repository and asked you to in
    The output is JSON: `changed` lists the files it wrote. A refusal (exit 2, `error`) means nothing was written; show it to the user. `--no-worklog-dir` installs rules and hooks only, for a parent folder whose subfolders each keep their own `.worklog/`.
 4. If the project already has `.worklog/events.jsonl` at its root, it uses the old format `worklog/1`. Migrate first: `python3 -B worklog/tools/migrate_v1_to_v2.py --project /path/to/project --work-id <id>` to preview, `--apply` to migrate, then run the installer.
 5. Tell the user the trust steps above, and that the first session starts with `새 작업: <title>`.
-6. After the first turn, check that the hooks really run: the JSON result of `save`/`skip` (or `wl.py verify --all --tool <tool> --session <id>`) has `hooks` with `turn_start: true`. A `warning` "Hook 미작동 의심" means the hooks are not trusted, not installed, or run under another session ID; report it to the user instead of working around it.
+6. After the first turn, check that the hooks really run: the JSON result of `save`/`skip` (or `wl.py verify --all --tool <tool> --session <id>`) has `hooks` with `session_start`, `turn_start` and `stop`, and no `warning`. A `warning` "Hook 미작동 의심" (no hook record at all) means the hooks are not trusted, not installed, or run under another session ID; report it to the user instead of working around it. `turn_start: false` by itself is normal in a Claude Code session driven by `!` shell input or other sessions' notifications (UserPromptSubmit does not fire there).
 
 ## Update
 

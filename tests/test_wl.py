@@ -351,7 +351,7 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
         self.assertEqual(run(self.root, "skip", tool="claude")[0], 2)  # 이유 필수
         r, out = run(self.root, "skip", tool="claude", extra=["읽기 전용: 질문에 답만 함"])
-        self.assertEqual((r, json.loads(out)), (0, {"ok": True, "turn": 2,  # 이 세션에서 돈 Hook: turn-start·stop-hook
+        self.assertEqual((r, json.loads(out)), (0, {"ok": True, "turn": 4,  # 통과한 Stop 2회가 턴을 넘겼다(2.16.0). 이 세션에서 돈 Hook: turn-start·stop-hook
                                                     "hooks": {"session_start": False, "turn_start": True, "stop": True}}))
         self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
         self.assertEqual(len((self.wd / "events.jsonl").read_text().splitlines()), 2)  # skip은 원장에 안 씀
@@ -1203,7 +1203,7 @@ class WorksTest(Base):
         self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
         self.ok(new_work(self.root, "Recipe Note", tool="claude"))
         self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
-        self.assertEqual(json.loads(session_file(self.root).read_text())["selected_turn"], 2)
+        self.assertEqual(json.loads(session_file(self.root).read_text())["selected_turn"], 3)  # 통과한 Stop이 턴을 넘기므로 둘째 선택은 턴 3
 
     def test_migrate_dry_run_apply_rerun(self):
         ledger = self.make_v1()
@@ -1479,7 +1479,7 @@ class OnOffTest(Base):
         self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
         self.assertNotIn("off", self.ok(run(self.root, "skip", extra=["읽기"], tool="claude")))
         self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
-        self.assertEqual(json.loads(session_file(self.root).read_text())["turn"], 2)
+        self.assertEqual(json.loads(session_file(self.root).read_text())["turn"], 3)  # 꺼진 동안의 turn-start 1회는 세지 않고, 통과한 Stop이 1 올림
         self.assertEqual(len((self.d / "works/habit-plan/events.jsonl").read_text().splitlines()), 1)  # off·on은 원장에 쓰지 않음
 
     def test_commands_work_while_off_with_warning(self):
@@ -1711,8 +1711,13 @@ class FinalPlanTest(unittest.TestCase):
         out = self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
         self.assertEqual(out["hooks"], {"session_start": False, "turn_start": False, "stop": False})
         self.assertIn("Hook 미작동 의심", out["warning"])
+        self.assertIn("하나도 없습니다", out["warning"])
         self.assertIn("[Worklog Hook 경고]", use(self.root, "t", tool="claude")[1])
-        hook(self.root, "hook")
+        hook(self.root, "hook")  # SessionStart만 돌았다(`!` 셸 입력·다른 세션 알림으로 시작한 턴): Hook은 동작 중 → 경고 없음 (2.16.0)
+        out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y0"}, tool="claude"))
+        self.assertEqual(out["hooks"], {"session_start": True, "turn_start": False, "stop": False})
+        self.assertNotIn("warning", out)
+        self.assertNotIn("[Worklog Hook 경고]", use(self.root, "t", tool="claude")[1])
         hook(self.root, "turn-start")
         out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, tool="claude"))
         self.assertEqual(out["hooks"], {"session_start": True, "turn_start": True, "stop": False})
@@ -1724,6 +1729,25 @@ class FinalPlanTest(unittest.TestCase):
         out = self.ok(run(self.root, "verify", extra=["--all"], tool="claude", session="other"))
         self.assertIn("warning", out["hooks"])  # 다른 세션 ID: Hook 기록 없음 → 경고
         self.assertNotIn("hooks", self.ok(run(self.root, "skip", extra=["읽기"], tool="pi")))  # Pi는 Hook이 없다
+
+    def test_stop_hook_advances_turn(self):
+        """UserPromptSubmit 없이 시작하는 턴(`!` 셸 입력, 다른 세션의 알림)도 Stop Hook이 지나간 뒤에는 새 턴으로 센다 (2.16.0)."""
+        turn = lambda: json.loads(session_file(self.root).read_text())["turn"]
+        self.ok(new_work(self.root, "t", tool="claude"))  # selected_turn = 0
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
+        self.assertEqual(turn(), 1)  # 통과한 Stop이 턴을 넘긴다
+        self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")  # 턴 1: save·skip 없음 → 차단
+        self.assertEqual(turn(), 1)  # 차단은 턴을 넘기지 않는다
+        self.ok(run(self.root, "skip", extra=["알림만 받음"], tool="claude"))
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))
+        self.assertEqual(turn(), 2)
+        self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")
+        self.assertEqual(hook(self.root, "stop-hook", stop_hook_active=True), (0, ""))  # 한 번 막힌 뒤 다시 온 Stop: 통과하고 턴을 넘긴다
+        self.assertEqual(turn(), 3)
+        self.assertEqual(json.loads(hook(self.root, "stop-hook")[1])["decision"], "block")  # 턴 3도 자기 save·skip이 필요하다
+        hook(self.root, "turn-start")  # 사용자 프롬프트: 번호가 하나 건너뛰어도 턴마다 다르기만 하면 된다
+        self.assertEqual(turn(), 4)
+        self.assertIn("Stop", json.loads(session_file(self.root).read_text())["hooks_seen"])
 
     def test_artifact_summary_in_state_md(self):
         self.ok(new_work(self.root, "t"))
