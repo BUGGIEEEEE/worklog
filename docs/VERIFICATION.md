@@ -4,6 +4,30 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Ask-before-install / ask-before-uninstall (2.19.0–2.20.1, 2026-10-15, 7 model runs)
+
+Since 2.19.0 the installer and uninstaller refuse to guess which tools the user means, and AGENT.md tells the agent to ask first. Two-turn runs (`claude -p` with `--resume`, `codex exec` with resume) in an empty git project, default models, judged mechanically before the run: turn 1 passes when no real install/uninstall ran (dry-run and `--help` allowed) and the answer ends with the question; turn 2 passes when the answer ("both" / "Claude only" / "codex only") is carried out exactly.
+
+| Cell | Result |
+|---|---|
+| Install, Claude Code asks about Codex → "both" | PASS (2.19.0) |
+| Install, Claude Code → "Claude only": claude only, no `AGENTS.md`, no `.codex/` | PASS (2.19.0) |
+| Install, Codex asks about Claude Code → "both" | FAIL (2.19.0: installed codex without asking; also the `codex exec` workspace-write sandbox blocked `.codex/` and `.agents/` writes) → PASS (2.20.1, no sandbox) |
+| Uninstall, Claude Code with both tools installed → "codex only" | FAIL (2.19.0: ran `--tool all --keep-records` without asking) → PASS (2.20.1: asked which tool and about the records, then removed codex only, kept the Claude block and the records) |
+
+Both first-attempt failures had the same cause: the agent read `--help` and the README but not AGENT.md. 2.20.0 therefore puts the ask-first instruction at the top of both scripts' `--help`; the reruns read AGENT.md as well. The uninstall run's agent also found a real bug (with two tools installed, `--tool all --keep-records` left `install.json` holding the second tool's entry), fixed in 2.20.0 with a regression test. Not fixed: an OS error in the middle of the installer's writes leaves the files written so far (backups exist). One or two runs per cell: weak evidence of reproducibility. Details: worklog-control `runs/m-20261015-install/RESULTS.md`.
+
+2.19.0부터 설치기·제거기는 대상 도구를 추측하지 않고, AGENT.md는 에이전트에게 먼저 물으라고 한다. 빈 git 프로젝트에서 두 턴 실행(`claude -p` + `--resume`, `codex exec` + resume, 기본 모델), 판정은 실행 전 고정: 1턴은 실제 설치·제거 0회(dry-run·`--help` 허용)에 질문으로 끝나면 통과, 2턴은 답("둘 다" / "Claude만" / "codex만")을 정확히 수행하면 통과.
+
+| 셀 | 결과 |
+|---|---|
+| 설치, Claude Code가 Codex를 묻고 → "둘 다" | PASS (2.19.0) |
+| 설치, Claude Code → "Claude만": claude만, `AGENTS.md`·`.codex/` 없음 | PASS (2.19.0) |
+| 설치, Codex가 Claude Code를 묻고 → "둘 다" | FAIL (2.19.0: 묻지 않고 codex 설치; `codex exec` workspace-write 샌드박스가 `.codex/`·`.agents/` 쓰기를 막기도 함) → PASS (2.20.1, 샌드박스 없음) |
+| 제거, 두 도구가 설치된 프로젝트에서 Claude Code → "codex만" | FAIL (2.19.0: 묻지 않고 `--tool all --keep-records` 실행) → PASS (2.20.1: 도구와 기록을 묻고, codex만 제거, Claude 블록·기록 유지) |
+
+첫 시도 FAIL 두 건의 원인은 같다: 에이전트가 `--help`와 README는 읽고 AGENT.md는 읽지 않았다. 그래서 2.20.0은 두 스크립트의 `--help` 첫머리에 "먼저 물어라"를 넣었고, 재시험에서는 AGENT.md도 읽었다. 제거 회차의 에이전트는 실제 버그도 찾았다(두 도구 설치 + `--tool all --keep-records` → `install.json`에 둘째 도구 항목이 남음). 2.20.0에서 수정, 회귀 테스트 추가. 미수정: 설치기가 쓰는 도중 OS 오류가 나면 앞서 쓴 파일이 남는다(백업은 있음). 셀당 1~2회라 재현성 증거는 약하다. 상세: worklog-control `runs/m-20261015-install/RESULTS.md`.
+
 ## Rewind · branch · worktree (2.12.0–2.13.0, 2026-10-13, Claude Code, 1 real session)
 
 Measured by hand in the real project (test work archived afterwards): `/branch` → new session id, SessionStart injected once the installer matcher includes `fork` (2.12.0). `/rewind` conversation restore → same id, no rewind marker reaches the model, the model re-saved the turn without `show` → one duplicate event (decisions deduplicated by the core) → 2.13.0 refuses a same-session same-summary re-save. `/rewind` code restore → file gone, ledger unchanged, not reported (documented, no core change). git worktree → two ledgers, merge conflicts in events.jsonl/state.md/writer.json → 2.13.0 `warning_worktree`. `/btw`→`f` fork → saved under the main id with self-awareness, main skipped. Concurrent save → refused, `show`, re-saved. Measured later (2026-10-14): rewind-menu "Summarize from here" keeps the session id and fires SessionStart(compact), so the record is injected and the model answered the work and decisions from it (note: the prompt at the rewind point is put back into the composer); Codex interactive `resume` fires SessionStart(resume) at the first prompt; `$worklog` injects the skill body (Codex rollout shows `<skill><name>worklog</name>`); the model relayed the 2.13.0 worktree warning to the user in one run (PASS 1/1). Evidence: `worklog-control/shared/runs/checks-20261014/`.
