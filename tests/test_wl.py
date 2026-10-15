@@ -1616,6 +1616,16 @@ class UninstallTest(Base):
         self.assertEqual((code, out["projects"][0]["tool"]), (0, "all"))
         self.assertNotIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())
 
+    def test_all_keep_records_removes_manifest_with_two_tools(self):
+        """2.20.0: 두 도구 설치 + --tool all --keep-records → install.json이 둘째 도구 항목을 남기지 않고 사라진다(M-uninstall 발견)."""
+        self.install("claude")
+        self.install("codex")
+        code, out = self.uninstall("--tool", "all", "--keep-records")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.d / "install.json").exists())
+        self.assertFalse(self.d.exists())  # 기록이 없으니 빈 .worklog 폴더도 정리된다
+        self.assertIn(str(self.d / "install.json"), out["projects"][0]["removed"])
+
     def test_installer_writes_registry(self):
         self.assertEqual(self.install("claude")["registry"], str(self.home / "installs.json"))
         self.install("codex")
