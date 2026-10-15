@@ -1535,6 +1535,144 @@ class OnOffTest(Base):
         self.assertIn("이유: 없음", ctx)
 
 
+UNINST = Path(__file__).resolve().parents[1] / "tools" / "uninstall_project.py"
+
+
+class UninstallTest(Base):
+    """2.17.0: tools/uninstall_project.py는 설치기가 한 일을 되돌리고, 기록은 --keep-records/--delete-records로 사용자가 정한다."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = Path(tempfile.mkdtemp())  # 이 시험만의 WL_HOME: registry가 다른 시험의 프로젝트와 섞이지 않게
+        (self.home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), WL_HOME=str(self.home))
+        self.root.joinpath(".git").mkdir()  # git 프로젝트: .gitignore 줄까지 설치된다
+        (self.root / "CLAUDE.md").write_text("# 기존 내용\n")
+        (self.root / ".gitignore").write_text("node_modules/\n")
+        (self.root / ".claude").mkdir()
+        self.other_hook = {"type": "command", "command": "echo other", "timeout": 5}
+        (self.root / ".claude/settings.local.json").write_text(json.dumps(
+            {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.other_hook]}]}}))
+
+    def install(self, tool):
+        p = subprocess.run([sys.executable, "-B", str(INST), "--tool", tool, "--root", str(self.root)], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return json.loads(p.stdout)
+
+    def uninstall(self, *extra, root=True):
+        argv = [sys.executable, "-B", str(UNINST), *(["--root", str(self.root)] if root else []), *extra]
+        p = subprocess.run(argv, capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def registry(self):
+        try:
+            return json.loads((self.home / "installs.json").read_text())
+        except FileNotFoundError:
+            return None
+
+    def names(self, folder):
+        return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else None
+
+    def test_installer_writes_registry(self):
+        self.assertEqual(self.install("claude")["registry"], str(self.home / "installs.json"))
+        self.install("codex")
+        self.install("claude")  # 두 번 설치해도 한 번만 적힌다
+        self.assertEqual(self.registry(), {str(self.root.resolve()): ["claude", "codex"]})
+
+    def test_keep_records_then_reinstall_continues(self):
+        self.install("claude")
+        self.ok(new_work(self.root, "Habit Plan", tool="claude"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
+        hook(self.root, "stop-hook", env={"WL_HOME": str(self.home)})
+        self.assertTrue((self.d / ".lock").exists() and session_file(self.root).exists())
+        code, out = self.uninstall("--keep-records", "--dry-run")
+        self.assertEqual((code, out["dry_run"]), (0, True))
+        self.assertIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())  # dry-run은 아무것도 안 바꾼다
+        code, out = self.uninstall("--keep-records")
+        self.assertEqual(code, 0, out)
+        p = out["projects"][0]
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 기존 내용\n")  # 블록만 빠지고 원래 내용은 그대로
+        settings = json.loads((self.root / ".claude/settings.local.json").read_text())
+        self.assertEqual(settings, {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.other_hook]}]}})  # 남의 Hook·설정 유지
+        self.assertFalse((self.root / ".claude/skills").exists())  # 스킬 파일과 빈 폴더 제거
+        self.assertEqual((self.root / ".gitignore").read_text(), "node_modules/\n")
+        self.assertEqual(self.names(self.d), ["index.json", "works"])  # 기록은 남고 세션·잠금·설치 정보는 사라진다
+        self.assertEqual(sorted(Path(b).name.split(".bak-worklog-")[0] for b in p["backups"]), [".gitignore", "CLAUDE.md", "settings.local.json"])
+        self.assertTrue(all(Path(b).exists() for b in p["backups"]))
+        self.assertTrue(any(Path(b).read_text().count("worklog-shared:begin") == 1 for b in p["backups"]))  # 백업은 제거 전 내용
+        self.assertIsNone(self.registry())
+        self.assertTrue(len(list(self.root.glob("CLAUDE.md.bak-worklog-*"))) >= 2)  # 설치기의 옛 백업은 그대로(--purge-backups 없음)
+        self.install("claude")  # 다시 설치하면 남긴 기록을 그대로 잇는다
+        self.assertIn("habit-plan · Habit Plan", self.ctx(env={"WL_HOME": str(self.home)}))
+
+    def test_single_tool_leaves_shared_state_and_refuses_delete(self):
+        self.install("claude")
+        self.install("codex")
+        self.ok(new_work(self.root, "t", tool="codex"))
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        code, out = self.uninstall("--tool", "codex", "--delete-records")
+        self.assertEqual(code, 2)
+        self.assertIn("claude가 아직 설치돼 있어", out["projects"][0]["error"])
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)  # 거부는 아무것도 안 바꾼다
+        code, out = self.uninstall("--tool", "codex", "--keep-records")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.root / "AGENTS.md").exists())  # 설치기가 통째로 만든 파일은 사라진다(백업은 남음)
+        self.assertEqual(len(list(self.root.glob("AGENTS.md.bak-worklog-*"))), 1)
+        self.assertFalse((self.root / ".codex/hooks.json").exists())
+        self.assertFalse((self.root / ".agents").exists())
+        self.assertEqual(sorted(json.loads((self.d / "install.json").read_text())), ["claude"])
+        self.assertTrue((self.d / ".lock").exists() and (self.d / "sessions").is_dir())  # claude가 남아 있어 공용 상태는 그대로
+        self.assertIn(".worklog/.lock", (self.root / ".gitignore").read_text())
+        self.assertIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())
+        self.assertEqual(self.registry(), {str(self.root.resolve()): ["claude"]})
+        self.assertIn("claude가 아직 설치돼 있어", out["projects"][0]["notes"][0])
+
+    def test_all_delete_records_purge_and_home(self):
+        self.install("claude")
+        self.install("codex")
+        self.ok(new_work(self.root, "t", tool="claude"))
+        code, out = self.uninstall("--home", "--delete-records", root=False)  # 프로젝트가 남아 있으면 home은 거부
+        self.assertEqual(code, 2)
+        self.assertIn("아직 설치된 프로젝트", out["error"])
+        self.assertTrue(self.home.exists())
+        code, out = self.uninstall("--all-projects", "--delete-records", "--purge-backups", "--no-backup", "--home", root=False)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["projects"][0]["root"], str(self.root.resolve()))
+        self.assertEqual(self.names(self.root), [".claude", ".git", ".gitignore", "CLAUDE.md"])  # .worklog·AGENTS.md·.codex·.agents·백업 전부 제거
+        self.assertEqual(self.names(self.root / ".claude"), ["settings.local.json"])
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 기존 내용\n")
+        self.assertEqual(out["projects"][0]["backups"], [])
+        self.assertEqual(out["home"]["removed"], str(self.home))
+        self.assertFalse(self.home.exists())
+        self.assertTrue(any("rm -rf" in n for n in out["notes"]))  # clone은 스스로 지우지 않고 명령만 알려 준다
+
+    def test_requires_records_choice_and_refuses_before_writing(self):
+        self.install("claude")
+        code, out = self.uninstall()  # 터미널이 아니면 기록 처리를 정하라고 거부
+        self.assertEqual(code, 2)
+        self.assertIn("--keep-records 또는 --delete-records", out["error"])
+        (self.root / ".claude/settings.local.json").write_text("{broken")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        code, out = self.uninstall("--delete-records")
+        self.assertEqual(code, 2)
+        self.assertIn("읽을 수 없습니다", out["projects"][0]["error"])
+        self.assertEqual({p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}, before)  # 거부 전에 쓴 것 없음
+        self.assertTrue(self.d.exists())
+
+    def test_guide_only_block_is_deleted_and_middle_block_keeps_both_sides(self):
+        (self.root / "CLAUDE.md").unlink()
+        self.install("claude")
+        self.assertEqual(self.uninstall("--keep-records")[0], 0)
+        self.assertFalse((self.root / "CLAUDE.md").exists())  # 블록뿐이던 파일은 삭제(백업 1개)
+        self.assertEqual(len(list(self.root.glob("CLAUDE.md.bak-worklog-*"))), 1)
+        self.install("claude")
+        text = (self.root / "CLAUDE.md").read_text()
+        (self.root / "CLAUDE.md").write_text("# 위\n\n" + text + "\n# 아래\n")
+        self.assertEqual(self.uninstall("--keep-records")[0], 0)
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 위\n\n# 아래\n")
+
+
 class LongLedgerTest(unittest.TestCase):
     """TEST-SPEC-3 U1: 긴 원장(사건 40+)에서 결정 교체 사슬·산출물 요약·출처별 해제·COMPLETED 뒤 새 작업·주입 크기."""
     def setUp(self):

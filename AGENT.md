@@ -6,7 +6,7 @@ You are reading this because a user gave you this repository and asked you to in
 
 - **Purpose.** Coding agents lose decisions when a conversation is compacted or a new session starts. worklog makes the agent write each work's goal, decisions, constraints and next action into `.worklog/` in the project, and read it back at session start and after compaction.
 - **How it works.** Three hooks per project: SessionStart injects the current state, UserPromptSubmit counts the turn, Stop blocks a turn that ended without a save (or an explicit read-only `skip`). Records live in `.worklog/works/<id>/`: an append-only, hash-chained `events.jsonl` plus `state.json`/`state.md` rebuilt from it. One project can hold several works; the user names the work (`<id> 이어서` / `새 작업: <title>`) and the agent never guesses.
-- **What changes in their project.** Claude Code: a rules block in `CLAUDE.md`, hooks in `.claude/settings.local.json`, a skill in `.claude/skills/worklog/`, an empty `.worklog/`, and in a git repository two `.gitignore` lines (`.worklog/sessions/`, `.worklog/.lock`). Codex: a rules block in `AGENTS.md`, hooks in `.codex/hooks.json`, a skill in `.agents/skills/worklog/`, an empty `.worklog/`. Nothing outside the project is touched. Every changed file is backed up as `<file>.bak-worklog-<timestamp>`.
+- **What changes in their project.** Claude Code: a rules block in `CLAUDE.md`, hooks in `.claude/settings.local.json`, a skill in `.claude/skills/worklog/`, an empty `.worklog/`, and in a git repository two `.gitignore` lines (`.worklog/sessions/`, `.worklog/.lock`). Codex: a rules block in `AGENTS.md`, hooks in `.codex/hooks.json`, a skill in `.agents/skills/worklog/`, an empty `.worklog/`. Outside the project only `~/.worklog/installs.json` is written (the list of installed projects, for the uninstaller). Every changed file is backed up as `<file>.bak-worklog-<timestamp>`.
 - **What they must do themselves.** Codex: trust the project, then trust the three hooks in `/hooks`. Claude Code: accept the folder-trust dialog on first start if the project is a git repository. You cannot do these for them; do not edit `~/.codex/config.toml` or any global settings.
 - **Pausing.** Saying `워크로그 꺼` pauses the whole project (marker file `.worklog/off`); `워크로그 켜` resumes. Time spent off is not recorded. Only the user's words can turn it off.
 - The model-facing rules and CLI messages are written in Korean.
@@ -41,9 +41,22 @@ python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/projec
 
 When an update changes how `state.md`/`state.json` are rendered (2026-10-09 did: source tags, current scope line, artifact summary), `verify` reports the old projections as mismatched until the next `show`, `use` or save rebuilds them from the ledger. The ledgers themselves are untouched; run `python3 -B worklog/core/wl.py show --work <id> --root /path/to/project` once per work if you want `verify --all` clean right away.
 
+## Uninstall
+
+Ask the user first whether the records in `.worklog/` (`works/`, `index.json`, `project.md`) should stay or go; the script refuses without that choice outside a terminal.
+
+```sh
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --keep-records --dry-run   # preview
+python3 -B worklog/tools/uninstall_project.py --root /path/to/project --keep-records             # or --delete-records
+```
+
+`--tool claude|codex|pi` removes one tool only (default: all); the records and shared state stay while another tool is installed, and `--delete-records` is refused then. It reverts the rules block, the three hooks (other hooks and settings in the same file stay), the skill folder, the `.gitignore` lines, the session files and the manifest; a later reinstall continues kept records. Files it edits or deletes are backed up as `.bak-worklog-<timestamp>` (`--no-backup` to skip; `--purge-backups` also deletes the installer's earlier backups). The output is JSON (`removed`, `changed`, `kept`, `backups`, `notes`); a refusal (exit 2, `error`) changed nothing.
+
+To remove worklog completely: `--all-projects --delete-records --home` (or `--keep-records`) uninstalls every project listed in `~/.worklog/installs.json` and then deletes `~/.worklog`; projects installed before 2.17.0 are not listed, so pass them with `--root` first. The script never deletes the clone; tell the user the printed `rm -rf` command. It also never touches Codex hook trust in `~/.codex/config.toml` or Claude Code folder trust; Codex users can remove the stale trust entries themselves if they wish.
+
 ## Verify
 
-- In the clone: `python3 -B -m unittest discover -s tests` (75 tests, all must pass; verified on Python 3.9.6 and 3.14).
+- In the clone: `python3 -B -m unittest discover -s tests` (all must pass; verified on Python 3.9.6 and 3.14).
 - In a project: `python3 -B worklog/core/wl.py verify --all` checks every ledger's hash chain and the index. With `--tool <tool> --session <id>` it also reports `hooks` (which of the three hooks ran in that session).
 - A dry-run of the installer right after installing lists no `changed` files.
 

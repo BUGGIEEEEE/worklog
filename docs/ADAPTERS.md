@@ -11,6 +11,16 @@ python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝�
 ```
 
 그 폴더 안에만 쓰고(밖을 가리키는 링크는 거부), 첫 쓰기 전에 모든 대상을 검사해 거부되면(exit 2) 아무것도 바꾸지 않으며, 바꾸는 파일은 `.bak-worklog-<날짜시각>`으로 백업합니다. Claude·Codex 설치는 빈 `.worklog/` 폴더도 만들며 원장은 만들지 않습니다(작업은 첫 세션에서 만듦). `--no-worklog-dir`은 지침·Hook만 두고 `.worklog/`는 만들지 않습니다(하위 폴더마다 따로 기록할 상위 폴더용). 다시 실행해도 지침 블록은 하나만 남습니다. `.worklog/project.md`는 사용자가 편집하는 선택 파일이며 설치기는 만들거나 덮어쓰지 않습니다.
+설치기는 `~/.worklog/installs.json`(WL_HOME)에 `{프로젝트: [도구]}`를 적습니다(2.17.0, 제거용 목록).
+
+## 제거
+
+```sh
+python3 -B tools/uninstall_project.py --root <프로젝트> [--tool claude|codex|pi|all] (--keep-records | --delete-records) [--no-backup] [--purge-backups] [--dry-run]
+python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-records) [--home]
+```
+
+설치기가 한 일을 되돌립니다(2.17.0): 지침 블록(블록뿐이던 파일은 삭제), Hook 3개(같은 파일의 다른 Hook·설정은 유지, 비게 된 파일은 삭제), 스킬 폴더, `.gitignore` 두 줄, 그 도구의 세션 파일·설치 정보, 남는 도구가 없으면 `.lock`·`off`. 기록은 사용자가 정합니다 — `--keep-records`는 `works/`·`index.json`·`project.md`를 남기고(다시 설치하면 이어짐), `--delete-records`는 `.worklog/`를 통째로 지우며 다른 도구가 아직 설치돼 있으면 거부합니다. 둘 다 없으면 터미널에서만 묻고 아니면 거부합니다. 고치거나 지우는 파일은 백업하고(`--no-backup`), 설치기의 옛 백업은 `--purge-backups`일 때만 지웁니다. 첫 쓰기 전에 모든 변경을 계획하므로 거부(exit 2)는 아무것도 바꾸지 않습니다. `--all-projects`는 목록의 모든 프로젝트, `--home`은 목록이 빈 뒤 `~/.worklog`를 지웁니다. clone 폴더, Codex Hook 신뢰(`~/.codex/config.toml`), Claude Code 폴더 신뢰는 건드리지 않습니다.
 
 ## 도구별 비교
 
