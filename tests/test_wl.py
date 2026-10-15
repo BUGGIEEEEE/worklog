@@ -1624,7 +1624,7 @@ class UninstallTest(Base):
         self.assertEqual(code, 0, out)
         self.assertFalse((self.d / "install.json").exists())
         self.assertFalse(self.d.exists())  # 기록이 없으니 빈 .worklog 폴더도 정리된다
-        self.assertIn(str(self.d / "install.json"), out["projects"][0]["removed"])
+        self.assertIn(str(self.d.resolve() / "install.json"), out["projects"][0]["removed"])  # 출력은 resolve된 경로(/private/var…)
 
     def test_installer_writes_registry(self):
         self.assertEqual(self.install("claude")["registry"], str(self.home / "installs.json"))
