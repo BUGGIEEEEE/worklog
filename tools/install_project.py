@@ -11,8 +11,10 @@ Every target (files, backups, directories to create, .worklog) is checked and ev
 first write; a refusal (a link leading outside --root, a .worklog link, unreadable hook settings) changes nothing and
 exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup) before change;
 the managed block and Worklog hooks from any earlier install path are replaced idempotently.
-When --root is a git repository and .worklog is managed here, .gitignore gets `.worklog/sessions/` and `.worklog/.lock`
-(per-session state and the lock; the record under works/ stays committable). Lines already present are left alone.
+When --root is a git repository and .worklog is managed here, .gitignore gets `.worklog/` (the whole record stays out of
+git: it is per-machine state and quotes the user; 2.18.0). The 2.11.0–2.17.x lines `.worklog/sessions/` and `.worklog/.lock`
+are dropped as redundant. A .gitignore that already ignores .worklog (`.worklog/`, `.worklog`, with or without a leading /)
+is left alone.
 """
 import argparse, datetime, hashlib, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
@@ -188,21 +190,24 @@ def register(root, tool):
         return None
 
 
-GITIGNORE_LINES = (".worklog/sessions/", ".worklog/.lock")
+GITIGNORE_LINES = (".worklog/",)
+GITIGNORE_OLD = (".worklog/sessions/", ".worklog/.lock")  # written by 2.11.0–2.17.x; replaced by GITIGNORE_LINES
+IGNORES_WORKLOG = {".worklog", ".worklog/", "/.worklog", "/.worklog/"}
 
 
 def gitignore_text(path):
-    """New .gitignore content with the Worklog lines appended, or None when nothing is missing (or the file is unreadable as text)."""
+    """New .gitignore content: the old Worklog lines dropped and `.worklog/` appended unless .worklog is already ignored.
+    None when nothing changes (or the file is unreadable as text)."""
     try:
         current = path.read_text() if path.exists() else ""
     except (OSError, UnicodeDecodeError):
         return None
-    have = {line.strip() for line in current.splitlines()}
-    missing = [line for line in GITIGNORE_LINES if line not in have]
-    if not missing:
-        return None
-    body = current if (not current or current.endswith("\n")) else current + "\n"
-    return body + "".join(line + "\n" for line in missing)
+    kept = [line for line in current.splitlines(keepends=True) if line.strip() not in GITIGNORE_OLD]
+    body = "".join(kept)
+    if not ({line.strip() for line in kept} & IGNORES_WORKLOG):
+        body = body if (not body or body.endswith("\n")) else body + "\n"
+        body += "".join(line + "\n" for line in GITIGNORE_LINES)
+    return None if body == current else body
 
 
 def plan(root, tool, worklog_dir, when):

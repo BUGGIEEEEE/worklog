@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Undo install_project.py for a project: the rules block, the three hooks, the skill, the .gitignore lines, the install
+"""Undo install_project.py for a project: the rules block, the three hooks, the skill, the .gitignore line, the install
 manifest and this tool's session files, and, when asked, the records in .worklog. Writes only inside --root, plus the
 install registry and (with --home) the state folder ~/.worklog (WL_HOME).
 
@@ -8,7 +8,7 @@ usage: uninstall_project.py --root <project> [--tool claude|codex|pi|all] (--kee
        uninstall_project.py --all-projects (--keep-records | --delete-records) [--home] [--no-backup] [--purge-backups] [--dry-run]
        uninstall_project.py --home [--dry-run]
 --tool all (default) removes every tool's install. A single tool leaves what the other tools share (.worklog/.lock, off
-marker, .gitignore lines, records) while another tool is still installed there.
+marker, the .gitignore line, records) while another tool is still installed there.
 --keep-records   keeps .worklog/works/, index.json and project.md (a later reinstall continues them). Everything else of
                  Worklog in .worklog (sessions, lock, off marker, install.json) goes once no tool remains installed.
 --delete-records removes .worklog entirely. Refused while another tool is still installed (use --tool all).
@@ -27,7 +27,7 @@ import argparse, json, os, shutil, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from install_project import BEGIN, END, GITIGNORE_LINES, SHARED, Refuse, WL_HOOK, backup_path, inside, stamp  # noqa: E402
+from install_project import BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, stamp  # noqa: E402
 
 HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
 REGISTRY = HOME / "installs.json"
@@ -264,7 +264,7 @@ def plan_state(plan, root, delete_records):
             lines = gi.read_text().splitlines(keepends=True)
         except (OSError, UnicodeDecodeError):
             return
-        rest = [ln for ln in lines if ln.strip() not in GITIGNORE_LINES]
+        rest = [ln for ln in lines if ln.strip() not in GITIGNORE_LINES + GITIGNORE_OLD]  # `.worklog/` (2.18.0) and the 2.11.0–2.17.x lines; a `.worklog/` line the user wrote themselves is indistinguishable and goes too
         if len(rest) != len(lines):
             plan.edit(gi, "".join(rest) if "".join(rest).strip() else "")
 

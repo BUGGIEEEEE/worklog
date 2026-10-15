@@ -547,22 +547,28 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(backups[0].read_text(), "# 기존 내용\n")
 
     def test_installer_gitignore_in_git_project(self):
-        """2.11.0: git 프로젝트면 .gitignore에 세션 파일·잠금 줄을 더하고, 이미 있는 줄·git 아닌 폴더는 건드리지 않는다."""
+        """2.18.0: git 프로젝트면 .gitignore에 `.worklog/`를 더하고(2.11.0~2.17.x의 sessions/·.lock 줄은 치움), 이미 무시 중이거나 git 아닌 폴더는 건드리지 않는다."""
         inst = INST
         run_inst = lambda: subprocess.run([sys.executable, "-B", str(inst), "--tool", "claude", "--root", str(self.root)], check=True, capture_output=True)
         run_inst()
         self.assertFalse((self.root / ".gitignore").exists())  # git 저장소가 아니면 만들지 않는다
         (self.root / ".git").mkdir()
-        (self.root / ".gitignore").write_text("node_modules/\n.worklog/.lock\n")
+        (self.root / ".gitignore").write_text("node_modules/\n.worklog/.lock\n.worklog/sessions/\n")  # 옛 설치본
         run_inst()
         text = (self.root / ".gitignore").read_text()
-        self.assertEqual(text, "node_modules/\n.worklog/.lock\n.worklog/sessions/\n")  # 빠진 줄만 끝에 추가
+        self.assertEqual(text, "node_modules/\n.worklog/\n")  # 옛 두 줄은 빠지고 전체 무시 한 줄
         self.assertEqual(len(list(self.root.glob(".gitignore.bak-worklog-*"))), 1)  # 기존 파일은 백업
         run_inst()
         self.assertEqual((self.root / ".gitignore").read_text(), text)  # 두 번째 실행은 변경 없음
         self.assertEqual(len(list(self.root.glob(".gitignore.bak-worklog-*"))), 1)
         subprocess.run([sys.executable, "-B", str(inst), "--tool", "claude", "--root", str(self.root), "--no-worklog-dir"], check=True, capture_output=True)
         self.assertEqual((self.root / ".gitignore").read_text(), text)  # 상위 폴더 설치는 .gitignore를 건드리지 않는다
+        (self.root / ".gitignore").write_text("/.worklog\n")  # 사용자가 이미 다른 표기로 무시 중
+        run_inst()
+        self.assertEqual((self.root / ".gitignore").read_text(), "/.worklog\n")
+        (self.root / ".gitignore").unlink()
+        run_inst()
+        self.assertEqual((self.root / ".gitignore").read_text(), ".worklog/\n")  # 없으면 새로 만든다
 
     # --- 배포 전 검토 회귀 시험 ---
     def install(self, *extra, inst=INST):
@@ -1624,7 +1630,7 @@ class UninstallTest(Base):
         self.assertFalse((self.root / ".agents").exists())
         self.assertEqual(sorted(json.loads((self.d / "install.json").read_text())), ["claude"])
         self.assertTrue((self.d / ".lock").exists() and (self.d / "sessions").is_dir())  # claude가 남아 있어 공용 상태는 그대로
-        self.assertIn(".worklog/.lock", (self.root / ".gitignore").read_text())
+        self.assertEqual((self.root / ".gitignore").read_text(), "node_modules/\n.worklog/\n")  # 공용 줄 유지
         self.assertIn("worklog-shared:begin", (self.root / "CLAUDE.md").read_text())
         self.assertEqual(self.registry(), {str(self.root.resolve()): ["claude"]})
         self.assertIn("claude가 아직 설치돼 있어", out["projects"][0]["notes"][0])

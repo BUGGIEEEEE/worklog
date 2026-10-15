@@ -15,6 +15,10 @@ tag는 작성자만 붙인다. 번호 x.y.z는 *무엇이 바뀌었나*로 정�
 - 문서만(README, docs/, 이 파일): 번호·tag 없음.
 `python3 -B core/wl.py version`으로 설치된 번호를 확인한다.
 
+## 2.18.0 — 2026-10-15
+Installer: in a git repository `.gitignore` now gets `.worklog/` — the whole record stays out of git (user decision 2026-10-15: the record is per-machine state and quotes the user's words, which a public repository would expose; sharing it via git was an assumption, never a requirement). The 2.11.0–2.17.x lines `.worklog/sessions/` and `.worklog/.lock` are dropped as redundant on reinstall; a `.gitignore` that already ignores `.worklog` in any spelling (`.worklog/`, `.worklog`, with or without a leading `/`) is left alone. A project that already tracks the record keeps tracking it until `git rm -r --cached .worklog` is run once. Uninstaller: removes the `.worklog/` line as well as the old two (a `.worklog/` line the user wrote themselves is indistinguishable and goes too). Core: version only.
+설치기: git 저장소면 `.gitignore`에 `.worklog/`를 더한다 — 기록 전체를 git 밖에 둔다(2026-10-15 사용자 결정: 기록은 기기별 상태이고 사용자 발언을 인용하므로 공개 저장소에 올라가면 노출된다. git으로 공유하는 것은 요구사항이 아니라 가정이었다). 2.11.0~2.17.x의 `.worklog/sessions/`·`.worklog/.lock` 줄은 재설치 때 중복이라 치운다. 이미 어떤 표기로든 `.worklog`를 무시하는 `.gitignore`(`.worklog/`, `.worklog`, 앞의 `/` 유무)는 건드리지 않는다. 이미 기록을 추적 중인 프로젝트는 `git rm -r --cached .worklog`를 한 번 실행해야 추적이 끝난다. 제거기: 옛 두 줄과 함께 `.worklog/` 줄도 지운다(사용자가 직접 쓴 `.worklog/` 줄과 구별할 수 없어 같이 지워진다). 코어: 버전만.
+
 ## 2.17.1 — 2026-10-15
 Tests only: the test module now sets `WL_HOME` in its own environment, so installer runs started without an explicit env (and in-process imports) write the 2.17.0 registry into the test home, not into the real `~/.worklog/installs.json` (the 2.17.0 suite left 24 temp-folder entries there). Nothing the model can notice.
 테스트만: 테스트 모듈이 자기 환경에 `WL_HOME`을 고정한다. env 없이 띄운 설치기와 in-process 임포트가 2.17.0 registry를 실제 `~/.worklog/installs.json`이 아니라 시험용 home에 쓰게 된다(2.17.0 시험이 임시 폴더 24건을 남겼음). 모델이 알아챌 변경 없음.
