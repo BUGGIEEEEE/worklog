@@ -1,0 +1,515 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "Worklog runtime architecture",
+  "locale": "en",
+  "output": ".archify/architecture-worklog-readme-en-20261016-143000/worklog-architecture.en.html",
+  "quality_profile": "showcase",
+  "repository": {
+   "url": "https://github.com/BUGGIEEEEE/worklog.git",
+   "revision": "0e52f427b17a26be03ad84e580b77b3a2472f9d0"
+  },
+  "legend": {
+   "entries": {
+    "backend": {
+     "label": "Code (wl.py)"
+    },
+    "database": {
+     "label": "Record files (.worklog/)"
+    },
+    "external": {
+     "label": "External"
+    }
+   }
+  }
+ },
+ "components": [
+  {
+   "id": "host",
+   "type": "external",
+   "label": "Codex / Claude Code",
+   "sublabel": "user choice · runs commands and hooks",
+   "pos": [
+    40,
+    40
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "adapters/rules.md",
+     "line": 3,
+     "end_line": 11,
+     "label": "Work selection and save/skip rules"
+    },
+    {
+     "path": "tools/install_project.py",
+     "line": 170,
+     "end_line": 197,
+     "label": "Host event registration"
+    },
+    {
+     "path": "README.ko.md",
+     "line": 9,
+     "end_line": 9,
+     "label": "Rules block in instruction file · install paths"
+    }
+   ]
+  },
+  {
+   "id": "core",
+   "type": "backend",
+   "label": "Record tool",
+   "sublabel": "validate · ledger I/O · state computation",
+   "pos": [
+    440,
+    260
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 854,
+     "end_line": 887,
+     "label": "Save request and freshness validation"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 771,
+     "label": "Ledger write and state rebuild"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1143,
+     "end_line": 1159,
+     "label": "Lookup · projection recovery · seq read"
+    }
+   ]
+  },
+  {
+   "id": "ledger",
+   "type": "database",
+   "label": "Per-work ledger",
+   "sublabel": "works/<id>/events.jsonl",
+   "pos": [
+    860,
+    260
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 623,
+     "end_line": 639,
+     "label": "seq · prev hash chain"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 765,
+     "label": "append · fsync · re-read"
+    }
+   ]
+  },
+  {
+   "id": "projection",
+   "type": "database",
+   "label": "Computed current state",
+   "sublabel": "state.json / state.md",
+   "pos": [
+    860,
+    40
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 736,
+     "end_line": 750,
+     "label": "State file generation and comparison"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1143,
+     "end_line": 1152,
+     "label": "Projection recovery in show/use"
+    }
+   ]
+  },
+  {
+   "id": "index",
+   "type": "database",
+   "label": "Work list · metadata",
+   "sublabel": "index.json · stops if corrupt",
+   "pos": [
+    860,
+    480
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 526,
+     "end_line": 542,
+     "label": "Index read · check · reject if corrupt"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1044,
+     "end_line": 1060,
+     "label": "Title · created time · work registration"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 770,
+     "label": "Index update after save"
+    }
+   ]
+  },
+  {
+   "id": "sessions",
+   "type": "database",
+   "label": "Per-session work selection",
+   "sublabel": "sessions/<tool>_<session>.json",
+   "pos": [
+    440,
+    480
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 151,
+     "end_line": 202,
+     "label": "Current work · turn · last_seen"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 882,
+     "end_line": 887,
+     "label": "Reject save on stale read state"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 975,
+     "end_line": 977,
+     "label": "Update saved turn · read seq"
+    }
+   ]
+  },
+  {
+   "id": "artifact",
+   "type": "database",
+   "label": "Work artifacts",
+   "sublabel": "read body · SHA-256",
+   "pos": [
+    440,
+    40
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 839,
+     "end_line": 851,
+     "label": "Read artifact bytes"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 954,
+     "end_line": 970,
+     "label": "Quote and self-quote check"
+    }
+   ]
+  },
+  {
+   "id": "hooks",
+   "type": "backend",
+   "label": "Hook entry points",
+   "sublabel": "hook / turn-start / stop-hook",
+   "pos": [
+    40,
+    260
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "tools/install_project.py",
+     "line": 170,
+     "end_line": 197,
+     "label": "Host event and command registration"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1339,
+     "end_line": 1376,
+     "label": "List · ledger lookup and context build"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1379,
+     "end_line": 1444,
+     "label": "Inject · update turn · block once"
+    }
+   ]
+  },
+  {
+   "id": "updater",
+   "type": "backend",
+   "label": "Optional update check",
+   "sublabel": "update.py background",
+   "pos": [
+    40,
+    480
+   ],
+   "size": [
+    180,
+    56
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 292,
+     "end_line": 319,
+     "label": "Separate run on notify · interval condition"
+    },
+    {
+     "path": "tools/update.py",
+     "line": 169,
+     "end_line": 183,
+     "label": "background only checks"
+    }
+   ]
+  },
+  {
+   "id": "origin",
+   "type": "external",
+   "label": "Git origin",
+   "sublabel": "tag lookup · needs Git",
+   "pos": [
+    40,
+    680
+   ],
+   "size": [
+    180,
+    56
+   ],
+   "sources": [
+    {
+     "path": "tools/update.py",
+     "line": 67,
+     "end_line": 95,
+     "label": "Git subprocess · remote tag fetch"
+    }
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "save",
+   "from": "host",
+   "to": "core",
+   "label": "save / show",
+   "variant": "emphasis"
+  },
+  {
+   "id": "ledger-io",
+   "from": "core",
+   "to": "ledger",
+   "label": "read · append",
+   "variant": "emphasis"
+  },
+  {
+   "id": "project",
+   "from": "core",
+   "to": "projection",
+   "label": "rebuild state",
+   "variant": "default"
+  },
+  {
+   "id": "index-io",
+   "from": "core",
+   "to": "index",
+   "label": "read · update list",
+   "variant": "default"
+  },
+  {
+   "id": "session-io",
+   "from": "core",
+   "to": "sessions",
+   "label": "selection · seq · turn",
+   "variant": "default"
+  },
+  {
+   "id": "artifact-read",
+   "from": "core",
+   "to": "artifact",
+   "label": "read body",
+   "variant": "default"
+  },
+  {
+   "id": "dispatch",
+   "from": "host",
+   "to": "hooks",
+   "label": "event call",
+   "variant": "default"
+  },
+  {
+   "id": "hook-result",
+   "from": "hooks",
+   "to": "host",
+   "label": "record context · block reply",
+   "variant": "default"
+  },
+  {
+   "id": "hook-call",
+   "from": "hooks",
+   "to": "core",
+   "label": "lookup · turn record",
+   "variant": "default"
+  },
+  {
+   "id": "core-result",
+   "from": "core",
+   "to": "hooks",
+   "label": "computed result",
+   "variant": "default"
+  },
+  {
+   "id": "update-check",
+   "from": "hooks",
+   "to": "updater",
+   "label": "allowed · interval met",
+   "variant": "dashed"
+  },
+  {
+   "id": "remote-tags",
+   "from": "updater",
+   "to": "origin",
+   "label": "git fetch",
+   "variant": "dashed"
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "Host policy · tool execution rights",
+   "wraps": [
+    "host"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "Input validation · no OS isolation",
+   "wraps": [
+    "core"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "Shared work records · OS file permissions",
+   "wraps": [
+    "ledger",
+    "projection",
+    "index"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "Remote trust boundary",
+   "wraps": [
+    "origin"
+   ],
+   "pad": 16
+  }
+ ],
+ "cards": [
+  {
+   "dot": "slate",
+   "title": "Model input",
+   "items": [
+    "Rules block in the instruction file: AGENTS.md / CLAUDE.md · work selection and save procedure",
+    "Record injection: recent work list + computed current state of the selected work",
+    "Shared material: .worklog/project.md is injected too when present",
+    "No work selected: list and selection guidance / use after the user names one"
+   ]
+  },
+  {
+   "dot": "cyan",
+   "title": "Save and context-rebuild paths",
+   "items": [
+    "Arrow direction: caller → callee / accessor → file / reply → caller",
+    "Save: validate request → append to ledger and re-read → update state and list",
+    "Context rebuild: ledger → compute current state → hook injection / show·use lookup"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "Role of each record",
+   "items": [
+    "events.jsonl: accumulated events per work / state.json · state.md: computed current state",
+    "Core of the current state: goal · effective decisions · constraints · waiting · next action",
+    "index.json: work list and metadata / stops if corrupt",
+    "Work records are shared within one .worklog/ / current-work selection is per tool and session",
+    "sessions/<tool>_<session>.json: current work · read seq · turn state"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "Execution conditions",
+   "items": [
+    "Injection points: start · resume · clear · compaction · fork",
+    "Not connected · OFF: only a status notice is injected instead of work state",
+    "Save: exclusive flock / rejected when the read event number (seq) is stale",
+    "Stop: checks save · skip · work selection / blocks once when unmet"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "Responsibility and trust boundaries",
+   "items": [
+    "Host: instructions · hook registration · execution rights / past records ≠ new approval",
+    "Record tool: validates input · references · quotes · seq / does not vouch for content truth",
+    "Frames: responsibility · file access · network boundaries / no OS isolation"
+   ]
+  },
+  {
+   "dot": "violet",
+   "title": "Runtime base and external dependencies",
+   "items": [
+    "Hooks and record tool: same wl.py entry points and shared functions / Python · POSIX",
+    "Artifacts: created by the agent → record tool reads the file and checks its hash",
+    "Update check: notify · interval met → separate process → Git origin lookup / never applied automatically"
+   ]
+  }
+ ]
+}
