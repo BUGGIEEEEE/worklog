@@ -584,6 +584,22 @@ class CoreTest(unittest.TestCase):
                            capture_output=True, text=True)
         return p.returncode, p.stdout
 
+    def test_installer_rolls_back_on_write_failure(self):
+        """2.22.0: an OS error in the middle of the writes restores the files written so far (backup → file, new file
+        deleted, backup removed), creates no .worklog, registers nothing, and exits 2 with `rolled_back`."""
+        (self.root / "CLAUDE.md").write_text("# 기존 내용\n")
+        (self.root / ".claude" / "skills").mkdir(parents=True)
+        (self.root / ".claude" / "skills" / "worklog").write_text("not a directory")  # SKILL.md의 부모가 파일 → 세 번째 쓰기에서 OS 오류
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        r, out = self.install()
+        self.assertEqual(r, 2, out)
+        d = json.loads(out)
+        self.assertIn("되돌렸습니다", d["error"])
+        self.assertEqual(sorted(Path(p).name for p in d["rolled_back"]), ["CLAUDE.md", "settings.local.json"])
+        self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 기존 내용\n")
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)  # 백업·새 파일·.worklog 없음
+        self.assertFalse((TEST_HOME / "installs.json").exists() and str(self.root.resolve()) in (TEST_HOME / "installs.json").read_text())
+
     def test_installer_refuses_link_outside_root(self):
         outside = Path(tempfile.mkdtemp()) / "outside.md"
         outside.write_text("밖의 파일\n")

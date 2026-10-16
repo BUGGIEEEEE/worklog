@@ -24,7 +24,8 @@ reports which tools this machine seems to have (~/.claude, ~/.codex), since an a
         quotes the user; 2.18.0); the 2.11.0–2.17.x lines are dropped as redundant.
 Every target (files, backups, directories to create, .worklog) is checked and every new content prepared before the
 first write; a refusal (a link leading outside the home or --root, a .worklog link, unreadable hook settings) changes
-nothing and exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup)
+nothing and exits 2. An OS error in the middle of the writes (2.22.0) rolls the installer's own writes back — changed
+files are restored from their backups, new files are deleted — and exits 2 with `rolled_back`. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup)
 before change; the managed block and Worklog hooks from any earlier install path are replaced idempotently, and an
 equivalent hook is left byte-for-byte so Codex does not ask for trust again. tools/uninstall_project.py reverses both modes.
 """
@@ -109,6 +110,30 @@ def write(path, text, backup):
     if backup:
         shutil.copy2(path, backup)
     path.write_text(text)
+
+
+def rollback(done, made_dir):
+    """Undo the installer's own writes after an OS error in the middle (2.22.0): restore each changed file from the
+    backup made for it (and drop that backup), delete each file that did not exist before, remove a .worklog it created.
+    Best effort, newest first; returns the paths put back."""
+    undone = []
+    for path, backup, existed in reversed(done):
+        try:
+            if backup:
+                shutil.copy2(backup, path)
+                backup.unlink()
+            elif not existed:
+                path.unlink()
+            undone.append(str(path))
+        except OSError:
+            pass
+    if made_dir:
+        try:
+            made_dir.rmdir()
+            undone.append(str(made_dir))
+        except OSError:
+            pass
+    return undone
 
 
 def with_block(path, tool):
@@ -310,16 +335,28 @@ def main():
             p.run()
             if (r / ".worklog").is_dir():
                 wl.mark_connected(r / ".worklog", a.tool)  # still connected: the records and the folder stay
-        for path, text, backup in files:
-            write(path, text, backup)
-        if a.user:
-            changes.append(str(manifest(HOME, a.tool)))
-        else:
-            if worklog:
-                worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
-            wl_dir = root / ".worklog"
-            if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
-                changes.append(str(manifest(wl_dir, a.tool)))
+        done, made_dir = [], None  # the installer's own writes, for rollback on an OS error in the middle (2.22.0)
+        try:
+            for path, text, backup in files:
+                existed = path.exists()
+                write(path, text, backup)
+                done.append((path, backup, existed))
+            if a.user:
+                changes.append(str(manifest(HOME, a.tool)))
+            else:
+                if worklog:
+                    worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
+                    made_dir = worklog
+                wl_dir = root / ".worklog"
+                if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
+                    changes.append(str(manifest(wl_dir, a.tool)))
+        except OSError as e:
+            undone = rollback(done, made_dir)
+            print(json.dumps({"error": f"쓰기 도중 실패({e}). 앞서 쓴 파일은 되돌렸습니다(백업에서 복원·새 파일 삭제): {undone}. "
+                                       "원인을 고친 뒤 다시 실행하세요.", "rolled_back": undone,
+                              "migrated": migrated}, ensure_ascii=False))
+            sys.exit(2)
+        if not a.user:
             registry = register(root, a.tool)
     out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes}
     if a.user:

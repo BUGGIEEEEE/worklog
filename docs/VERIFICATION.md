@@ -4,6 +4,30 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Tool-level install and connect-on-first-new-work (2.21.0, 2026-10-16, 4 model runs)
+
+Since 2.21.0 the rules and hooks are installed once per machine (`--user`) and a folder is connected by its first `새 작업:`; elsewhere the SessionStart hook injects one `NOT_CONNECTED` line. Three-turn runs (`claude -p` with `--resume`, then a new session; `codex exec` with `resume`, then a new session; default models) in an empty git project that had the 2.21.0 rules and hooks but no `.worklog/` (`--root … --no-worklog-dir`, the same files a `--user` install provides; the user-level files themselves were not touched before the merge, and Codex ran with `--dangerously-bypass-hook-trust`). Judged mechanically before the run: turn 1 (an ordinary question) passes with zero `wl.py` calls, no work question, no `.worklog/` created; turn 2 (`새 작업: 시험 plan` plus a small file) passes with a `new-work` call, `index.json`, the `.worklog/` line in `.gitignore`, the registry entry, `install.json` with scope `user` and at least one saved event; turn 3 (`plan 이어서` in a new session) passes with a `use` call and one more event.
+
+| Cell | Result |
+|---|---|
+| Claude Code, draft core | PASS 3/3 (the model itself reported two defects, below) |
+| Codex, draft core | PASS 3/3 (same two defects reported) |
+| Claude Code, fixed core | PASS 3/3, no spurious warning or notice |
+| Codex, fixed core | PASS 3/3, no spurious warning or notice |
+
+The two defects found by the first runs and fixed before release: the parent-folder notice of `new-work` mistook `~/.worklog` (the state folder) for a parent record (now only a parent with works counts); the save of the connecting turn carried a false "Hook 미작동 의심" warning, because the hooks of that session ran before there was a session file to mark (the connecting session is now exempt). The NOT_CONNECTED injection was seen in both tools' transcripts. After the merge, on the development machine: the user-level hooks fired in a real Claude Code session and a real Codex session in the connected project (all three recorded, no warning), a folder without `.worklog/` got the single line, and `$worklog` listed the user-level Codex skill. One or two runs per cell: weak evidence of reproducibility. Details: worklog-control `runs/m-20261016-user/RESULTS.md`.
+
+2.21.0부터 규칙·Hook은 기기에 한 번(`--user`) 설치하고, 폴더는 첫 `새 작업:`이 연결하며, 그 밖의 폴더에서는 SessionStart가 `NOT_CONNECTED` 한 줄만 주입한다. 2.21.0 규칙·Hook만 있고 `.worklog/`는 없는 빈 git 프로젝트(`--root … --no-worklog-dir`, `--user` 설치와 같은 파일 구성; 병합 전이라 사용자 수준 파일은 건드리지 않았고 Codex는 `--dangerously-bypass-hook-trust`로 실행)에서 세 턴 실행(`claude -p` + `--resume` 뒤 새 세션, `codex exec` + resume 뒤 새 세션, 기본 모델). 판정은 실행 전 고정: 1턴(일반 질문)은 `wl.py` 호출 0·작업 질문 0·`.worklog/` 없음, 2턴(`새 작업: 시험 plan` + 작은 파일)은 `new-work` 호출·`index.json`·`.gitignore`의 `.worklog/` 줄·registry·scope `user`의 `install.json`·사건 1건 이상, 3턴(새 세션에서 `plan 이어서`)은 `use` 호출과 사건 1건 추가.
+
+| 셀 | 결과 |
+|---|---|
+| Claude Code, 초안 코어 | PASS 3/3 (모델이 아래 결함 2건을 스스로 보고) |
+| Codex, 초안 코어 | PASS 3/3 (같은 결함 2건 보고) |
+| Claude Code, 수정 코어 | PASS 3/3, 거짓 경고·안내 없음 |
+| Codex, 수정 코어 | PASS 3/3, 거짓 경고·안내 없음 |
+
+첫 회차가 찾아 배포 전에 고친 결함 2건: `new-work`의 상위 폴더 안내가 `~/.worklog`(상태 폴더)를 상위 기록으로 오인(지금은 작업이 있는 상위만), 연결한 턴의 save에 거짓 "Hook 미작동 의심" 경고(그 세션의 Hook은 세션 파일이 생기기 전에 돌았기 때문; 연결한 세션은 제외). NOT_CONNECTED 주입은 두 도구의 전사에서 확인했다. 병합 뒤 개발 기기에서: 연결된 프로젝트의 실제 Claude Code·Codex 세션에서 사용자 수준 Hook 3개가 모두 기록되고 경고 없음, `.worklog/` 없는 폴더는 한 줄만, `$worklog`에 사용자 수준 Codex 스킬이 뜸. 셀당 1~2회라 재현성 증거는 약하다. 상세: worklog-control `runs/m-20261016-user/RESULTS.md`.
+
 ## Ask-before-install / ask-before-uninstall (2.19.0–2.20.1, 2026-10-15, 7 model runs)
 
 Since 2.19.0 the installer and uninstaller refuse to guess which tools the user means, and AGENT.md tells the agent to ask first. Two-turn runs (`claude -p` with `--resume`, `codex exec` with resume) in an empty git project, default models, judged mechanically before the run: turn 1 passes when no real install/uninstall ran (dry-run and `--help` allowed) and the answer ends with the question; turn 2 passes when the answer ("both" / "Claude only" / "codex only") is carried out exactly.
@@ -15,7 +39,7 @@ Since 2.19.0 the installer and uninstaller refuse to guess which tools the user 
 | Install, Codex asks about Claude Code → "both" | FAIL (2.19.0: installed codex without asking; also the `codex exec` workspace-write sandbox blocked `.codex/` and `.agents/` writes) → PASS (2.20.1, no sandbox) |
 | Uninstall, Claude Code with both tools installed → "codex only" | FAIL (2.19.0: ran `--tool all --keep-records` without asking) → PASS (2.20.1: asked which tool and about the records, then removed codex only, kept the Claude block and the records) |
 
-Both first-attempt failures had the same cause: the agent read `--help` and the README but not AGENT.md. 2.20.0 therefore puts the ask-first instruction at the top of both scripts' `--help`; the reruns read AGENT.md as well. The uninstall run's agent also found a real bug (with two tools installed, `--tool all --keep-records` left `install.json` holding the second tool's entry), fixed in 2.20.0 with a regression test. Not fixed: an OS error in the middle of the installer's writes leaves the files written so far (backups exist). One or two runs per cell: weak evidence of reproducibility. Details: worklog-control `runs/m-20261015-install/RESULTS.md`.
+Both first-attempt failures had the same cause: the agent read `--help` and the README but not AGENT.md. 2.20.0 therefore puts the ask-first instruction at the top of both scripts' `--help`; the reruns read AGENT.md as well. The uninstall run's agent also found a real bug (with two tools installed, `--tool all --keep-records` left `install.json` holding the second tool's entry), fixed in 2.20.0 with a regression test. Not fixed then: an OS error in the middle of the installer's writes left the files written so far (fixed in 2.22.0: rolled back). One or two runs per cell: weak evidence of reproducibility. Details: worklog-control `runs/m-20261015-install/RESULTS.md`.
 
 2.19.0부터 설치기·제거기는 대상 도구를 추측하지 않고, AGENT.md는 에이전트에게 먼저 물으라고 한다. 빈 git 프로젝트에서 두 턴 실행(`claude -p` + `--resume`, `codex exec` + resume, 기본 모델), 판정은 실행 전 고정: 1턴은 실제 설치·제거 0회(dry-run·`--help` 허용)에 질문으로 끝나면 통과, 2턴은 답("둘 다" / "Claude만" / "codex만")을 정확히 수행하면 통과.
 
@@ -26,7 +50,7 @@ Both first-attempt failures had the same cause: the agent read `--help` and the 
 | 설치, Codex가 Claude Code를 묻고 → "둘 다" | FAIL (2.19.0: 묻지 않고 codex 설치; `codex exec` workspace-write 샌드박스가 `.codex/`·`.agents/` 쓰기를 막기도 함) → PASS (2.20.1, 샌드박스 없음) |
 | 제거, 두 도구가 설치된 프로젝트에서 Claude Code → "codex만" | FAIL (2.19.0: 묻지 않고 `--tool all --keep-records` 실행) → PASS (2.20.1: 도구와 기록을 묻고, codex만 제거, Claude 블록·기록 유지) |
 
-첫 시도 FAIL 두 건의 원인은 같다: 에이전트가 `--help`와 README는 읽고 AGENT.md는 읽지 않았다. 그래서 2.20.0은 두 스크립트의 `--help` 첫머리에 "먼저 물어라"를 넣었고, 재시험에서는 AGENT.md도 읽었다. 제거 회차의 에이전트는 실제 버그도 찾았다(두 도구 설치 + `--tool all --keep-records` → `install.json`에 둘째 도구 항목이 남음). 2.20.0에서 수정, 회귀 테스트 추가. 미수정: 설치기가 쓰는 도중 OS 오류가 나면 앞서 쓴 파일이 남는다(백업은 있음). 셀당 1~2회라 재현성 증거는 약하다. 상세: worklog-control `runs/m-20261015-install/RESULTS.md`.
+첫 시도 FAIL 두 건의 원인은 같다: 에이전트가 `--help`와 README는 읽고 AGENT.md는 읽지 않았다. 그래서 2.20.0은 두 스크립트의 `--help` 첫머리에 "먼저 물어라"를 넣었고, 재시험에서는 AGENT.md도 읽었다. 제거 회차의 에이전트는 실제 버그도 찾았다(두 도구 설치 + `--tool all --keep-records` → `install.json`에 둘째 도구 항목이 남음). 2.20.0에서 수정, 회귀 테스트 추가. 당시 미수정: 설치기가 쓰는 도중 OS 오류가 나면 앞서 쓴 파일이 남았다(2.22.0에서 되돌리도록 수정). 셀당 1~2회라 재현성 증거는 약하다. 상세: worklog-control `runs/m-20261015-install/RESULTS.md`.
 
 ## Rewind · branch · worktree (2.12.0–2.13.0, 2026-10-13, Claude Code, 1 real session)
 
