@@ -3,7 +3,9 @@
 
 Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | off | on | version | update | help | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
-           sessions/<tool>_<session>.json, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
+           sessions/<tool>_<session>.json, install.json?, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
+Connected: a folder whose .worklog/ exists. The first new-work creates it (user-level install, 2.21.0) and the
+           installer's --root mode creates it too; the hooks say NOT_CONNECTED elsewhere.
 Standard library only. Never runs business commands.
 """
 import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, uuid
@@ -11,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.20.1"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.21.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -32,6 +34,8 @@ HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 Hook 기록이 하�
                 "신뢰되지 않았거나 세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
 NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
                  "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
+NOT_CONNECTED = ("Worklog에 연결되지 않은 폴더입니다({root}에 .worklog 없음). 사용자가 `새 작업: <제목>`이라 하면 "
+                 "`new-work \"<제목>\" --quote \"<원문>\"`이 이 폴더를 연결합니다. 그 전에는 Worklog 절차(작업 지정 질문·save·skip)를 적용하지 않습니다.")
 
 SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  예) python3 -B wl.py save <<'EOF' ... EOF
 {
@@ -222,20 +226,32 @@ def rules_src_sha():
         return None
 
 
-def install_report(d, tool):
-    """{"warning_install": ...} when .worklog/install.json says this tool's rules copy was made from a different adapters/rules.md.
-    Anything missing or broken (no manifest, bad JSON, no entry, no adapters) means no warning and no error."""
+def manifest_entry(path, tool):
+    """install.json[tool] as a dict, or None when the file, the entry or the JSON is missing or broken."""
     try:
-        entry = json.loads((d / "install.json").read_text(encoding="utf-8")).get(tool)
+        entry = json.loads(path.read_text(encoding="utf-8")).get(tool)
     except (OSError, ValueError, AttributeError):
-        return {}
-    if not isinstance(entry, dict):
-        return {}
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def install_report(d, tool):
+    """{"warning_install": ...} when the manifest says this tool's rules copy was made from a different adapters/rules.md.
+    A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
+    connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
+    WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
+    entry = manifest_entry(d / "install.json", tool)
+    user = entry is None or entry.get("scope") == "user"
+    if user:
+        entry = manifest_entry(WL_HOME / "install.json", tool)
+        if entry is None:
+            return {}
     recorded, current = entry.get("rules_src_sha"), rules_src_sha()
     if not (isinstance(recorded, str) and current) or recorded == current:
         return {}
+    where = "--user" if user else f"--root {shlex.quote(str(d.parent))}"
     return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
-                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} --root {shlex.quote(str(d.parent))} 를 다시 실행하세요."}
+                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} {where} 를 다시 실행하세요."}
 
 
 def parse_version(v):
@@ -325,6 +341,97 @@ def update_note():
     return ""
 
 
+# --- 연결 (2.21.0: 사용자 범위 설치에서는 new-work가 만든 .worklog/가 연결 신호다. 설치기의 --root 모드도 같은 함수를 쓴다) ---
+
+GITIGNORE_LINES = (".worklog/",)
+GITIGNORE_OLD = (".worklog/sessions/", ".worklog/.lock")  # written by 2.11.0–2.17.x; replaced by GITIGNORE_LINES
+IGNORES_WORKLOG = {".worklog", ".worklog/", "/.worklog", "/.worklog/"}
+
+
+def gitignore_text(path):
+    """New .gitignore content: the old Worklog lines dropped and `.worklog/` appended unless .worklog is already ignored.
+    None when nothing changes (or the file is unreadable as text)."""
+    try:
+        current = path.read_text() if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    kept = [line for line in current.splitlines(keepends=True) if line.strip() not in GITIGNORE_OLD]
+    body = "".join(kept)
+    if not ({line.strip() for line in kept} & IGNORES_WORKLOG):
+        body = body if (not body or body.endswith("\n")) else body + "\n"
+        body += "".join(line + "\n" for line in GITIGNORE_LINES)
+    return None if body == current else body
+
+
+def register_install(root, tool):
+    """Append {root: [tool, ...]} to WL_HOME/installs.json so uninstall_project.py --all-projects can find this project.
+    Best effort: an unwritable home never fails the caller (returns None)."""
+    registry = WL_HOME / "installs.json"
+    try:
+        try:
+            data = json.loads(registry.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        tools = data.get(str(root))
+        tools = [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+        if tool not in tools:
+            tools.append(tool)
+        data[str(root)] = tools
+        WL_HOME.mkdir(parents=True, exist_ok=True)
+        registry.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        return str(registry)
+    except OSError:
+        return None
+
+
+def mark_connected(d, tool):
+    """install.json[tool] = {version, connected_at, scope: "user"} unless the tool already has an entry (a project-level
+    install keeps its rules_src_sha). True when written."""
+    path = d / "install.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if isinstance(data.get(tool), dict):
+        return False
+    data[tool] = {"version": VERSION, "connected_at": now(), "scope": "user"}
+    write_atomic(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    return True
+
+
+def connect(root, tool):
+    """What the installer's --root mode did for a project, done by new-work when it has just created .worklog/ (user-scope
+    install): the `.worklog/` line in .gitignore of a git project (no backup: one appended line), the registry entry and
+    the manifest entry. Best effort — (changed paths, notes about what failed)."""
+    changed, notes = [], []
+    if (root / ".git").exists():
+        gi = root / ".gitignore"
+        try:
+            if gi.is_symlink():
+                raise OSError("심볼릭 링크")
+            text = gitignore_text(gi)
+            if text is not None:
+                write_atomic(gi, text)
+                changed.append(str(gi))
+        except OSError as e:
+            notes.append(f".gitignore에 .worklog/ 줄을 더하지 못함({e}). 기록이 커밋되지 않게 직접 추가하세요.")
+    registry = register_install(root, tool)
+    if registry:
+        changed.append(registry)
+    else:
+        notes.append(f"{WL_HOME / 'installs.json'}에 등록하지 못함(제거기 --all-projects 목록에 빠짐).")
+    try:
+        if mark_connected(root / ".worklog", tool):
+            changed.append(str(root / ".worklog" / "install.json"))
+    except OSError as e:
+        notes.append(f"install.json을 쓰지 못함({e}).")
+    return changed, notes
+
+
 def cmd_update(args):
     """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
     action = args.arg or "apply"
@@ -394,7 +501,7 @@ def hooks_report(d, tool, sid):
         s = new_session()
     seen = s["hooks_seen"]
     out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
-    if not seen:
+    if not seen:  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark
         out["warning"] = HOOK_WARNING
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
@@ -910,7 +1017,7 @@ def cmd_use(args):
     need_quote(args, f'use {args.arg} --quote "<사용자 원문>"')
     d = store(args.root)
     if not d.is_dir():
-        raise Reject(f"없는 작업입니다: {args.arg}. 작업 목록: (없음)")
+        raise Reject(NOT_CONNECTED.format(root=d.parent))
     with locked(d):
         w = entry(index_or_new(d), args.arg)
         # use는 show처럼 현황을 보여 주고 읽은 것으로 친다: use 직후 save가 "show 먼저"로 막히지 않는다
@@ -941,6 +1048,7 @@ def cmd_new_work(args):
     tool, sid = identity(args)
     need_quote(args, f'new-work "{title}" --quote "<사용자 원문>"')
     d = store(args.root)
+    fresh = not d.is_dir()  # 2.21.0: 폴더를 처음 만드는 new-work가 이 프로젝트를 연결한다
     d.mkdir(exist_ok=True)
     with locked(d):
         index = index_or_new(d)
@@ -950,12 +1058,24 @@ def cmd_new_work(args):
         index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
         work_dir(d, wid).mkdir(parents=True)
         write_index(d, index)
-        update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"])
+        # fresh: the hooks of this session ran while the folder was not connected and could not leave a record, so the
+        # "Hook 미작동 의심" warning would be wrong here; "connect" in hooks_seen stands for them until a hook records itself.
+        update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"],
+                       **({"hooks_seen": {"connect": now()}} if fresh else {}))
         others = other_constraints(d, index, wid)
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
+    if fresh:
+        changed, notes = connect(d.parent, tool)
+        result.update(connected=True, connected_changed=changed, connected_notes=notes)
+    notices = []
     if others:
-        result["notice"] = ("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
-                            + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+        notices.append("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
+                       + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+    above = next((p for p in d.parent.parents if (p / ".worklog" / "index.json").is_file()), None)  # works there, not ~/.worklog (WL_HOME) or an empty connection
+    if above:  # 상위 폴더에 이미 기록이 있으면 하위에 따로 기록하는 것이 맞는지 확인한다(기록이 갈라진다)
+        notices.append(f"상위 폴더 {above}에 Worklog가 있습니다. 이 하위 폴더에 따로 기록하려는 것이 맞는지 사용자에게 확인하세요.")
+    if notices:
+        result["notice"] = " ".join(notices)
     print(json.dumps({**result, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
@@ -1001,7 +1121,10 @@ def current_work(d, who, index):
 
 def cmd_show(args):
     d = store(args.root)
-    index = load_index(d) if d.is_dir() else None
+    if not d.is_dir():
+        print(NOT_CONNECTED.format(root=d.parent))
+        return
+    index = load_index(d)
     if not index or not index["works"]:
         print(off_note(d) + 'Worklog 작업 없음. 사용자가 새 작업을 지정하면 new-work "<제목>" --quote "<사용자 원문>"으로 만든다.')
         return
@@ -1130,7 +1253,7 @@ def off_marker(d):
 def installed(args):
     d = store(args.root)
     if not d.is_dir():
-        raise Reject(f"Worklog가 설치되지 않았습니다({d} 없음). 켜거나 끌 대상이 없습니다.")
+        raise Reject(NOT_CONNECTED.format(root=d.parent) + " 켜거나 끌 대상이 없습니다.")
     return d
 
 
@@ -1184,8 +1307,9 @@ def cmd_on(args):
 # --- Hook ---
 
 def hook_input(args):
-    """Hook event from stdin → (store dir, (tool, session) or None, event).
-    Connected = .worklog/ directory exists; otherwise store dir is None and every hook stays silent."""
+    """Hook event from stdin → (store dir, (tool, session) or None, event). args.root is set to the event's cwd.
+    Connected = .worklog/ directory exists; otherwise store dir is None: SessionStart says so in one line and the other
+    two hooks stay silent."""
     try:
         event = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1194,6 +1318,7 @@ def hook_input(args):
         event = {}
     cwd = event.get("cwd")
     d = store(cwd if isinstance(cwd, str) and cwd else args.root)
+    args.root = str(d.parent)
     if not d.is_dir():
         return None, None, event
     sid = event.get("session_id")
@@ -1253,9 +1378,14 @@ def injection(d, who):
 
 def cmd_hook(args):
     """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection()).
-    Valid without a session ID; then no session file is touched and there is no current work."""
+    Valid without a session ID; then no session file is touched and there is no current work.
+    Not connected (no .worklog/): one NOT_CONNECTED line, no session file, no update check (2.21.0) — without it the rules'
+    "no injection → show" path would make the model ask for a work in every folder once the hooks are user-level."""
     d, who, _ = hook_input(args)
     if not d:
+        line = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={args.root}] 이 폴더는 Worklog에 연결되지 않았다. "
+                "사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.\n")
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}}, ensure_ascii=False))
         return
     off = off_marker(d)
     if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
