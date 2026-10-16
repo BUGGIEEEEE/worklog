@@ -6,7 +6,7 @@
 
 ![1. What gets recorded, and where](docs/img/en-01-units.png)
 
-In a git project `.worklog/` is added to `.gitignore` (the record is per-machine state and quotes you, so it stays out of git). Also added to the project: one rules block in `CLAUDE.md` or `AGENTS.md` (your own content is kept), 3 hooks, `skills/worklog/` (Claude: `.claude/`, Codex: `.agents/`).
+Added to the machine (once per tool): one rules block in the tool's user-level instruction file (`~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`; your own content is kept), 3 hooks (`~/.claude/settings.json` or `~/.codex/hooks.json`), `skills/worklog/` (Claude: `~/.claude/`, Codex: `~/.agents/`). Added to a project: `.worklog/` at its first `새 작업:`, and in a git project the `.worklog/` line in `.gitignore` (the record is per-machine state and quotes you, so it stays out of git). Until then Worklog does nothing in any folder you open.
 
 The phrases you type are Korean, and so are the model-facing rules and messages. They are short; copy them from here.
 
@@ -14,12 +14,12 @@ The phrases you type are Korean, and so are the model-facing rules and messages.
 
 Phrases to copy: `새 작업: <title>` (new work) · `<id> 이어서` (continue) · `<id>에서 정한 <thing>을 참고해 줘` (use what was decided in another work) · `워크로그 꺼` / `워크로그 켜` (off / on) · `Worklog 업데이트해 줘` (update) · `현재 작업 상태 보여 줘` (show the current work state) · `Worklog 제거해 줘` (remove)
 
-Install — the commands the AI runs (you can run them yourself; clone once, install once per project and tool):
+Install — the commands the AI runs (you can run them yourself; clone once, install once per tool for the whole machine; to install for one project only, use `--root /path/to/project` instead of `--user`):
 
 ```sh
 git clone https://github.com/BUGGIEEEEE/worklog.git
-python3 -B worklog/tools/install_project.py --tool claude --root /path/to/project
-python3 -B worklog/tools/install_project.py --tool codex  --root /path/to/project
+python3 -B worklog/tools/install_project.py --tool claude --user
+python3 -B worklog/tools/install_project.py --tool codex  --user
 ```
 
 Check the install — it prints the core version (see `CHANGELOG.md`):
@@ -28,14 +28,14 @@ Check the install — it prints the core version (see `CHANGELOG.md`):
 python3 -B worklog/core/wl.py version
 ```
 
-Remove — the agent asks which tool to remove and, only when the last tool goes, whether to keep the records. Example (`--delete-records` removes the records too; `--tool codex` removes one tool only):
+Remove — the agent asks which tool to remove. Every project's records in `.worklog/` stay (to delete one project's record: `--root /path/to/project --tool all --delete-records`). Example (`--tool codex` removes one tool only):
 
 ```sh
-python3 -B worklog/tools/uninstall_project.py --root /path/to/project --tool all --keep-records
+python3 -B worklog/tools/uninstall_project.py --user --tool all
 ```
 
-- Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer writes only inside the project, backs up every file it changes, and lists the project in `~/.worklog/installs.json` (used by the uninstaller).
-- Update: a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. `wl.py update` fast-forwards to the newest tag of the same major version and reinstalls the current project; `update rollback` undoes it, `update --mode off` silences the notice.
+- Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer changes only the tool's own settings files and backs up every file it changes; connected projects are listed in `~/.worklog/installs.json` (used by the uninstaller).
+- Update: a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. `wl.py update` fast-forwards to the newest tag of the same major version and reinstalls the machine-level rules block and skill; `update rollback` undoes it, `update --mode off` silences the notice.
 - Delegating: just tell the agent to delegate. If you open a separate session yourself, start its first prompt with `<id> 이어서. 하위 작업: <name>` ("continue <id>. subtask: <name>"); for an independent work that finishes on its own, use `새 작업: <title>` and list which decisions and constraints it inherits. The agent keeps the record as the rules say.
 - Full removal (every project plus `~/.worklog`) and all uninstall options: [AGENT.md](AGENT.md).
 

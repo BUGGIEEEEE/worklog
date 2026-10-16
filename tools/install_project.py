@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
-"""Connect one project folder to the shared Worklog core for a given tool. Writes only inside --root.
+"""Install the shared Worklog core for a tool — once per machine (--user, 2.21.0) or for one project (--root).
 
-usage: install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
+usage: install_project.py --tool <claude|codex> --user [--migrate] [--dry-run]
+       install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
 Without --tool nothing is written: the refusal (exit 2) tells the agent to ask the user which tools to install for and
 reports which tools this machine seems to have (~/.claude, ~/.codex), since an agent tends to install only for itself.
-Besides the project it appends {root: [tool]} to the registry ~/.worklog/installs.json (WL_HOME), which
-tools/uninstall_project.py --all-projects reads; uninstall_project.py reverses everything this script does.
-claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
-codex:  AGENTS.md block + three hooks in .codex/hooks.json + .agents/skills/worklog (user trust required)
-pi:     AGENTS.md block + .pi/skills/worklog        (Pi extensions need project trust → not installed; instructions path)
+
+--user  writes the rules block, the three hooks and the skill into the tool's user-level files, so every folder the tool
+        is opened in has them. A folder is connected the moment its .worklog/ exists: the first `새 작업: <title>` in it
+        runs `new-work`, which creates .worklog/ and does what --root did per project (the `.worklog/` line in .gitignore
+        of a git project, the registry entry, install.json). Elsewhere the SessionStart hook says NOT_CONNECTED and nothing
+        else happens. Manifest: WL_HOME/install.json[tool] = {version, rules_src_sha, installed_at}.
+        claude: ~/.claude/CLAUDE.md + ~/.claude/settings.json + ~/.claude/skills/worklog
+        codex:  ~/.codex/AGENTS.md + ~/.codex/hooks.json + ~/.agents/skills/worklog   (user trust in /hooks, once)
+        A project that still has this tool's project-level hooks (registry ~/.worklog/installs.json) is refused: the hooks
+        would run twice. --migrate removes the block, hooks, skill and manifest entry from those projects first (records,
+        session files, .worklog/ and the .gitignore line stay; install.json gets a connection entry).
+--root  the 2.x per-project install, kept for compatibility. Writes only inside --root plus the registry.
+        claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
+        codex:  AGENTS.md block + three hooks in .codex/hooks.json + .agents/skills/worklog (user trust required)
+        pi:     AGENTS.md block + .pi/skills/worklog        (Pi extensions need project trust → not installed; instructions path)
+        In a git repository .gitignore gets `.worklog/` (the whole record stays out of git: it is per-machine state and
+        quotes the user; 2.18.0); the 2.11.0–2.17.x lines are dropped as redundant.
 Every target (files, backups, directories to create, .worklog) is checked and every new content prepared before the
-first write; a refusal (a link leading outside --root, a .worklog link, unreadable hook settings) changes nothing and
-exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup) before change;
-the managed block and Worklog hooks from any earlier install path are replaced idempotently.
-When --root is a git repository and .worklog is managed here, .gitignore gets `.worklog/` (the whole record stays out of
-git: it is per-machine state and quotes the user; 2.18.0). The 2.11.0–2.17.x lines `.worklog/sessions/` and `.worklog/.lock`
-are dropped as redundant. A .gitignore that already ignores .worklog (`.worklog/`, `.worklog`, with or without a leading /)
-is left alone.
+first write; a refusal (a link leading outside the home or --root, a .worklog link, unreadable hook settings) changes
+nothing and exits 2. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup)
+before change; the managed block and Worklog hooks from any earlier install path are replaced idempotently, and an
+equivalent hook is left byte-for-byte so Codex does not ask for trust again. tools/uninstall_project.py reverses both modes.
 """
-import argparse, datetime, hashlib, json, os, re, shlex, shutil, subprocess, sys
+import argparse, datetime, hashlib, importlib.util, json, os, re, shlex, shutil, sys
 from pathlib import Path
 
 SHARED = Path(__file__).resolve().parents[1]
@@ -29,12 +39,26 @@ WL_HOOK = re.compile(r"""python3 -B (['"]?)(.*/)?core/wl\.py\1 (hook|turn-start|
 BEGIN, END = "<!-- worklog-shared:begin -->", "<!-- worklog-shared:end -->"
 
 
+def load_core():
+    spec = importlib.util.spec_from_file_location("wl_core", WL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wl = load_core()  # one copy of the connection logic: gitignore line, registry, manifest live in the core since 2.21.0
+GITIGNORE_LINES, GITIGNORE_OLD, IGNORES_WORKLOG = wl.GITIGNORE_LINES, wl.GITIGNORE_OLD, wl.IGNORES_WORKLOG
+gitignore_text, register = wl.gitignore_text, wl.register_install
+HOME = wl.WL_HOME  # ~/.worklog or WL_HOME: registry, user-level manifest, update state
+REGISTRY = HOME / "installs.json"
+
+
 class Refuse(Exception):
     pass
 
 
 def rules(tool):
-    fmt = subprocess.run([sys.executable, "-B", str(WL), "help"], capture_output=True, text=True, check=True).stdout
+    fmt = f"worklog core {wl.VERSION} (format {wl.FORMAT})\n" + wl.SAVE_HELP
     body = (SHARED / "adapters" / "rules.md").read_text()
     # Core help is tool-neutral; installed command examples must bind the same tool as hooks.
     fmt = fmt.replace("{TOOL}", tool).replace("python3 -B wl.py ", f"{WL_CMD} --tool {tool} ")
@@ -62,7 +86,7 @@ def inside(root, path):
     while p != root and not os.path.lexists(p):
         p = p.parent
     if not p.resolve().is_relative_to(root):
-        raise Refuse(f"{path}는 --root 밖을 가리키는 링크")
+        raise Refuse(f"{path}는 설치 대상 폴더 {root} 밖을 가리키는 링크")
 
 
 def backup_path(root, path, stamp):
@@ -149,92 +173,53 @@ def hook_settings(path, tool):
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
 
 
-def manifest(worklog, tool):
-    """Write .worklog/install.json[tool] = {version, rules_src_sha, installed_at}: what this copy of the rules was made from.
-    The core compares rules_src_sha with its own adapters/rules.md and warns when they differ (never refuses)."""
-    path = worklog / "install.json"
+def manifest(folder, tool):
+    """Write <folder>/install.json[tool] = {version, rules_src_sha, installed_at}: what this copy of the rules was made from
+    (folder = the project's .worklog, or WL_HOME for --user). The core compares rules_src_sha with its own adapters/rules.md
+    and warns when they differ (never refuses)."""
+    path = folder / "install.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             data = {}
     except (OSError, ValueError):
         data = {}
-    version = json.loads(subprocess.run([sys.executable, "-B", str(WL), "version"], capture_output=True, text=True, check=True).stdout)["version"]
-    data[tool] = {"version": version, "rules_src_sha": hashlib.sha256((SHARED / "adapters" / "rules.md").read_bytes()).hexdigest(),
+    data[tool] = {"version": wl.VERSION, "rules_src_sha": hashlib.sha256((SHARED / "adapters" / "rules.md").read_bytes()).hexdigest(),
                   "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    folder.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
     return path
 
 
-HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
-REGISTRY = HOME / "installs.json"
-
-
-def register(root, tool):
-    """Append {root: [tool, ...]} to ~/.worklog/installs.json so uninstall_project.py --all-projects can find this project.
-    Best effort: an unwritable home never fails the install (returns None)."""
-    try:
-        try:
-            data = json.loads(REGISTRY.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        tools = data.get(str(root))
-        tools = [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
-        if tool not in tools:
-            tools.append(tool)
-        data[str(root)] = tools
-        HOME.mkdir(parents=True, exist_ok=True)
-        REGISTRY.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-        return str(REGISTRY)
-    except OSError:
-        return None
-
-
-GITIGNORE_LINES = (".worklog/",)
-GITIGNORE_OLD = (".worklog/sessions/", ".worklog/.lock")  # written by 2.11.0–2.17.x; replaced by GITIGNORE_LINES
-IGNORES_WORKLOG = {".worklog", ".worklog/", "/.worklog", "/.worklog/"}
-
-
-def gitignore_text(path):
-    """New .gitignore content: the old Worklog lines dropped and `.worklog/` appended unless .worklog is already ignored.
-    None when nothing changes (or the file is unreadable as text)."""
-    try:
-        current = path.read_text() if path.exists() else ""
-    except (OSError, UnicodeDecodeError):
-        return None
-    kept = [line for line in current.splitlines(keepends=True) if line.strip() not in GITIGNORE_OLD]
-    body = "".join(kept)
-    if not ({line.strip() for line in kept} & IGNORES_WORKLOG):
-        body = body if (not body or body.endswith("\n")) else body + "\n"
-        body += "".join(line + "\n" for line in GITIGNORE_LINES)
-    return None if body == current else body
-
-
-def plan(root, tool, worklog_dir, when):
-    """All checks and contents before any write: ([(path, text, backup or None)], .worklog to create or None)."""
+def targets(tool, root, user):
+    """(guide file, hook settings file or None, SKILL.md) for a tool — in the user's home (user=True) or in a project."""
+    if user:
+        if tool == "claude":
+            return root / ".claude" / "CLAUDE.md", root / ".claude" / "settings.json", root / ".claude" / "skills" / "worklog" / "SKILL.md"
+        return root / ".codex" / "AGENTS.md", root / ".codex" / "hooks.json", root / ".agents" / "skills" / "worklog" / "SKILL.md"
     if tool == "claude":
-        guide, settings = root / "CLAUDE.md", root / ".claude" / "settings.local.json"
-        sk = root / ".claude" / "skills" / "worklog" / "SKILL.md"
-    else:
-        guide = root / "AGENTS.md"
-        settings = root / ".codex" / "hooks.json" if tool == "codex" else None  # Trust is a user action.
-        sk = root / (".agents" if tool == "codex" else ".pi") / "skills" / "worklog" / "SKILL.md"
-    worklog = root / ".worklog"
-    if worklog.is_symlink():  # Hooks write here; a link is refused even when it points inside root.
+        return root / "CLAUDE.md", root / ".claude" / "settings.local.json", root / ".claude" / "skills" / "worklog" / "SKILL.md"
+    settings = root / ".codex" / "hooks.json" if tool == "codex" else None  # Trust is a user action.
+    return root / "AGENTS.md", settings, root / (".agents" if tool == "codex" else ".pi") / "skills" / "worklog" / "SKILL.md"
+
+
+def plan(root, tool, worklog_dir, when, user=False):
+    """All checks and contents before any write: ([(path, text, backup or None)], .worklog to create or None)."""
+    guide, settings, sk = targets(tool, root, user)
+    worklog = None if user else root / ".worklog"
+    if worklog and worklog.is_symlink():  # Hooks write here; a link is refused even when it points inside root.
         raise Refuse(f"{worklog}는 심볼릭 링크입니다. .worklog는 실제 디렉터리여야 합니다.")
     for path in (guide, settings, sk, worklog):
         if path:
             inside(root, path)
-    make_dir = worklog_dir and tool in {"claude", "codex"} and not worklog.is_dir()
+    make_dir = bool(worklog) and worklog_dir and tool in {"claude", "codex"} and not worklog.is_dir()
     if make_dir and worklog.exists():
         raise Refuse(f".worklog exists but is not a directory: {worklog}")
     files = [(guide, with_block(guide, tool))]
     if settings:
         files.append((settings, hook_settings(settings, tool)))
     files.append((sk, skill(tool)))
-    if worklog_dir and tool in {"claude", "codex"} and (root / ".git").exists():  # git project: keep session state out of commits
+    if worklog and worklog_dir and tool in {"claude", "codex"} and (root / ".git").exists():  # git project: keep the record out of commits
         gi = root / ".gitignore"
         inside(root, gi)
         text = gitignore_text(gi)
@@ -249,39 +234,102 @@ def detected_tools():
     return {t: (Path.home() / f".{t}").is_dir() for t in ("claude", "codex")}
 
 
+def uninstaller():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import uninstall_project  # it imports this module, hence the lazy import
+    return uninstall_project
+
+
+def project_hooks_left(tool):
+    """Registry projects that still have this tool's project-level Worklog hooks: with a user-level hook they would run
+    twice (two turn counts, two Stop checks). Older installs that are not in the registry cannot be found here."""
+    un = uninstaller()
+    out = []
+    for r in un.load_registry():
+        settings = targets(tool, Path(r), False)[1]
+        if settings and un.has_worklog_hook(settings):
+            out.append(Path(r))
+    return out
+
+
+def migration_plans(tool, roots, when):
+    """One uninstaller plan per project: block, hooks, skill and manifest entry go; session files (a running session's
+    current work), records, .worklog/ and the .gitignore line stay. Planned before any write; a refusal changes nothing."""
+    un = uninstaller()
+    plans = []
+    for root in roots:
+        p = un.Plan(root, True, when)
+        un.plan_tool(p, root, tool, keep_sessions=True)
+        plans.append((root, p))
+    return plans
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="AGENT: before running this, ask the user which tools to install for (claude, codex, or both; they share one "
                     ".worklog) when this machine has more than your own tool (~/.claude, ~/.codex). Do not install for a tool the user "
-                    "did not choose. See AGENT.md 'Install' in this repository.",
+                    "did not choose. Default is --user (once per machine); --root installs one project only. See AGENT.md 'Install'.",
         epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
     ap.add_argument("--tool", choices=["claude", "codex", "pi"], help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
-    ap.add_argument("--root", required=True)
+    where = ap.add_mutually_exclusive_group(required=True)
+    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents)에 한 번 설치. 프로젝트는 첫 `새 작업:`이 연결")
+    where.add_argument("--root", help="한 프로젝트에만 설치(2.x 방식)")
+    ap.add_argument("--migrate", action="store_true", help="--user: registry의 프로젝트에서 프로젝트 단위 블록·Hook·스킬을 먼저 제거(기록·세션·.gitignore 줄 유지)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--no-worklog-dir", action="store_true", help="shared parent folder: do not create .worklog here")
+    ap.add_argument("--no-worklog-dir", action="store_true", help="--root: shared parent folder, do not create .worklog here")
     a = ap.parse_args()
-    root = Path(a.root).resolve()
+    if a.migrate and not a.user:
+        ap.error("--migrate는 --user와 함께 씁니다")
+    root = Path.home().resolve() if a.user else Path(a.root).resolve()
+    migrations = []
     try:
         if not a.tool:
             found = ", ".join(f"{t}={'있음' if v else '없음'}" for t, v in detected_tools().items())
             raise Refuse("사용자에게 어느 도구에 설치할지 확인한 뒤 도구별로 실행하세요: --tool claude | codex (pi는 미검증). "
-                         f"이 기기에서 발견: {found}. 두 도구는 같은 .worklog를 공유하며, Codex는 설치 뒤 /hooks 신뢰가 필요합니다.")
-        files, worklog = plan(root, a.tool, not a.no_worklog_dir, stamp())
+                         f"이 기기에서 발견: {found}. 기기에 한 번 설치하려면 --user, 한 프로젝트만이면 --root <프로젝트>. "
+                         "두 도구는 같은 .worklog를 공유하며, Codex는 설치 뒤 /hooks 신뢰가 필요합니다.")
+        if a.user and a.tool == "pi":
+            raise Refuse("pi는 사용자 범위 설치를 지원하지 않습니다(미검증). --root <프로젝트>로 설치하세요.")
+        if a.user:
+            left = project_hooks_left(a.tool)
+            if left and not a.migrate:
+                raise Refuse(f"프로젝트 단위 {a.tool} Hook이 남아 있는 프로젝트가 있어 전역 Hook과 두 번 돌게 됩니다: "
+                             + ", ".join(map(str, left)) + ". --migrate를 붙이면 그 프로젝트의 블록·Hook·스킬을 먼저 제거합니다"
+                             "(기록·세션·.gitignore 줄은 유지).")
+            if a.migrate:
+                migrations = migration_plans(a.tool, left, stamp())
+        files, worklog = plan(root, a.tool, not a.no_worklog_dir, stamp(), user=a.user)
     except Refuse as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         sys.exit(2)
     changes = [str(p) for p, _, _ in files] + ([str(worklog)] if worklog else [])
+    migrated = [{"root": str(r), "removed": p.removed, "changed": p.changed, "backups": p.backups, "notes": p.notes} for r, p in migrations]
+    registry = None
     if not a.dry_run:
+        for r, p in migrations:
+            p.run()
+            if (r / ".worklog").is_dir():
+                wl.mark_connected(r / ".worklog", a.tool)  # still connected: the records and the folder stay
         for path, text, backup in files:
             write(path, text, backup)
-        if worklog:
-            worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
-        wl_dir = root / ".worklog"
-        if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
-            changes.append(str(manifest(wl_dir, a.tool)))
-        registry = register(root, a.tool)
-    print(json.dumps({"tool": a.tool, "root": str(root), "dry_run": a.dry_run, "changed": changes, "registry": None if a.dry_run else registry,
-                      "next": "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"}, ensure_ascii=False, indent=1))
+        if a.user:
+            changes.append(str(manifest(HOME, a.tool)))
+        else:
+            if worklog:
+                worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
+            wl_dir = root / ".worklog"
+            if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
+                changes.append(str(manifest(wl_dir, a.tool)))
+            registry = register(root, a.tool)
+    out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes}
+    if a.user:
+        out["migrated"] = migrated
+        out["next"] = ("다음: " + ("Codex는 /hooks에서 Hook 3개를 신뢰하고, " if a.tool == "codex" else "")
+                       + "열린 세션을 다시 시작한 뒤 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)")
+    else:
+        out["registry"] = registry
+        out["next"] = "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
+    print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

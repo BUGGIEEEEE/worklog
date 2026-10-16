@@ -261,7 +261,7 @@ section.units .card .row{line-height:1.6}
   <div class="cols units" style="margin-top:-2px">
     <div class="stack units">
 <pre>프로젝트 폴더/
-└── .worklog/                 프로젝트마다 하나 (설치 때 생성)
+└── .worklog/                 프로젝트마다 하나 (첫 새 작업 때 생성)
     └── works/                작업마다 폴더 하나
         ├── guide/            작업 1  종이 노트 습관 계획
         │   ├── <b class="f-ev">events.jsonl</b>    이력
@@ -288,9 +288,9 @@ section.units .card .row{line-height:1.6}
   <div class="cards one">
     <div class="card">
       <span class="t">설치 — AI에게 시키면 됨</span>
-      <div class="row"><b>AI에게</b><span><code>https://github.com/BUGGIEEEEE/worklog 를 clone해서 이 프로젝트에 Worklog 설치해 줘</code></span></div>
-      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone은 처음 한 번, 프로젝트 연결은 프로젝트마다 한 번</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
-      <div class="row"><b>사람이 할 일</b><span><i>Codex: 첫 세션에서 프로젝트와 <code>/hooks</code>의 자동 실행 설정 3개를 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i></span></div>
+      <div class="row"><b>AI에게</b><span><code>https://github.com/BUGGIEEEEE/worklog 를 clone해서 이 기기에 Worklog 설치해 줘</code></span></div>
+      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone과 설치는 도구마다 한 번(기기 전체)</i> <i>· 프로젝트는 첫 <code>새 작업:</code>이 연결</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
+      <div class="row"><b>사람이 할 일</b><span><i>Codex: 설치 뒤 <code>/hooks</code>에서 자동 실행 설정 3개를 한 번 신뢰, 프로젝트는 처음 열 때 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i> <i>· 열린 세션은 다시 시작</i></span></div>
       <div class="row"><b>확인</b><span><i>AI에게 <code>Worklog 버전 확인해 줘</code></i> <i class="a">설치된 버전을 알려 줌</i></span></div>
     </div>
   </div>
@@ -368,7 +368,7 @@ section.units .card .row{line-height:1.6}
           <div class="wrap">
             <div class="head"><span class="k">지침 파일</span><span class="v"></span><span class="n">15,267</span></div>
             <div class="layer plain"><span class="k">전역 지침</span><span class="v"><i>그대로</i></span><span class="n">7,396</span></div>
-            <div class="layer l-wl"><span class="k">① 규칙 블록</span><span class="v"><i>프로젝트 CLAUDE.md에 설치기가 써 둔</i> <i>Worklog 행동 규칙</i> <i>· 항상 같음</i></span><span class="n">7,871</span></div>
+            <div class="layer l-wl"><span class="k">① 규칙 블록</span><span class="v"><i>~/.claude/CLAUDE.md에 설치기가 써 둔</i> <i>Worklog 행동 규칙</i> <i>· 항상 같음</i></span><span class="n">7,871</span></div>
           </div>
           <div class="layer l-sys"><span class="k">도구 정의</span><span class="v"><i>그대로</i> <i class="p">(+ 스킬 worklog 이름 한 줄)</i></span><span class="n">—</span></div>
           <div class="layer l-wl"><span class="k">② 주입</span><span class="v"><i>세션 시작 때 자동으로 붙는 기록 요약</i> <i>· 매 세션 다름</i></span><span class="n">405</span></div>
@@ -391,7 +391,7 @@ section.units .card .row{line-height:1.6}
   <div class="cards split">
     <div class="card wl">
       <span class="t">① 규칙 블록 — 모델이 기록을 다루는 절차</span>
-      <div class="row"><b>위치</b><span><i>프로젝트의 <code>CLAUDE.md</code></i> <i class="p">(Claude Code가 세션마다 읽는 지침 파일)</i> <i>· 설치기가 한 번 기록</i></span></div>
+      <div class="row"><b>위치</b><span><i><code>~/.claude/CLAUDE.md</code></i> <i class="p">(Claude Code가 모든 세션에서 읽는 사용자 지침 파일)</i> <i>· 설치기가 기기에 한 번 기록</i></span></div>
       <div class="row"><b>턴 시작</b><span><i>② 주입이 있으면 현재 상태로 사용</i> <i>· 없으면 <code>show</code>로 기록 읽기</i></span></div>
       <div class="row"><b>작업 선택</b><span><i>사용자가 <code>〈id〉 이어서</code> 또는</i> <i><code>새 작업: 〈제목〉</code>이라고 할 때만</i> <i>· 임의 선택 없음</i></span></div>
       <div class="row"><b>저장</b><span><i>턴 종료 전 <code>save</code></i> <i>· 결정·제약마다 산출물에서 인용하거나</i> <i>"미반영: 사유" 기재</i></span></div>
@@ -474,18 +474,18 @@ section.units .card .row{line-height:1.6}
     <div class="card"><span class="t">Claude Code와 Codex가 동일하게 작동 <span class="badge">Pi 지원 예정</span></span>
       <ul class="dots"><li><span><i>두 도구 모두 모델 입력에</i> <i>① 규칙 블록과 ② 주입이 같은 방식으로 들어감</i></span></li><li><span><i>두 도구가 한 프로젝트의 같은 <code>.worklog/</code> 기록을</i> <i>읽고 씀</i></span></li><li><span><i>다른 점은 설정 파일의 이름뿐</i>
   <table class="mini"><tr><th></th><th>규칙 블록이 있는 파일</th><th>자동 실행 설정</th></tr>
-  <tr><td>Claude Code</td><td><code>CLAUDE.md</code></td><td><code>.claude/settings.local.json</code></td></tr>
-  <tr><td>Codex</td><td><code>AGENTS.md</code></td><td><code>.codex/hooks.json</code></td></tr></table></span></li></ul></div>
+  <tr><td>Claude Code</td><td><code>~/.claude/CLAUDE.md</code></td><td><code>~/.claude/settings.json</code></td></tr>
+  <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code></td></tr></table></span></li></ul></div>
   </div>
   <div class="cards two">
     <div class="card"><span class="t">다른 창에서 같은 작업을 고쳤다면?</span>
       <ul class="dots"><li><span><i>② 주입은 세션 시작 때 한 번만 들어옴</i> <i>· 그 사이 다른 세션이 같은 작업을 저장할 수 있음</i></span></li><li><span><i>이 세션이 저장할 때 도구가 "기록이 바뀌었습니다"로 거부</i><br><i class="a">모델이 기록을 다시 읽고 반영해서 저장</i></span></li><li><span>사용자가 할 일 없음</span></li></ul></div>
     <div class="card"><span class="t">제거(uninstall)</span>
-      <div class="row"><b>AI에게</b><span><code>이 프로젝트에서 Worklog 제거해 줘</code></span></div>
-      <div class="row"><b>AI가 묻는 것</b><span><i>어느 도구에서 뺄지</i> <i class="p">(Claude Code · Codex · 전부)</i> <i>· 마지막 도구를 뺄 때만, 기록 <code>.worklog/</code>를 남길지 지울지</i></span></div>
-      <div class="row"><b>되돌리는 것</b><span><i>규칙 블록 · 자동 실행 설정 3개 · 스킬 파일 · <code>.gitignore</code> 줄</i> <i>· 바꾼 파일은 백업</i></span></div>
-      <div class="row"><b>기록</b><span><i>남기면 다시 설치할 때 그대로 이어짐</i> <i>· 다른 도구가 남아 있으면 기록은 그대로</i></span></div>
-      <div class="row"><b>AI가 실행</b><span><div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --root /프로젝트/경로 --tool all --keep-records</pre><button type="button" class="copy" data-for="cmd-uninstall">복사</button></div><i class="p">예시 · 한 도구만은 <code>--tool codex</code> · 완전 제거와 옵션은 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a></i></span></div>
+      <div class="row"><b>AI에게</b><span><code>이 기기에서 Worklog 제거해 줘</code></span></div>
+      <div class="row"><b>AI가 묻는 것</b><span><i>어느 도구에서 뺄지</i> <i class="p">(Claude Code · Codex · 전부)</i> <i>· 프로젝트의 기록 <code>.worklog/</code>는 그대로 남음</i></span></div>
+      <div class="row"><b>되돌리는 것</b><span><i>기기의 규칙 블록 · 자동 실행 설정 3개 · 스킬 파일</i> <i>· 바꾼 파일은 백업</i></span></div>
+      <div class="row"><b>기록</b><span><i>남아 있어 다시 설치하면 그대로 이어짐</i> <i>· 한 프로젝트의 기록만 지우려면 <code>이 프로젝트의 Worklog 기록 지워 줘</code></i> <i class="p">(--root … --tool all --delete-records)</i></span></div>
+      <div class="row"><b>AI가 실행</b><span><div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --user --tool all</pre><button type="button" class="copy" data-for="cmd-uninstall">복사</button></div><i class="p">예시 · 한 도구만은 <code>--tool codex</code> · 완전 제거와 옵션은 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a></i></span></div>
     </div>
   </div>
 </section>

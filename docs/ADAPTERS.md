@@ -1,34 +1,47 @@
 # 도구별 연결 / Tool adapters
 
-> **English summary.** `tools/install_project.py --tool <claude|codex|pi> --root <project>` connects one project. It writes only inside that folder (links pointing outside are refused), checks everything before the first write (a refusal changes nothing, exit 2), and backs up changed files to `.bak-worklog-<date-time>`; re-running keeps a single managed block and leaves an equivalent hook untouched, so Codex asks to trust the hooks again only when the hook definition really changed (for example after moving the clone). Claude Code and Codex get a rules block, three hooks (SessionStart → `wl.py hook`, UserPromptSubmit → `wl.py turn-start`, Stop → `wl.py stop-hook`), a skill, and an empty `.worklog/` folder (the connection signal). Codex requires the user to trust the project and the three hooks in `/hooks`; Claude Code needs no hook approval, only the one-time folder trust dialog in a git repository. Pi gets the rules block and a skill only — no hooks, so nothing is enforced, and it is untested. Hooks read `cwd` and the session ID from the hook event on stdin and stay silent where there is no `.worklog/` folder.
+> **English summary.** `tools/install_project.py --tool <claude|codex> --user` installs once per machine (2.21.0): the rules block, three hooks (SessionStart → `wl.py hook`, UserPromptSubmit → `wl.py turn-start`, Stop → `wl.py stop-hook`) and a skill go into the tool's user-level files (`~/.claude/CLAUDE.md` + `~/.claude/settings.json` + `~/.claude/skills/worklog`; `~/.codex/AGENTS.md` + `~/.codex/hooks.json` + `~/.agents/skills/worklog`), the manifest into `~/.worklog/install.json`. A folder is connected the moment its `.worklog/` exists: the first `새 작업: <title>` there runs `new-work`, which creates it and adds the `.worklog/` line to `.gitignore` of a git project, the registry entry and `install.json`. Elsewhere the SessionStart hook injects one `NOT_CONNECTED` line and the other two hooks stay silent. `--root <project>` is the per-project install (2.x), still supported: same files inside the project plus an empty `.worklog/`. Both modes check everything before the first write (a refusal changes nothing, exit 2) and back up changed files to `.bak-worklog-<date-time>`; re-running keeps a single managed block and leaves an equivalent hook untouched, so Codex asks to trust the hooks again only when the hook definition really changed (for example after moving the clone). Codex requires the user to trust the three hooks once in `/hooks` (and each project when first opened); Claude Code needs no hook approval, only the one-time folder trust dialog in a git repository. Pi gets the rules block and a skill only, per project — no hooks, so nothing is enforced, and it is untested. Hooks read `cwd` and the session ID from the hook event on stdin.
 >
 > **Works.** A project can hold several works. A new session starts with no current work: the SessionStart injection lists the works, and the model saves nothing until the user names one — `<id> 이어서` ("continue <id>") becomes `use <id> --quote "…"`, `새 작업: <title>` ("new work: <title>") becomes `new-work "<title>" --quote "…"`. With no choice given, the model asks once and ends the turn with `skip`; with a single work, "이어서" alone selects it. The current work is kept in the session file, so it survives compaction and its full state is injected again. Create the first work in the first session with `새 작업: <title>`.
 
 ## 설치
 
 ```sh
-python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝트> [--dry-run] [--no-worklog-dir]
+python3 -B tools/install_project.py --tool <claude|codex> --user [--migrate] [--dry-run]            # 기기에 한 번(2.21.0)
+python3 -B tools/install_project.py --tool <claude|codex|pi> --root <프로젝트> [--dry-run] [--no-worklog-dir]   # 한 프로젝트만(2.x)
 ```
 
-그 폴더 안에만 쓰고(밖을 가리키는 링크는 거부), 첫 쓰기 전에 모든 대상을 검사해 거부되면(exit 2) 아무것도 바꾸지 않으며, 바꾸는 파일은 `.bak-worklog-<날짜시각>`으로 백업합니다. Claude·Codex 설치는 빈 `.worklog/` 폴더도 만들며 원장은 만들지 않습니다(작업은 첫 세션에서 만듦). `--no-worklog-dir`은 지침·Hook만 두고 `.worklog/`는 만들지 않습니다(하위 폴더마다 따로 기록할 상위 폴더용). 다시 실행해도 지침 블록은 하나만 남습니다. `.worklog/project.md`는 사용자가 편집하는 선택 파일이며 설치기는 만들거나 덮어쓰지 않습니다.
-설치기는 `~/.worklog/installs.json`(WL_HOME)에 `{프로젝트: [도구]}`를 적습니다(2.17.0, 제거용 목록).
+| | `--user` (기기에 한 번) | `--root` (프로젝트마다) |
+|---|---|---|
+| 규칙 블록 | `~/.claude/CLAUDE.md` · `~/.codex/AGENTS.md` | 프로젝트 `CLAUDE.md` · `AGENTS.md` |
+| Hook 3개 | `~/.claude/settings.json` · `~/.codex/hooks.json` | `.claude/settings.local.json` · `.codex/hooks.json` |
+| 스킬 | `~/.claude/skills/worklog` · `~/.agents/skills/worklog` | `.claude/skills/worklog` · `.agents/skills/worklog` |
+| 매니페스트 | `~/.worklog/install.json[tool]` | `.worklog/install.json[tool]` |
+| `.worklog/`·`.gitignore` 줄·registry | 첫 `new-work`가 만든다(연결 시점) | 설치기가 만든다 |
+
+연결 신호는 `.worklog/` 폴더입니다. `--user`는 프로젝트에 아무것도 쓰지 않고, 사용자가 어떤 폴더에서 `새 작업: <제목>`이라 하면 `new-work`가 `.worklog/`를 만들며 git 프로젝트면 `.gitignore`에 `.worklog/` 줄을 더하고(백업 없음, 한 줄 추가뿐), `~/.worklog/installs.json`에 등록하고, `.worklog/install.json`에 `{version, connected_at, scope: "user"}`를 적습니다(결과의 `connected`·`connected_changed`·`connected_notes`; 실패해도 작업은 만들어지고 notes에 남음). 상위 폴더의 `.worklog/`에 작업이 있으면 결과 `notice`로 알립니다(`~/.worklog` 같은 상태 폴더나 빈 연결은 제외). 연결한 세션의 save·skip에는 "Hook 미작동 의심" 경고가 붙지 않습니다(연결 전 Hook은 세션 파일을 남길 수 없음). `.worklog/`가 없는 폴더에서 SessionStart는 `[Worklog worklog/2 SessionStart | NOT_CONNECTED | root=…]` 한 줄만 주입하고 세션 파일·갱신 검사를 하지 않으며, `show`·`use`·`on`·`off`는 "연결되지 않은 폴더"라고 답합니다. registry에 그 도구의 프로젝트 단위 Hook이 남은 프로젝트가 있으면 `--user`는 거부합니다(Hook이 두 번 돌게 됨). `--migrate`는 그 프로젝트들의 블록·Hook·스킬·매니페스트 항목을 먼저 제거하고(기록·세션 파일·`.worklog/`·`.gitignore` 줄 유지, `install.json`에 연결 항목) 전역 설치를 합니다. `--tool pi --user`는 거부합니다(미검증).
+
+두 방식 모두 대상 폴더(홈 또는 프로젝트) 안에만 쓰고(밖을 가리키는 링크는 거부), 첫 쓰기 전에 모든 대상을 검사해 거부되면(exit 2) 아무것도 바꾸지 않으며, 바꾸는 파일은 `.bak-worklog-<날짜시각>`으로 백업합니다. `--root`의 Claude·Codex 설치는 빈 `.worklog/` 폴더도 만들며 원장은 만들지 않습니다(작업은 첫 세션에서 만듦). `--no-worklog-dir`은 지침·Hook만 두고 `.worklog/`는 만들지 않습니다(하위 폴더마다 따로 기록할 상위 폴더용). 다시 실행해도 지침 블록은 하나만 남습니다. `.worklog/project.md`는 사용자가 편집하는 선택 파일이며 설치기는 만들거나 덮어쓰지 않습니다.
+registry `~/.worklog/installs.json`(WL_HOME)에는 `{프로젝트: [도구]}`가 적힙니다(2.17.0, 제거용 목록): `--root` 설치와 `new-work`의 연결이 적습니다.
 
 ## 제거
 
 ```sh
-python3 -B tools/uninstall_project.py --root <프로젝트> [--tool claude|codex|pi|all] (--keep-records | --delete-records) [--no-backup] [--purge-backups] [--dry-run]
+python3 -B tools/uninstall_project.py --user --tool claude|codex|all [--home] [--no-backup] [--purge-backups] [--dry-run]
+python3 -B tools/uninstall_project.py --root <프로젝트> --tool claude|codex|pi|all (--keep-records | --delete-records) [--no-backup] [--purge-backups] [--dry-run]
 python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-records) [--home]
 ```
 
-설치기가 한 일을 되돌립니다(2.17.0): 지침 블록(블록뿐이던 파일은 삭제), Hook 3개(같은 파일의 다른 Hook·설정은 유지, 비게 된 파일은 삭제), 스킬 폴더, `.gitignore`의 `.worklog/` 줄(2.11.0~2.17.x의 두 줄 포함), 그 도구의 세션 파일·설치 정보, 남는 도구가 없으면 `.lock`·`off`. 기록은 사용자가 정합니다 — `--keep-records`는 `works/`·`index.json`·`project.md`를 남기고(다시 설치하면 이어짐), `--delete-records`는 `.worklog/`를 통째로 지우며 다른 도구가 아직 설치돼 있으면 거부합니다. 둘 다 없으면 터미널에서만 묻고 아니면 거부합니다. 고치거나 지우는 파일은 백업하고(`--no-backup`), 설치기의 옛 백업은 `--purge-backups`일 때만 지웁니다. 첫 쓰기 전에 모든 변경을 계획하므로 거부(exit 2)는 아무것도 바꾸지 않습니다. `--all-projects`는 목록의 모든 프로젝트, `--home`은 목록이 빈 뒤 `~/.worklog`를 지웁니다. clone 폴더, Codex Hook 신뢰(`~/.codex/config.toml`), Claude Code 폴더 신뢰는 건드리지 않습니다.
+`--user`(2.21.0)는 사용자 수준 블록·Hook 3개·스킬·`~/.worklog/install.json` 항목을 제거합니다. 프로젝트는 건드리지 않으므로 `.worklog/`가 있는 폴더는 여전히 연결된 폴더이며, 다시 설치하면 그대로 이어집니다. 한 프로젝트를 끊으려면 `--root … --tool all --delete-records`, 잠시 멈추려면 `wl.py off`.
+`--root`는 설치기가 프로젝트에 한 일을 되돌립니다(2.17.0): 지침 블록(블록뿐이던 파일은 삭제), Hook 3개(같은 파일의 다른 Hook·설정은 유지, 비게 된 파일은 삭제), 스킬 폴더, 그 도구의 세션 파일·설치 정보, 남는 도구가 없으면 `.lock`·`off`. 연결만 된 폴더(블록·Hook 없이 `install.json`에 scope user 항목)도 "설치됨"으로 잡힙니다. 기록은 사용자가 정합니다 — `--keep-records`는 `works/`·`index.json`·`project.md`를 남기고(다시 설치하면 이어짐; 폴더는 여전히 연결됨을 notes로 알림), `--delete-records`는 `.worklog/`를 통째로 지우며 다른 도구가 아직 설치돼 있으면 거부합니다. `.gitignore`의 `.worklog/` 줄(2.11.0~2.17.x의 두 줄 포함)은 `--delete-records`일 때만 지웁니다(2.21.0: 남긴 기록이 커밋되면 안 되므로). 둘 다 없으면 터미널에서만 묻고 아니면 거부합니다. 고치거나 지우는 파일은 백업하고(`--no-backup`), 설치기의 옛 백업은 `--purge-backups`일 때만 지웁니다. 첫 쓰기 전에 모든 변경을 계획하므로 거부(exit 2)는 아무것도 바꾸지 않습니다. `--all-projects`는 목록의 모든 프로젝트, `--home`은 목록이 빈 뒤 `~/.worklog`를 지웁니다. clone 폴더, Codex Hook 신뢰(`~/.codex/config.toml`), Claude Code 폴더 신뢰는 건드리지 않습니다.
 
 ## 도구별 비교
 
 | | Claude Code | Codex | Pi |
 |---|---|---|---|
-| 시작 지침 | `CLAUDE.md` 블록 | `AGENTS.md` 블록 | `AGENTS.md` 블록(cwd·상위 폴더에서 읽음) |
-| Skill | `.claude/skills/worklog` | `.agents/skills/worklog` (`$worklog`로 호출 확인, 2026-10-14) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
-| Hook 위치 | `.claude/settings.local.json` | `.codex/hooks.json` | 없음 |
+| 시작 지침 | `~/.claude/CLAUDE.md` 블록(`--user`) 또는 프로젝트 `CLAUDE.md` 블록(`--root`) | `~/.codex/AGENTS.md` 블록(`--user`) 또는 프로젝트 `AGENTS.md` 블록(`--root`) | `AGENTS.md` 블록(cwd·상위 폴더에서 읽음, `--root`만) |
+| Skill | `~/.claude/skills/worklog` 또는 `.claude/skills/worklog` | `~/.agents/skills/worklog`(공식 문서의 사용자 범위 경로, 2026-10-16) 또는 `.agents/skills/worklog` (`$worklog`로 호출 확인, 2026-10-14) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
+| Hook 위치 | `~/.claude/settings.json` 또는 `.claude/settings.local.json` | `~/.codex/hooks.json` 또는 `.codex/hooks.json` | 없음 |
 | SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact·fork¹ → `wl.py hook --tool claude` | startup·resume·clear·compact·fork² → `wl.py hook --tool codex` | 없음 — 지침("못 봤으면 `show`") |
 | UserPromptSubmit (턴 시작) | `wl.py turn-start --tool claude` | `wl.py turn-start --tool codex` | 없음 — 지침 |
 | Stop (저장 확인) | `wl.py stop-hook --tool claude` | `wl.py stop-hook --tool codex` | 없음 — 지침 |
@@ -44,7 +57,7 @@ python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-
 ## Hook 동작
 
 - 세 Hook은 stdin 이벤트의 `cwd`와 세션 ID를 씁니다. `--tool`은 그 도구의 세션 환경변수만 고르는 데 씁니다.
-- `.worklog` 폴더가 없으면 빈 출력으로 통과합니다. 폴더만 있어도(작업이 아직 없어도) 세 Hook이 연결됩니다.
+- `.worklog` 폴더가 없으면 SessionStart는 `| NOT_CONNECTED |` 한 줄만 주입하고(2.21.0, 세션 파일·갱신 검사 없음) turn-start·stop-hook은 빈 출력으로 통과합니다. 폴더만 있어도(작업이 아직 없어도) 세 Hook이 연결됩니다. 사용자 수준 Hook(`--user`)은 모든 폴더에서 돌지만 이 규칙 때문에 연결 안 한 폴더에서는 아무 일도 하지 않습니다.
 - SessionStart 주입이 있으면 턴 시작 `show`를 생략할 수 있고, 없으면 지침대로 `show`를 한 번 실행합니다. 두 경로 모두 같은 작업별 `works/<id>/state.md` 내용입니다.
 - 세 Hook은 돌 때마다 세션 파일에 `hooks_seen`을 남깁니다. save·skip 결과의 `hooks`와 `warning`(Hook 미작동 의심: 세 Hook 기록이 하나도 없을 때만, 2.16.0), `verify --all --tool … --session …`의 `hooks`로 Hook이 실제로 도는지 확인합니다. Codex에서 `/hooks` 신뢰를 빠뜨리면 첫 턴의 결과에서 바로 드러납니다. Claude Code에서 `!` 셸 입력이나 서브에이전트·다른 세션의 알림으로 시작한 턴에는 UserPromptSubmit이 돌지 않습니다(2026-10-15 관측). 그런 세션은 `turn_start: false`로만 보이고 경고는 아닙니다.
 - 세션 id와 분기(2026-10-13 실측, Claude Code): `/branch`·`/clear`는 새 세션 id로 SessionStart(fork·clear) 주입을 받습니다. `/btw`→`f`·`/subtask`처럼 사용자가 띄운 포크 서브에이전트는 메인 세션 id를 그대로 쓰며 그 id로 저장합니다(메인은 `show`로 확인 뒤 중복 저장하지 않음). `/rewind` 대화 복원은 같은 세션 id이고 모델에게 되감기 표시가 가지 않으므로, 코어가 같은 세션·같은 summary 재저장을 거부합니다(2.13.0). 프로젝트 루트의 `.git`이 파일이면(git worktree) SessionStart 주입과 save·skip·verify·use에 `warning_worktree`가 붙습니다. Codex는 `/fork`·`/side`가 `fork`, `/clear`가 `clear`, `/new`가 `startup`으로 새 thread id를 받습니다(2026-10-14 실측).
@@ -53,6 +66,7 @@ python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-
 
 ## 작업 선택 흐름
 
+0. `| NOT_CONNECTED |` 주입이 보이면(연결 안 한 폴더) 아무것도 하지 않습니다. 사용자가 `새 작업: <제목>`이라 하면 주입의 `root=` 폴더에서 `new-work "<제목>" --quote "<원문>" --root <root>`를 실행하고, 이 명령이 폴더를 연결합니다. `<id> 이어서`·`워크로그 켜`에는 연결되지 않았다고 답합니다.
 1. 턴 시작에 `[Worklog worklog/2 SessionStart`가 보이면 사용합니다. 없으면 `show`를 실행합니다.
 2. 사용자가 `habit-plan 이어서`라고 하면 모델이 `use habit-plan --quote "habit-plan 이어서"`를 실행합니다. use가 상태를 출력하므로 show 없이 저장합니다. 새 작업은 `새 작업: 요리 메모` → `new-work "요리 메모" --quote "새 작업: 요리 메모"`입니다.
 3. 현재 작업도 지정도 없으면 모델이 목록을 제시하고 한 번 묻습니다. 그 턴은 `skip "작업 지정 대기"`로 끝내며 아무것도 저장하지 않습니다. 작업이 하나뿐이고 사용자가 "이어서"라고 하면 그 작업을 use합니다.

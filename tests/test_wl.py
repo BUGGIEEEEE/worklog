@@ -179,7 +179,9 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(ev["refs"][0]["id"], "B03")
 
     def test_hook_output(self):
-        self.assertEqual(run(self.root, "hook"), (0, ""))  # 미연결 폴더: 빈 출력
+        r, out = run(self.root, "hook")  # 미연결 폴더: NOT_CONNECTED 한 줄(2.21.0)
+        self.assertEqual(r, 0)
+        self.assertIn("| NOT_CONNECTED |", json.loads(out)["hookSpecificOutput"]["additionalContext"])
         self.start()
         run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["게시 금지"]})
         ctx = json.loads(run(self.root, "hook")[1])["hookSpecificOutput"]
@@ -359,7 +361,13 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(json.loads(hook(self.root, "stop-hook", session="other")[1] or "{}"), {})  # 턴 시작 없는 세션은 통과
 
     def test_hooks_silent_without_worklog(self):
-        for cmd in ("hook", "turn-start", "stop-hook"):
+        """2.21.0: SessionStart says NOT_CONNECTED in one line (root = the event's cwd); turn-start·stop-hook stay silent."""
+        r, out = hook(self.root, "hook")
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual((r, ctx.count("\n")), (0, 1))
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.root.resolve()}]"), ctx)
+        self.assertIn('"새 작업: <제목>"', ctx)
+        for cmd in ("turn-start", "stop-hook"):
             self.assertEqual(hook(self.root, cmd), (0, ""), cmd)
         self.assertFalse((self.root / ".worklog").exists())
 
@@ -582,7 +590,7 @@ class CoreTest(unittest.TestCase):
         (self.root / "CLAUDE.md").symlink_to(outside)
         r, out = self.install()
         self.assertEqual(r, 2, out)
-        self.assertIn("--root 밖을 가리키는 링크", json.loads(out)["error"])
+        self.assertIn("밖을 가리키는 링크", json.loads(out)["error"])
         self.assertEqual(outside.read_text(), "밖의 파일\n")
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["CLAUDE.md"])  # 다른 파일도 쓰지 않음
         (self.root / "CLAUDE.md").unlink()
@@ -695,7 +703,7 @@ class CoreTest(unittest.TestCase):
         (self.root / "CLAUDE.md.bak-worklog-20300102-030405").symlink_to(outside)
         r, out = self.install_at("20300102-030405")
         self.assertEqual(r, 2, out)
-        self.assertIn("--root 밖을 가리키는 링크", json.loads(out)["error"])
+        self.assertIn("밖을 가리키는 링크", json.loads(out)["error"])
         self.assertEqual(outside.read_text(), "Outside unchanged\n")
         self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 기존 내용\n")
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["CLAUDE.md", "CLAUDE.md.bak-worklog-20300102-030405"])
@@ -1502,7 +1510,7 @@ class OnOffTest(Base):
         r, out = run(self.root, "show")
         self.assertEqual(r, 0, out)
         self.assertTrue(out.startswith("[Worklog OFF] "), out)
-        self.assertEqual(sorted(p.name for p in self.d.iterdir()), [".lock", "index.json", "off", "sessions", "works"])
+        self.assertEqual(sorted(p.name for p in self.d.iterdir()), [".lock", "index.json", "install.json", "off", "sessions", "works"])  # install.json: new-work가 폴더를 연결(2.21.0)
 
     def test_off_needs_quote(self):
         self.ok(new_work(self.root, "t"))
@@ -1512,8 +1520,8 @@ class OnOffTest(Base):
         self.assertFalse(os.path.lexists(self.d / "off"))
 
     def test_not_installed_and_repeats(self):
-        self.refused(self.off(), "설치되지 않았습니다")
-        self.refused(run(self.root, "on"), "설치되지 않았습니다")
+        self.refused(self.off(), "연결되지 않은 폴더")  # 2.21.0: .worklog가 없는 폴더는 "미연결"
+        self.refused(run(self.root, "on"), "연결되지 않은 폴더")
         self.assertFalse(self.d.exists())
         self.d.mkdir()
         out = self.ok(run(self.root, "on"))
@@ -1648,9 +1656,10 @@ class UninstallTest(Base):
         settings = json.loads((self.root / ".claude/settings.local.json").read_text())
         self.assertEqual(settings, {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.other_hook]}]}})  # 남의 Hook·설정 유지
         self.assertFalse((self.root / ".claude/skills").exists())  # 스킬 파일과 빈 폴더 제거
-        self.assertEqual((self.root / ".gitignore").read_text(), "node_modules/\n")
+        self.assertEqual((self.root / ".gitignore").read_text(), "node_modules/\n.worklog/\n")  # 2.21.0: 기록을 남기면 .gitignore 줄도 남긴다(기록이 커밋되지 않게)
         self.assertEqual(self.names(self.d), ["index.json", "works"])  # 기록은 남고 세션·잠금·설치 정보는 사라진다
-        self.assertEqual(sorted(Path(b).name.split(".bak-worklog-")[0] for b in p["backups"]), [".gitignore", "CLAUDE.md", "settings.local.json"])
+        self.assertIn("여전히 연결된 폴더", p["notes"][0])
+        self.assertEqual(sorted(Path(b).name.split(".bak-worklog-")[0] for b in p["backups"]), ["CLAUDE.md", "settings.local.json"])
         self.assertTrue(all(Path(b).exists() for b in p["backups"]))
         self.assertTrue(any(Path(b).read_text().count("worklog-shared:begin") == 1 for b in p["backups"]))  # 백업은 제거 전 내용
         self.assertIsNone(self.registry())
@@ -1723,6 +1732,280 @@ class UninstallTest(Base):
         (self.root / "CLAUDE.md").write_text("# 위\n\n" + text + "\n# 아래\n")
         self.assertEqual(self.uninstall("--tool", "all", "--keep-records")[0], 0)
         self.assertEqual((self.root / "CLAUDE.md").read_text(), "# 위\n\n# 아래\n")
+
+
+class UserScopeTest(Base):
+    """2.21.0: install once per machine (--user); a folder is connected by its first new-work; NOT_CONNECTED elsewhere."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = self.root / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+        self.other_hook = {"type": "command", "command": "echo other", "timeout": 5}
+        self.settings0 = {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.other_hook]}]}}
+        (self.home / ".claude/settings.json").write_text(json.dumps(self.settings0))
+        self.proj = self.root / "proj"
+        self.proj.mkdir()
+        (self.proj / ".git").mkdir()
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def install(self, *argv):
+        return self.script(INST, *argv)
+
+    def uninstall(self, *argv):
+        return self.script(UNINST, *argv)
+
+    def cmd(self, root, command, *extra, session="s1", tool="claude", payload=None):
+        return run(root, command, payload, session=session, tool=tool, extra=extra, env=self.env)
+
+    def user_manifest(self):
+        return json.loads((self.wl_home / "install.json").read_text())
+
+    def registry(self):
+        try:
+            return json.loads((self.wl_home / "installs.json").read_text())
+        except FileNotFoundError:
+            return None
+
+    def tree(self, folder):
+        return {str(p.relative_to(folder)): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    def test_user_install_claude_and_codex(self):
+        before = self.tree(self.home)
+        code, out = self.install("--tool", "claude", "--user", "--dry-run")
+        self.assertEqual((code, out["scope"], out["dry_run"]), (0, "user", True))
+        self.assertEqual(sorted(Path(c).name for c in out["changed"]), ["CLAUDE.md", "SKILL.md", "settings.json"])
+        self.assertEqual(self.tree(self.home), before)  # dry-run은 아무것도 안 쓴다
+        self.assertFalse((self.wl_home / "install.json").exists())
+        code, out = self.install("--tool", "claude", "--user")
+        self.assertEqual(code, 0, out)
+        guide = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertEqual(guide.count("worklog-shared:begin"), 1)
+        self.assertIn("| NOT_CONNECTED |", guide)  # 2.21.0 규칙 첫 줄
+        self.assertIn("--tool claude", guide)
+        settings = json.loads((self.home / ".claude/settings.json").read_text())
+        self.assertEqual(settings["permissions"], self.settings0["permissions"])  # 남의 설정·Hook 유지, 새 그룹은 뒤에
+        self.assertEqual(settings["hooks"]["SessionStart"][0], self.settings0["hooks"]["SessionStart"][0])
+        self.assertEqual([len(settings["hooks"][e]) for e in ("SessionStart", "UserPromptSubmit", "Stop")], [2, 1, 1])
+        self.assertIn(f"{WL} hook --tool claude", settings["hooks"]["SessionStart"][1]["hooks"][0]["command"].replace("'", ""))
+        self.assertTrue((self.home / ".claude/skills/worklog/SKILL.md").exists())
+        m = self.user_manifest()["claude"]
+        self.assertEqual(m["rules_src_sha"], hashlib.sha256((WL.parents[1] / "adapters/rules.md").read_bytes()).hexdigest())
+        self.assertEqual(m["version"], load_wl().VERSION)
+        self.assertIsNone(self.registry())  # 사용자 범위 설치는 프로젝트를 등록하지 않는다
+        self.assertFalse(any(p.name == ".worklog" for p in self.home.rglob(".worklog")))
+        self.assertEqual(len(list((self.home / ".claude").glob("settings.json.bak-worklog-*"))), 1)
+        after = self.tree(self.home)
+        code, out = self.install("--tool", "claude", "--user")  # 두 번째 실행: 파일 불변(Hook 바이트 유지), 매니페스트만 다시 씀
+        self.assertEqual((code, [Path(c).name for c in out["changed"]]), (0, ["install.json"]))
+        self.assertEqual(self.tree(self.home), after)
+        code, out = self.install("--tool", "codex", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertIn("worklog-shared:begin", (self.home / ".codex/AGENTS.md").read_text())
+        self.assertEqual(len(json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]["Stop"]), 1)
+        self.assertTrue((self.home / ".agents/skills/worklog/SKILL.md").exists())
+        self.assertEqual(sorted(self.user_manifest()), ["claude", "codex"])
+        self.assertIn("/hooks", out["next"])
+        code, out = self.install("--tool", "pi", "--user")
+        self.assertEqual((code, "pi" in out["error"]), (2, True))
+        p = subprocess.run([sys.executable, "-B", str(INST), "--tool", "claude", "--user", "--root", str(self.proj)], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 2)  # --user와 --root는 배타
+        p = subprocess.run([sys.executable, "-B", str(INST), "--tool", "claude", "--root", str(self.proj), "--migrate"], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 2)  # --migrate는 --user와만
+        code, out = self.install("--user")
+        self.assertEqual(code, 2)
+        self.assertIn("--user", out["error"])  # 도구를 묻는 거부에 --user 안내
+
+    def test_not_connected_hook_and_commands(self):
+        r, out = hook(self.proj, "hook", env=self.env)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.proj.resolve()}]"), ctx)
+        self.assertFalse((self.proj / ".worklog").exists())
+        self.assertFalse((self.wl_home / "update.json").exists())  # 갱신 검사를 띄우지 않는다
+        self.assertEqual(hook(self.proj, "turn-start", env=self.env), (0, ""))
+        self.assertEqual(hook(self.proj, "stop-hook", env=self.env), (0, ""))
+        r, out = self.cmd(self.proj, "show")
+        self.assertEqual(r, 0)
+        self.assertIn("연결되지 않은 폴더", out)
+        self.assertIn("새 작업: <제목>", out)
+        self.refused(self.cmd(self.proj, "use", "t", "--quote", "t 이어서"), "연결되지 않은 폴더")
+        self.refused(self.cmd(self.proj, "on"), "연결되지 않은 폴더")
+        self.refused(self.cmd(self.proj, "off", "--quote", "워크로그 꺼"), "연결되지 않은 폴더")
+        self.assertEqual(self.ok(self.cmd(self.proj, "skip", "읽기 전용")), {"ok": True, "turn": 0})
+        self.assertFalse((self.proj / ".worklog").exists())
+
+    def test_new_work_connects(self):
+        out = self.ok(self.cmd(self.proj, "new-work", "Habit Plan", "--quote", "새 작업: Habit Plan"))
+        self.assertEqual((out["id"], out["connected"], out["connected_notes"]), ("habit-plan", True, []))
+        self.assertEqual((self.proj / ".gitignore").read_text(), ".worklog/\n")  # git 프로젝트: 줄 추가(백업 없음)
+        self.assertEqual(self.registry(), {str(self.proj.resolve()): ["claude"]})
+        entry = json.loads((self.proj / ".worklog/install.json").read_text())["claude"]
+        self.assertEqual((entry["scope"], entry["version"], "rules_src_sha" in entry), ("user", load_wl().VERSION, False))
+        self.assertEqual(sorted(Path(c).name for c in out["connected_changed"]), [".gitignore", "install.json", "installs.json"])
+        ctx = json.loads(hook(self.proj, "hook", env=self.env)[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("| PROVIDED |", ctx)  # 연결 뒤 같은 세션의 SessionStart는 현재 작업을 주입
+        self.assertNotIn("connected", self.ok(self.cmd(self.proj, "new-work", "Second", "--quote", "새 작업: Second")))  # 이미 연결됨
+        self.ok(self.cmd(self.proj, "save", payload={"type": "REQUEST", "summary": "x", "quote": "q"}))
+        (self.proj / ".gitignore").write_text("/.worklog\nnode_modules/\n")  # 이미 무시 중이면 불변
+        shutil.rmtree(self.proj / ".worklog")
+        self.ok(self.cmd(self.proj, "new-work", "T", "--quote", "새 작업: T"))
+        self.assertEqual((self.proj / ".gitignore").read_text(), "/.worklog\nnode_modules/\n")
+        plain = self.root / "plain"  # git이 아니면 .gitignore 없음, 등록·매니페스트는 됨
+        plain.mkdir()
+        out = self.ok(self.cmd(plain, "new-work", "P", "--quote", "새 작업: P", tool="codex"))
+        self.assertTrue(out["connected"] and not (plain / ".gitignore").exists())
+        self.assertEqual(sorted(self.registry()), sorted([str(self.proj.resolve()), str(plain.resolve())]))
+        self.assertEqual(json.loads((plain / ".worklog/install.json").read_text())["codex"]["scope"], "user")
+        sub = self.proj / "sub"  # 상위에 작업이 있는 .worklog가 있으면 notice
+        sub.mkdir()
+        out = self.ok(self.cmd(sub, "new-work", "S", "--quote", "새 작업: S"))
+        self.assertIn(f"상위 폴더 {self.proj.resolve()}에 Worklog", out["notice"])
+        self.assertIn("사용자에게 확인", out["notice"])
+        self.assertNotIn("warning", out)  # 연결한 세션: 연결 전 Hook은 기록을 남길 수 없으므로 미작동 경고 없음(M 시험 발견)
+        self.assertEqual(out["hooks"], {"session_start": False, "turn_start": False, "stop": False})
+        self.assertNotIn("warning", self.ok(self.cmd(sub, "skip", "x")))
+        self.assertIn("warning", self.ok(self.cmd(sub, "skip", "x", session="other")))  # 연결하지 않은 다른 세션은 기존대로 경고
+        wl_like = self.root / "wl_like"  # 작업 없는 .worklog(WL_HOME 같은 상태 폴더, 빈 연결)는 상위로 치지 않는다(M 시험 발견: ~/.worklog 오인)
+        (wl_like / ".worklog").mkdir(parents=True)
+        (wl_like / ".worklog/installs.json").write_text("{}")
+        (wl_like / "deep").mkdir()
+        self.assertNotIn("notice", self.ok(self.cmd(wl_like / "deep", "new-work", "D", "--quote", "새 작업: D")))
+        broken = Path(tempfile.mkdtemp()) / "nothome"  # registry를 못 쓰면 연결은 되고 notes에 남는다
+        broken.write_text("x")
+        p2 = self.root / "p2"
+        p2.mkdir()
+        r, raw = run(p2, "new-work", session="s1", tool="claude", extra=["Q", "--quote", "새 작업: Q"], env=dict(self.env, WL_HOME=str(broken)))
+        out = json.loads(raw)
+        self.assertEqual((r, out["connected"]), (0, True))
+        self.assertTrue(any("등록하지 못함" in n for n in out["connected_notes"]), out)
+        self.assertTrue((p2 / ".worklog/index.json").exists())
+
+    def test_install_report_by_scope(self):
+        self.ok(self.cmd(self.proj, "new-work", "T", "--quote", "새 작업: T"))
+        self.assertNotIn("warning_install", self.ok(self.cmd(self.proj, "skip", "x")))  # 전역 매니페스트 없음 → 경고 없음
+        (self.wl_home / "install.json").write_text(json.dumps({"claude": {"version": "0.0.1", "rules_src_sha": "0" * 64, "installed_at": "x"}}))
+        w = self.ok(self.cmd(self.proj, "skip", "x"))["warning_install"]
+        self.assertIn("--user", w)  # 연결만 된 폴더(scope user)는 전역 사본과 비교하고 --user 재설치를 안내
+        self.assertNotIn("--root", w)
+        self.assertIn("[Worklog 사본 경고]", json.loads(hook(self.proj, "hook", env=self.env)[1])["hookSpecificOutput"]["additionalContext"])
+        (self.proj / ".worklog/install.json").write_text(json.dumps({"claude": {"version": "0.0.2", "rules_src_sha": "1" * 64, "installed_at": "x"}}))
+        w = self.ok(self.cmd(self.proj, "skip", "x"))["warning_install"]
+        self.assertIn(f"--root {shlex.quote(str(self.proj.resolve()))}", w)  # 프로젝트 단위 설치는 그 사본과 비교
+        self.assertIn("v0.0.2", w)
+        (self.proj / ".worklog/install.json").unlink()
+        self.assertIn("--user", self.ok(self.cmd(self.proj, "skip", "x"))["warning_install"])  # 항목 없음 → 전역과 비교
+
+    def test_user_install_refuses_project_hooks_and_migrates(self):
+        code, out = self.install("--tool", "claude", "--root", str(self.proj))
+        self.assertEqual(code, 0, out)
+        self.ok(self.cmd(self.proj, "new-work", "T", "--quote", "새 작업: T"))
+        self.ok(self.cmd(self.proj, "save", payload={"type": "REQUEST", "summary": "x", "quote": "q"}))
+        sess = session_file(self.proj)
+        self.assertTrue(sess.exists())
+        home_before = self.tree(self.home)
+        code, out = self.install("--tool", "claude", "--user")
+        self.assertEqual(code, 2)
+        self.assertIn(str(self.proj.resolve()), out["error"])
+        self.assertIn("--migrate", out["error"])
+        self.assertEqual(self.tree(self.home), home_before)  # 거부는 아무것도 안 쓴다
+        proj_before = self.tree(self.proj)
+        code, out = self.install("--tool", "claude", "--user", "--migrate", "--dry-run")
+        self.assertEqual((code, out["migrated"][0]["root"]), (0, str(self.proj.resolve())))
+        self.assertEqual((self.tree(self.home), self.tree(self.proj)), (home_before, proj_before))
+        code, out = self.install("--tool", "claude", "--user", "--migrate")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.proj / "CLAUDE.md").exists())  # 블록뿐이던 파일은 삭제(백업 남음)
+        self.assertEqual(len(list(self.proj.glob("CLAUDE.md.bak-worklog-*"))), 1)
+        self.assertFalse((self.proj / ".claude/settings.local.json").exists())
+        self.assertFalse((self.proj / ".claude/skills").exists())
+        self.assertTrue(sess.exists())  # 진행 중 세션은 유지
+        self.assertTrue((self.proj / ".worklog/works/t/events.jsonl").exists())
+        self.assertEqual((self.proj / ".gitignore").read_text(), ".worklog/\n")
+        entry = json.loads((self.proj / ".worklog/install.json").read_text())["claude"]
+        self.assertEqual((entry["scope"], "rules_src_sha" in entry), ("user", False))
+        self.assertEqual(self.registry(), {str(self.proj.resolve()): ["claude"]})  # 여전히 연결된 프로젝트
+        self.assertIn("worklog-shared:begin", (self.home / ".claude/CLAUDE.md").read_text())
+        self.assertIn("| PROVIDED |", json.loads(hook(self.proj, "hook", env=self.env)[1])["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("warning_install", self.ok(self.cmd(self.proj, "skip", "x")))
+        code, out = self.install("--tool", "claude", "--user")  # 이제 프로젝트 Hook이 없으니 거부 없음
+        self.assertEqual((code, out["migrated"]), (0, []))
+
+    def test_uninstall_user(self):
+        self.install("--tool", "claude", "--user")
+        self.install("--tool", "codex", "--user")
+        self.ok(self.cmd(self.proj, "new-work", "T", "--quote", "새 작업: T"))
+        before = self.tree(self.home)
+        p = subprocess.run([sys.executable, "-B", str(UNINST), "--user"], capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 2)  # --user에는 --tool이 필요
+        code, out = self.uninstall("--user", "--tool", "claude", "--dry-run")
+        self.assertEqual((code, out["user"]["dry_run"]), (0, True))
+        self.assertEqual(self.tree(self.home), before)
+        self.assertEqual(sorted(self.user_manifest()), ["claude", "codex"])
+        code, out = self.uninstall("--user", "--tool", "claude")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.home / ".claude/CLAUDE.md").exists())  # 블록뿐이던 파일은 삭제
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_text()), self.settings0)  # 남의 Hook·설정 복원
+        self.assertFalse((self.home / ".claude/skills").exists())
+        self.assertEqual(sorted(self.user_manifest()), ["codex"])
+        self.assertIn("worklog-shared:begin", (self.home / ".codex/AGENTS.md").read_text())  # codex는 그대로
+        self.assertTrue((self.proj / ".worklog/index.json").exists())  # 프로젝트 기록은 건드리지 않는다
+        self.assertEqual(self.registry(), {str(self.proj.resolve()): ["claude"]})
+        code, out = self.uninstall("--user", "--tool", "all", "--purge-backups")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.home / ".codex/AGENTS.md").exists() or (self.home / ".codex/hooks.json").exists() or (self.home / ".agents").exists())
+        self.assertEqual(len(list((self.home / ".codex").glob("AGENTS.md.bak-worklog-*"))), 1)  # 이번 제거의 백업(블록뿐이던 파일)
+        self.assertFalse((self.wl_home / "install.json").exists())
+        self.assertEqual(list((self.home / ".claude").glob("*.bak-worklog-*")), [])  # --purge-backups: 이전 설치·제거의 백업 삭제
+        code, out = self.uninstall("--home")  # 연결된 프로젝트가 남아 있으면 home은 거부
+        self.assertEqual(code, 2)
+        self.assertIn("아직 설치된 프로젝트", out["error"])
+
+    def test_connected_only_project_uninstall(self):
+        self.ok(self.cmd(self.proj, "new-work", "T", "--quote", "새 작업: T"))
+        self.ok(self.cmd(self.proj, "save", payload={"type": "REQUEST", "summary": "x", "quote": "q"}))
+        code, out = self.uninstall("--root", str(self.proj), "--keep-records")
+        self.assertEqual(code, 2)
+        self.assertIn("설치됨: claude", out["projects"][0]["error"])  # 연결 항목만 있어도 "설치됨"
+        code, out = self.uninstall("--root", str(self.proj), "--tool", "all", "--keep-records")
+        self.assertEqual(code, 0, out)
+        p = out["projects"][0]
+        self.assertTrue(any("여전히 연결된 폴더" in n for n in p["notes"]), p)
+        self.assertEqual((self.proj / ".gitignore").read_text(), ".worklog/\n")  # 기록을 남기면 줄도 남는다
+        self.assertTrue((self.proj / ".worklog/works/t/events.jsonl").exists())
+        self.assertFalse((self.proj / ".worklog/install.json").exists())
+        self.assertIsNone(self.registry())
+        ctx = json.loads(hook(self.proj, "hook", env=self.env)[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("| NO_CURRENT_WORK |", ctx)  # 여전히 연결됨(세션 파일은 지워져 현재 작업만 없음)
+        self.ok(self.cmd(self.proj, "new-work", "U", "--quote", "새 작업: U", session="s2"))  # 이미 .worklog가 있어 재연결 없음
+        self.assertFalse((self.proj / ".worklog/install.json").exists())
+        code, out = self.uninstall("--root", str(self.proj), "--tool", "claude", "--delete-records")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.proj / ".worklog").exists())
+        self.assertFalse((self.proj / ".gitignore").exists())  # 줄뿐이던 파일은 삭제
+        self.assertIn("| NOT_CONNECTED |", json.loads(hook(self.proj, "hook", env=self.env)[1])["hookSpecificOutput"]["additionalContext"])
+
+    def test_update_reinstalls_user_scope(self):
+        self.install("--tool", "claude", "--user")
+        (self.home / ".claude/CLAUDE.md").write_text("# 사용자 글\n")  # 블록이 지워진 상태 → 재설치가 복원
+        (self.proj / ".worklog").mkdir()
+        (self.proj / ".worklog/install.json").write_text(json.dumps({"claude": {"version": "0", "connected_at": "x", "scope": "user"}}))
+        with mock.patch.dict(os.environ, self.env):
+            spec = importlib.util.spec_from_file_location("upd", WL.parents[1] / "tools" / "update.py")
+            upd = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(upd)
+            self.assertEqual(upd.reinstall_user(), ["claude"])
+            self.assertEqual(upd.reinstall(self.proj.resolve()), [])  # scope user 항목은 프로젝트 재설치 대상이 아니다
+        text = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertTrue(text.startswith("# 사용자 글") and text.count("worklog-shared:begin") == 1)
+        self.assertFalse((self.proj / "CLAUDE.md").exists())
 
 
 class LongLedgerTest(unittest.TestCase):
@@ -1897,6 +2180,7 @@ class FinalPlanTest(unittest.TestCase):
         self.assertIn("[use] 현재 작업: a · A · COMPLETED", use(self.root, "a", session="fresh", tool="claude")[1])
 
     def test_hooks_seen_reported(self):
+        (self.root / ".worklog").mkdir()  # 이미 연결된 폴더(연결한 세션은 2.21.0부터 경고를 내지 않는다: UserScopeTest)
         self.ok(new_work(self.root, "t", tool="claude"))
         out = self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
         self.assertEqual(out["hooks"], {"session_start": False, "turn_start": False, "stop": False})

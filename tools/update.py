@@ -8,8 +8,9 @@ Mode (~/.worklog/config.json, key "update"): notify (default when this folder is
   background   check only, prints nothing. The SessionStart hook starts this detached at most once a day
                and never waits for it — hooks read only the cache file.
   rollback     return to the commit recorded before the last apply
-  --mode M     set the mode. --root DIR: after apply/rollback, reinstall the rules copy of that project
-               (tools listed in its .worklog/install.json).
+  --mode M     set the mode. After apply/rollback the user-level install (tools in ~/.worklog/install.json) is
+               reinstalled; --root DIR also reinstalls the project-level rules copy of that project (tools listed in
+               its .worklog/install.json without scope "user").
 Prints the cache as JSON. A newer major version (3.0.0) is reported but never applied: the ledger structure changes.
 """
 import argparse, datetime, json, os, re, subprocess, sys
@@ -135,15 +136,28 @@ def rollback(cache):
     return cache
 
 
+def run_installer(tool, *where):
+    p = subprocess.run([sys.executable, "-B", str(REPO / "tools" / "install_project.py"), "--tool", tool, *where],
+                       capture_output=True, text=True, timeout=30)
+    return p.returncode == 0
+
+
 def reinstall(root):
-    """Reinstall the rules copy of one project for every tool its install.json lists. Returns the tools done."""
+    """Reinstall the project-level rules copy of one project for every tool its install.json lists with a project install
+    (an entry with scope "user" only records the connection and has no copy there). Returns the tools done."""
     done = []
-    for tool in read_json(root / ".worklog" / "install.json"):
-        p = subprocess.run([sys.executable, "-B", str(REPO / "tools" / "install_project.py"), "--tool", tool, "--root", str(root)],
-                           capture_output=True, text=True, timeout=30)
-        if p.returncode == 0:
+    for tool, entry in read_json(root / ".worklog" / "install.json").items():
+        if isinstance(entry, dict) and entry.get("scope") == "user":
+            continue
+        if run_installer(tool, "--root", str(root)):
             done.append(tool)
     return done
+
+
+def reinstall_user():
+    """Reinstall the user-level rules copy for every tool in ~/.worklog/install.json (an unchanged hook stays byte-for-byte,
+    so Codex does not ask for trust again). Returns the tools done."""
+    return [tool for tool in read_json(HOME / "install.json") if run_installer(tool, "--user")]
 
 
 def main():
@@ -163,8 +177,10 @@ def main():
         cache = apply(cache)
     elif a.action == "rollback":
         cache = rollback(cache)
-    if a.root and a.action in ("apply", "rollback") and cache.get("current") != before:
-        cache["reinstalled"] = reinstall(Path(a.root).resolve())
+    if a.action in ("apply", "rollback") and cache.get("current") != before:
+        cache["reinstalled_user"] = reinstall_user()
+        if a.root:
+            cache["reinstalled"] = reinstall(Path(a.root).resolve())
     print(json.dumps(cache, ensure_ascii=False))
 
 
