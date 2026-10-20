@@ -29,7 +29,7 @@
 | `works/<id>/state.json` | 해당 원장에서 재계산하는 기계용 현황 | 코어 |
 | `works/<id>/state.md` | 같은 현황의 사람·주입용 본문 | 코어 |
 | `works/<id>/writer.json` | 마지막 작성자 정보 `{tool, session_id, seq}`, 원장·선택·독점권의 근거 아님 | 코어 |
-| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn}` | 코어, 원장·해시 연결 대상 아님 |
+| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn}`. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
 | `.lock` | 프로젝트 내 동시 변경을 flock으로 직렬화 | 코어 |
 | `off` | `{at, reason, by, quote}` JSON(reason·by는 없으면 null). 있으면 이 프로젝트 전체의 Worklog가 꺼짐, 원장 아님 | 코어 off·on, `.lock` 안에서 생성·삭제 |
 
@@ -110,9 +110,9 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 | 명령 | 역할 |
 |---|---|
 | `works` | 전체 작업 목록 JSON, 상태별 정렬 |
-| `use <id> --quote "<원문>"` | current_work·selected_turn 지정, show와 같은 상태를 본문으로 출력·last_seen 갱신, 없는 id·빈 quote 거부 |
+| `use <id> --quote "<원문>"` | current_work·selected_turn 지정, show와 같은 상태(못 본 사건 절 포함)를 본문으로 출력·last_seen 갱신, 없는 id·빈 quote 거부 |
 | `new-work "<제목>" --quote "<원문>"` | 작업 생성 후 선택, 결과에 id 반환 |
-| `show [--work <id>]` | 현재 또는 지정 작업 현황 출력·투영 복구·last_seen 갱신, 현재 작업 없으면 목록·exit 0 |
+| `show [--work <id>]` | 현재 또는 지정 작업 현황 출력·투영 복구·last_seen 갱신, 현재 작업 없으면 목록·exit 0. 세션이 알려져 있고 `last_seen` 뒤에 사건이 있으면 본문 끝에 `## 이 세션이 아직 못 본 사건 (seq a~b)` 절(한 줄 `- <id> · <tool>:<세션 앞 8자> · <type> · <summary 80자>`, 최신 20건, 초과분은 `…외 n건` 한 줄)을 붙인다(2.23.0). 0건이면 절이 없다 |
 | `save` | stdin JSON으로 현재 또는 입력 work 작업에 사건 추가, index 갱신·saved_turn 기록 |
 | `skip "<이유>"` | 원장에 쓰지 않고 skipped_turn 기록 |
 | `verify [--work <id> \| --all]` | 잠금 안에서 투영 검증, --all은 전체와 index↔폴더 일관성 검증·writer 손상 등의 warnings 출력 |
@@ -138,6 +138,8 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 - 그 외 COMPLETED N개: <id> · <제목> (<날짜>), … (최근 갱신 3개까지. 끝난 작업도 "<id> 이어서"로 바로 잇는다)
 ## 현재 작업: <id> · <제목>
 … 이 세션 현재 작업의 state.md 전체 …
+## 이 세션이 아직 못 본 사건 (seq a~b)
+… 선택 절: 이 세션의 last_seen 뒤에 사건이 있을 때만, 최신 20건 …
 ```
 
 현재 작업이 없으면 마지막 부분은 아래와 같다. EMPTY는 index가 없거나 작업 0개, NO_CURRENT_WORK는 작업이 있지만 현재 선택 없음, PROVIDED는 현재 작업 상태 제공이다. UNAVAILABLE은 원장·index 읽기 실패나 형식 1 루트 원장 잔존으로 주입을 만들 수 없는 상태다. OFF는 `.worklog/off`가 있는 상태로, 다른 내용 없이 한 줄 `[Worklog worklog/2 SessionStart | OFF | root=…] Worklog가 꺼져 있다(이유: …, 시각: …). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.`만 주입하고 세션 파일을 만들거나 갱신하지 않는다. 꺼진 동안 turn-start·stop-hook은 아무것도 하지 않는다(차단 없음). save·skip·use·new-work·show·works는 평소대로 동작하며 JSON 결과 최상위에 `"off": true`, show·use 본문 앞에 `[Worklog OFF]` 줄을 더한다.

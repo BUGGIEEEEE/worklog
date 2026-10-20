@@ -804,6 +804,31 @@ class CoreTest(unittest.TestCase):
         self.assertNotIn("현재 범위", md)  # Map 결정만 남으면 현재 범위 줄을 생략한다
         self.assertEqual(run(self.root, "verify")[0], 0)
 
+    def test_unseen_events_section(self):
+        """2.23.0: show·use·SessionStart 주입은 이 세션의 last_seen 뒤 사건을 '못 본 사건' 절로 붙인 뒤 본 것으로 표시한다.
+        자기 사건은 들어가지 않고, 없으면 절도 없으며, 세션을 모르는 호출에는 절이 없다."""
+        self.start()
+        run(self.root, "save", {"type": "REQUEST", "summary": "첫째", "quote": "q"})
+        run(self.root, "save", {"type": "RESULT", "summary": "둘째 " + "가" * 100})
+        r, out = use(self.root, session="s2")  # ① 다른 세션이 처음 읽으면 두 사건이 절에 보인다
+        self.assertEqual(r, 0, out)
+        sect = out.split("## 이 세션이 아직 못 본 사건 (seq 1~2)")[1]
+        self.assertIn("- E0001 · codex:s1 · REQUEST · 첫째\n", sect)
+        self.assertIn("- E0002 · codex:s1 · RESULT · 둘째 " + "가" * 77 + "…\n", sect)
+        self.assertNotIn("못 본 사건", run(self.root, "show", session="s2")[1])  # ② 바로 다시 보면 절이 없다
+        run(self.root, "save", {"type": "RESULT", "summary": "셋째"}, session="s2")
+        self.assertNotIn("못 본 사건", run(self.root, "show", session="s2")[1])  # 자기 사건은 들어가지 않는다
+        r, out = run(self.root, "show")  # ③ s1에는 s2의 한 건만
+        self.assertIn("## 이 세션이 아직 못 본 사건 (seq 3~3)\n- E0003 · codex:s2 · RESULT · 셋째\n", out)
+        self.assertNotIn("E0001 ·", out.split("못 본 사건")[1])
+        self.assertNotIn("못 본 사건", run(self.root, "show")[1])
+        run(self.root, "save", {"type": "RESULT", "summary": "넷째"}, session="s2")
+        self.assertNotIn("못 본 사건", run(self.root, "show", session="", tool="", extra=["--work", "t"])[1])  # ④ 세션 없는 호출
+        r, out = hook(self.root, "hook", session="s1", tool="codex")  # ⑤ 주입에도 같은 절
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("## 이 세션이 아직 못 본 사건 (seq 4~4)\n- E0004 · codex:s2 · RESULT · 넷째", ctx)
+        self.assertNotIn("못 본 사건", run(self.root, "show")[1])  # 주입이 본 것으로 표시했다
+
     def test_show_rebuilds_state_md(self):
         self.start()
         run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["게시 금지"]})
