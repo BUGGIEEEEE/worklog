@@ -17,6 +17,16 @@
 
 In every run the model's own `save` landed in the session the hooks had created (hooks all true, no warning), which is the point of the session-id paths (`ANTIGRAVITY_CONVERSATION_ID`; the extension's `PI_SESSION_ID`). The Stop-block path was not exercised (every run saved); it is covered by unit tests. One run per cell; the user-level files and agy's 20,000-token rules budget were checked only after the merge on this machine. Details: [`docs/verification/m-20261020-v2240.md`](verification/m-20261020-v2240.md).
 
+**2.24.1 and 2.24.2 (same day, agy only).** Re-running M2/M3 on agy with `gemini-3.8-flash-medium` exposed a Stop-block loop (M2 7+ minutes). 2.24.1 blamed `invocationNum` resetting per tool call; that reading was wrong (it increases 0, 1, 2). The real cause was the Worklog hook registered twice — the test project's `.agents/hooks.json` plus the user-level `~/.gemini/config/hooks.json` installed that evening — so agy delivered every event twice and the second Stop blocked the turn the first one had just advanced. 2.24.2 makes a repeated delivery a no-op (the session remembers the last PreInvocation and Stop). Verified with both registrations loaded (agy log: `loaded 2 named hooks from 2 hooks.json file(s)`), both calling 2.24.2:
+
+| Run | core (project hook / user hook) | M2 | M3 | session turn·saved·skipped·blocked | transcript |
+|---|---|---|---|---|---|
+| r2 | 2.24.1 / 2.24.1 | PASS 232.6 s | PASS 540.4 s | 20·18·19·18, 35·3·35·34 | injected twice, repeated blocks |
+| r3 | 2.24.2 / 2.24.1 | aborted (turn 33, blocked 31) | — | — | invalid: mixed cores |
+| r4 | 2.24.2 / 2.24.2 | PASS 23.3 s | PASS 60.6 s | 2·1·0·0, 2·1·0·0 | injected once, no block |
+
+A live plan-mode turn after reinstalling (project hook + the real user hook, both 2.24.2) blocked exactly once (`blocked_turn` 1), the model skipped, the next Stop passed.
+
 2.24.0은 **agy**(Antigravity CLI: 전용 always-on 규칙 파일, `hooks.json`의 이름 붙은 훅, `PreInvocation`은 `invocationNum` 0에서만 턴으로 셈, Stop은 `{"decision": "continue"}`로 차단)와 **pi**(`session_start`·`before_agent_start`·`agent_before_settle`에서 코어를 부르고 `PI_SESSION_ID`를 설정하는 확장)에 같은 규칙·훅 지점 3개·스킬을 설치한다. 도구마다 M2(빈 `.worklog/`에서 새 작업)·M3(산출물 2개·check) 각 1회, release 브랜치로 그 도구만 프로젝트 설치, `WL_HOME` 격리. agy는 `agy -p --mode auto` 기본 모델, pi는 이 기기에 인증이 없어 격리 에이전트 폴더(`PI_CODING_AGENT_DIR`)의 `models.json`으로 로컬 OpenAI 호환 프록시(`gpt-6-astra`)를 쓰고 `-a`로 프로젝트 확장을 신뢰. 판정은 기존 M층과 같다.
 
 | 회차 | 판정 | 기록된 훅 | 초 |
@@ -27,6 +37,16 @@ In every run the model's own `save` landed in the session the hooks had created 
 | M3 pi | PASS | 셋 모두 | 64.3 |
 
 모든 회차에서 모델의 `save`가 훅이 만든 세션에 기록됐다(hooks 모두 true, 경고 없음). 이것이 세션 id 경로(`ANTIGRAVITY_CONVERSATION_ID`, 확장의 `PI_SESSION_ID`)의 확인이다. Stop 차단 경로는 타지 않았고(모두 save함) 단위 테스트로 확인한다. 셀당 1회이며, 사용자 수준 파일과 agy의 20,000토큰 규칙 예산은 병합 뒤 이 기기에서만 확인했다. 상세: [`docs/verification/m-20261020-v2240.md`](verification/m-20261020-v2240.md).
+
+**2.24.1·2.24.2(같은 날, agy만).** agy를 `gemini-3.8-flash-medium`으로 M2·M3를 다시 돌리자 Stop 차단 루프가 드러났다(M2 7분 초과). 2.24.1은 원인을 도구 호출마다 `invocationNum`이 0으로 돌아오는 것으로 적었으나 그 해석은 틀렸다(0·1·2로 증가). 진짜 원인은 Worklog 훅의 중복 등록 — 시험 프로젝트의 `.agents/hooks.json`과 그날 저녁 설치한 사용자 수준 `~/.gemini/config/hooks.json` — 으로, agy가 모든 이벤트를 두 번 보내 첫 Stop이 올린 턴을 두 번째 Stop이 막았다. 2.24.2는 같은 이벤트의 재전달을 무동작으로 만든다(세션이 마지막 PreInvocation·Stop을 기억). 두 등록이 모두 로드된 조건(agy 로그 `loaded 2 named hooks from 2 hooks.json file(s)`)에서 양쪽이 2.24.2를 부르게 하여 확인했다:
+
+| 회차 | 코어(프로젝트 훅 / 사용자 훅) | M2 | M3 | 세션 turn·saved·skipped·blocked | 전사 |
+|---|---|---|---|---|---|
+| r2 | 2.24.1 / 2.24.1 | PASS 232.6초 | PASS 540.4초 | 20·18·19·18, 35·3·35·34 | 주입 2회, 차단 반복 |
+| r3 | 2.24.2 / 2.24.1 | 중단(turn 33, blocked 31) | — | — | 무효: 코어 혼재 |
+| r4 | 2.24.2 / 2.24.2 | PASS 23.3초 | PASS 60.6초 | 2·1·0·0, 2·1·0·0 | 주입 1회, 차단 없음 |
+
+재설치 뒤 실세션 plan 모드 턴(프로젝트 훅 + 실제 사용자 훅, 둘 다 2.24.2)은 정확히 한 번 막히고(`blocked_turn` 1) 모델이 skip한 뒤 다음 Stop이 통과했다.
 
 ## 2.23.0 rule bundle — `[behavior]`, `[delegated:]`, project.md suggestion, `Map:`, unseen events (2026-10-20, 4 model runs)
 
