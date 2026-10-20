@@ -2259,6 +2259,143 @@ class AgyPiTest(Base):
         self.assertFalse((proj / ".agents").exists(), sorted(str(q) for q in proj.rglob(".agents/**/*")))  # 규칙 파일·훅·빈 폴더 모두 정리
 
 
+class UninstallRoundTripTest(Base):
+    """제거 게이트(2026-10-20 추가 지시): 사용자 수준·프로젝트 수준 × 네 도구를 임시 HOME·임시 프로젝트에 설치했다가 제거한다.
+    ① .worklog/ 원장·세션 파일 불변(--user 제거는 연결된 프로젝트를 건드리지 않고, 프로젝트 제거 --keep-records는 기록을 남긴다)
+    ② 설치 전과 제거 뒤 파일 트리 동일(빈 폴더 prune, --purge-backups --no-backup) ③ 미리 넣어 둔 다른 훅(hooks.json의 herdr 키·
+    settings의 다른 그룹)과 블록 밖 본문 불변 ④ --dry-run 삭제·수정 목록 = 설치기가 만든 파일 집합."""
+    OTHER = {"type": "command", "command": "echo other", "timeout": 5}
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()  # 설치기·제거기는 경로를 resolve해 적는다(/var → /private/var)
+        self.home = self.root / "home"
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+        # 이 기기에 있을 법한 사용자 설정: 다른 훅(herdr)과 블록 밖 본문
+        for d in (".claude", ".codex", ".gemini/config", ".pi/agent"):
+            (self.home / d).mkdir(parents=True)
+        (self.home / ".claude/CLAUDE.md").write_text("# 내 지침\n")
+        (self.home / ".claude/settings.json").write_text(json.dumps(
+            {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.OTHER]}]}}, indent=2) + "\n")
+        (self.home / ".codex/AGENTS.md").write_text("# codex 지침\n")
+        (self.home / ".codex/hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [self.OTHER]}]}}, indent=2) + "\n")
+        (self.home / ".gemini/config/hooks.json").write_text(json.dumps({"herdr": {"SessionStart": [self.OTHER]}}, indent=1))
+        (self.home / ".pi/agent/AGENTS.md").write_text("# pi 지침\n")
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    @staticmethod
+    def tree(base):
+        """{상대 경로: "dir" | 내용 sha | JSON 정규형} — 빈 폴더까지 비교한다."""
+        out = {}
+        for p in base.rglob("*"):
+            rel = str(p.relative_to(base))
+            if p.is_dir():
+                out[rel] = "dir"
+            elif p.suffix == ".json":  # 훅·설정 JSON은 설치기·제거기가 indent 2로 다시 쓴다: 내용(의미)만 비교한다
+                out[rel] = json.dumps(json.loads(p.read_text()), sort_keys=True)
+            else:
+                out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+        return out
+
+    @staticmethod
+    def norm(paths, worklog=None):
+        """비교용 경로 집합: rmtree의 끝 '/'를 떼고, .worklog/ 안의 파일은 폴더 하나로 친다(설치기는 .worklog와 install.json을 따로 적고,
+        제거기는 .worklog/ 하나로 지운다)."""
+        out = set()
+        for p in paths:
+            p = p.rstrip("/")
+            if worklog and p.startswith(str(worklog) + "/"):
+                p = str(worklog)
+            out.add(p)
+        return out
+
+    def test_uninstall_round_trip_user_and_project_four_tools(self):
+        # ── 사용자 수준 ───────────────────────────────────────────────────────────────
+        before = self.tree(self.home)
+        made = set()
+        for tool in ("claude", "codex", "agy", "pi"):
+            code, out = self.script(INST, "--tool", tool, "--user")
+            self.assertEqual(code, 0, out)
+            made |= set(out["changed"])
+        self.assertIn(str(self.wl_home / "install.json"), made)
+        # 연결된 프로젝트: 원장·세션 파일이 있는 .worklog/ (--user 제거는 건드리지 않는다)
+        proj_u = self.root / "proj_u"
+        proj_u.mkdir()
+        r, raw = run(proj_u, "new-work", session="s1", tool="claude", extra=["Habit", "--quote", "새 작업: Habit"], env=self.env)
+        self.assertEqual(r, 0, raw)
+        (proj_u / ".worklog/project.md").write_text("- [P1] 본문\n")
+        self.assertTrue((proj_u / ".worklog/sessions/claude_s1.json").exists())
+        ledger_u = self.tree(proj_u / ".worklog")
+        code, out = self.script(UNINST, "--user", "--tool", "all", "--no-backup", "--dry-run")  # ④ 삭제·수정 목록 = 설치 파일 집합
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.norm(out["user"]["removed"] + out["user"]["changed"]), self.norm(made), out["user"])
+        self.assertTrue(all(str(proj_u) not in p for p in out["user"]["removed"] + out["user"]["changed"]))  # .worklog/ 원장은 대상에 없다
+        self.assertEqual(self.tree(self.home), self.tree(self.home) | {})  # dry-run은 아무것도 바꾸지 않았다(아래 실제 제거와 대조)
+        code, out = self.script(UNINST, "--user", "--tool", "all", "--no-backup", "--purge-backups")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tree(self.home), before, "② 설치 전과 제거 뒤 사용자 폴더 트리 동일")  # ③ 다른 훅·블록 밖 본문 불변도 여기에 포함
+        self.assertEqual(json.loads((self.home / ".gemini/config/hooks.json").read_text()), {"herdr": {"SessionStart": [self.OTHER]}})
+        self.assertEqual(self.tree(proj_u / ".worklog"), ledger_u, "① 연결된 프로젝트의 원장·세션 파일 불변")
+        self.assertFalse((self.wl_home / "install.json").exists())
+        self.assertIn(str(proj_u), (self.wl_home / "installs.json").read_text())  # 연결 등록은 남는다(문서대로: 프로젝트는 그대로)
+        r, raw = run(proj_u, "show", session="s2", tool="claude", env=self.env)
+        self.assertEqual(r, 0, raw)
+        self.assertNotIn("연결되지 않은 폴더", raw)  # 기록이 남은 폴더는 여전히 연결 상태
+        # ── 프로젝트 수준 ─────────────────────────────────────────────────────────────
+        proj = self.root / "proj"
+        for d in (".git", ".claude", ".codex", ".agents"):
+            (proj / d).mkdir(parents=True)
+        (proj / "CLAUDE.md").write_text("# 프로젝트 지침\n")
+        (proj / "AGENTS.md").write_text("# 프로젝트 agents\n")
+        (proj / ".gitignore").write_text("node_modules/\n")
+        (proj / ".claude/settings.local.json").write_text(json.dumps({"hooks": {"SessionStart": [{"matcher": "startup", "hooks": [self.OTHER]}]}}, indent=2) + "\n")
+        (proj / ".codex/hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [self.OTHER]}]}}, indent=2) + "\n")
+        (proj / ".agents/hooks.json").write_text(json.dumps({"herdr": {"SessionStart": [self.OTHER]}}, indent=1))
+        before = self.tree(proj)
+        made = set()
+        for tool in ("claude", "codex", "agy", "pi"):
+            code, out = self.script(INST, "--tool", tool, "--root", str(proj))
+            self.assertEqual(code, 0, out)
+            made |= set(out["changed"])
+        self.assertEqual(sorted(json.loads((proj / ".worklog/install.json").read_text())), ["agy", "claude", "codex", "pi"])
+        r, raw = run(proj, "new-work", session="s1", tool="claude", extra=["Habit", "--quote", "새 작업: Habit"], env=self.env)
+        self.assertEqual(r, 0, raw)
+        (proj / ".worklog/project.md").write_text("- [P1] 본문\n")
+        records = {k: v for k, v in self.tree(proj / ".worklog").items() if k.split("/")[0] in ("works", "index.json", "project.md")}
+        worklog = proj / ".worklog"
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "all", "--keep-records", "--no-backup", "--dry-run")
+        self.assertEqual(code, 0, out)
+        listed = out["projects"][0]["removed"] + out["projects"][0]["changed"]
+        self.assertFalse([p for p in listed if any(p.startswith(str(worklog / n)) for n in ("works", "index.json", "project.md"))], listed)  # 원장은 대상에 없다
+        self.assertIn(str(worklog / "sessions") + "/", out["projects"][0]["removed"])  # 마지막 도구가 가면 세션 파일은 상태로서 지워진다(문서대로)
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "all", "--delete-records", "--no-backup", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.norm(out["projects"][0]["removed"] + out["projects"][0]["changed"], worklog), self.norm(made, worklog), out["projects"][0])  # ④
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "all", "--keep-records", "--no-backup", "--purge-backups")
+        self.assertEqual(code, 0, out)
+        self.assertEqual({k: v for k, v in self.tree(worklog).items() if k.split("/")[0] in ("works", "index.json", "project.md")}, records, "① 기록 불변")
+        self.assertFalse((worklog / "sessions").exists() or (worklog / "install.json").exists())
+        self.assertEqual(json.loads((proj / ".agents/hooks.json").read_text()), {"herdr": {"SessionStart": [self.OTHER]}})  # ③
+        self.assertEqual((proj / "AGENTS.md").read_text(), "# 프로젝트 agents\n")
+        self.assertEqual((proj / "CLAUDE.md").read_text(), "# 프로젝트 지침\n")
+        self.assertIn(".worklog/", (proj / ".gitignore").read_text())  # 기록이 남는 동안 .gitignore 줄도 남는다
+        r, raw = run(proj, "show", session="s2", tool="claude", env=self.env)
+        self.assertNotIn("연결되지 않은 폴더", raw)  # 기록이 남은 폴더는 여전히 연결 상태(사용자 수준 Hook이 기록)
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "all", "--delete-records", "--no-backup", "--purge-backups")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tree(proj), before, "② 기록까지 지우면 설치 전 트리와 동일")
+        r, raw = run(proj, "show", session="s3", tool="claude", env=self.env)
+        self.assertIn("연결되지 않은 폴더", raw)  # 기록이 가면 NOT_CONNECTED로 돌아간다
+        self.assertNotIn(str(proj), json.loads((self.wl_home / "installs.json").read_text()))  # registry에서 빠진다(proj_u만 남음)
+
+
 class LongLedgerTest(unittest.TestCase):
     """TEST-SPEC-3 U1: 긴 원장(사건 40+)에서 결정 교체 사슬·산출물 요약·출처별 해제·COMPLETED 뒤 새 작업·주입 크기."""
     def setUp(self):
