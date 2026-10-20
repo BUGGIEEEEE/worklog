@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Worklog shared core (format 2): several works per project, one append-only event log per work.
 
-Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | off | on | version | update | help | hook | turn-start | stop-hook
+Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | reassign | rename | off | on | version | update | help
+           | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
            sessions/<tool>_<session>.json, install.json?, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
 Connected: a folder whose .worklog/ exists. The first new-work creates it (user-level install, 2.21.0) and the
            installer's --root mode creates it too; the hooks say NOT_CONNECTED elsewhere.
+Root:      without --root, commands and hooks use candidate_root(cwd) (2.25.0): cwd when it is connected, else the nearest
+           folder with .worklog/index.json up to the git top level, else the git top level, else (not git) cwd.
 Standard library only. Never runs business commands.
 """
-import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, uuid
+import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time, uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.24.2"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.25.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -33,8 +36,12 @@ WORKTREE_WARNING = ("git worktree 안입니다. 여기서 저장한 기록은 �
                     "기록은 본 저장소 세션에서 하고, 여기서 저장했다면 병합 전에 충돌을 사람이 정리하세요.")
 HOOK_WARNING = ("Hook 미작동 의심: 이 세션 파일에 Hook 기록이 하나도 없습니다(SessionStart·UserPromptSubmit·Stop). Hook이 꺼져 있거나 "
                 "신뢰되지 않았거나 세션 ID가 다릅니다. Codex는 /hooks에서 신뢰, Claude Code는 .claude/settings.local.json을 확인하고 사용자에게 보고하세요.")
+STARTED = time.time()  # this process's start: a Stop hook that began before the previous Stop of its session finished is a duplicate (2.25.0)
+SESSIONSTART_DUP = 5  # seconds: the same SessionStart source again within this is a duplicate registration (2.25.0)
 NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. "
                  "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
+EMPTY_GUIDE = ("기존 작업이 없다. 첫 기록 대상 요청에서 묻지 않고 new-work로 새 작업을 만들고 그 턴에 save한다"
+               "(제목은 사용자가 주면 그대로, 없으면 요청에서 정한다).")  # 2.25.0, auto=on. auto=off: NO_WORK_GUIDE
 NOT_CONNECTED = ("Worklog에 연결되지 않은 폴더입니다({root}에 .worklog 없음). 사용자가 `새 작업: <제목>`이라 하면 "
                  "`new-work \"<제목>\" --quote \"<원문>\"`이 이 폴더를 연결합니다. 그 전에는 Worklog 절차(작업 지정 질문·save·skip)를 적용하지 않습니다.")
 
@@ -42,15 +49,12 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 {
   "work": "habit-plan",                    # 선택. 생략하면 이 세션의 현재 작업(use/new-work로 정함)
   "type": "REQUEST",                       # REQUEST APPROVAL D_USER D_AGENT ASSUMPTION RESULT VERIFICATION BLOCKER CORRECTION CHECKPOINT HANDOFF CHANGE Q
-  "summary": "이번 턴에 일어난 일 한두 문장",   # 위임한 턴은 첫머리에 "[delegated: 안내문 초안] E0003 서브에이전트가 note-guide.md 초안 작성, 두 문장 확인". 결정·제약 글자에는 쓰지 않는다
+  "summary": "이번 턴에 일어난 일 한두 문장",
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
-  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
-                {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],  # 모델이 제안한 것은 사용자 발언과 같은 save에 있어도 "source": "model"을 붙인다 → [모델]로 표시
-  "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],  # 계속 지킬 금지·자료 범위만. 작업량·목표 범위는 decisions에. 해제는 constraints_remove
-                                           # "다음 요청까지 작성 보류"처럼 요청이 오면 끝나는 것은 waiting에
-                                           # "파일은 만들지 마"·"두 줄로 답해"처럼 이번 턴에만 적용되는 지시는 기록하지 않는다. "외부 게시 금지"처럼 계속 적용되는 것만 제약이다
-                                           # 운영 지시(도구·서브에이전트·평가기·Hook·Goal·질문 방식·테스트 실행 여부에 대한 "~하지 마/써라")는 제약이 아니다. 그 턴에 지키고 summary에만 남긴다
+  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},
+                {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],
+  "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],
   "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
   "waiting": ["note-guide.md는 다음 요청까지 작성 보류", "확인 필요: 2화는 원작 282행부터라고 가정"],  # 전체 교체. 생략하면 유지, []면 비움. 확인 안 된 가정도 여기에
   "next_action": "다음 행동",
@@ -60,29 +64,11 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
                                            # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
                                            # ② "미반영: <이유>" — 작업 방식 제약이나 그림·압축 파일처럼 인용할 수 없는 것. 정상이며 결과의 unreflected에 표시
-                                           # 규칙 문장을 본문에 써 넣고 그대로 인용하지 않는다. 그런 인용은 결과의 self_quoted에 표시된다
-                                           # 제약 문장을 본문에 옮겨 적지 않는다(일부만 바꿔 써도 같다). "제약을 반영해 달라"는 본문이 제약을 어기지 않게 쓰라는 뜻이다
 }
-필드는 필요한 것만 넣는다. 거부되면 메시지대로 고쳐 다시 실행한다. 소스 코드를 읽을 필요는 없다.
-"기록이 바뀌었습니다" 거부는 다른 세션이 저장했다는 뜻: show로 읽고 반영한 뒤 다시 저장한다.
+필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
 결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·삭제). 사용자에게 알린다.
-읽기 전용 턴(저장할 것이 없음): python3 -B wl.py skip "이유" — 원장에는 아무것도 쓰지 않는다.
-
-작업 선택 — 사용자가 지정한다. 모델이 임의로 고르거나 만들지 않는다.
-  python3 -B wl.py works                                         작업 목록(JSON)
-  python3 -B wl.py use habit-plan --quote "habit-plan 이어서 해"   기존 작업을 이 세션의 현재 작업으로(현황 출력, show 불필요)
-  python3 -B wl.py new-work "습관 계획 habit-plan" --quote "새 작업: 습관 계획"
-                                       새 작업을 만들고 현재 작업으로(id 반환: 제목의 영문·숫자 → habit-plan, 한글만·숫자만이면 work, work-2…)
-                                       결과의 notice: 다른 작업의 제약은 새 작업에 적용되지 않는다. 이어받을 것은 맡긴 프롬프트에 적힌 것만 저장하고, 없으면 사용자에게 확인한다
-  python3 -B wl.py show [--work <id>]                            현황 읽기(현재 작업이 없으면 목록)
-  python3 -B wl.py verify [--work <id> | --all]
-  python3 -B wl.py archive <id> / reopen <id>                    COMPLETED ↔ ACTIVE
-현재 작업이 없고 사용자 지정도 없으면 한 번 묻고 skip으로 마친다. 작업이 하나뿐이고 "이어서"면 그 작업을 use한다.
-
-켜고 끄기 — 사용자가 말할 때만. 원장에는 쓰지 않는다(꺼진 기간은 기록에 남지 않는다).
-  python3 -B wl.py off --quote "워크로그 꺼" [--reason "이유"]    이 프로젝트 전체를 끈다(.worklog/off)
-  python3 -B wl.py on                                           다시 켠다"""
+명령: works · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force] · show [--work <id>] · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id> · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -105,6 +91,50 @@ def sha(data):
 
 def store(root):
     return Path(root).resolve() / ".worklog"
+
+
+def connected_here(p):
+    """p/.worklog is a connection: a directory that is not just the user's WL_HOME (~/.worklog holds config, registry and
+    manifest; it counts only when it also holds works, i.e. the home folder itself is a Worklog project)."""
+    d = p / ".worklog"
+    if not d.is_dir():
+        return False
+    return d.resolve() != WL_HOME.resolve() or (d / "index.json").is_file()
+
+
+def has_works(p):
+    """p/.worklog/index.json exists and p/.worklog is not WL_HOME (the upward search never joins the home folder's store)."""
+    d = p / ".worklog"
+    return (d / "index.json").is_file() and d.resolve() != WL_HOME.resolve()
+
+
+def git_top(cwd):
+    """The nearest folder at or above cwd with a .git entry (directory, or file in a worktree), or None."""
+    for p in (cwd, *cwd.parents):
+        if os.path.lexists(p / ".git"):
+            return p
+    return None
+
+
+def root_info(cwd):
+    """candidate_root (2.25.0) with its reasons: {root, cwd, git (top level or None), outside (a folder above the git top
+    level whose Worklog records were not joined, or None)}. Rules (PLAN-auto-connect §6-2): cwd when it is connected
+    (2.21.0 behaviour); inside git, the nearest folder up to the git top level with .worklog/index.json, else the git top
+    level (no new store in a subfolder); not git: cwd (no upward search, so ~ or a temp folder above is never joined)."""
+    cwd = Path(cwd).resolve()
+    top = git_top(cwd)
+    info = {"cwd": cwd, "git": top, "outside": None, "root": cwd}
+    if connected_here(cwd) or top is None:
+        return info
+    path = (cwd, *cwd.parents)
+    inside = path[1:path.index(top) + 1]
+    info["root"] = next((p for p in inside if has_works(p)), top)
+    info["outside"] = next((p for p in path[path.index(top) + 1:] if has_works(p)), None)
+    return info
+
+
+def candidate_root(cwd):
+    return root_info(cwd)["root"]
 
 
 def identity(args):
@@ -162,7 +192,10 @@ class SessionCorrupt(Exception):
 
 def new_session():
     return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, "agy_pre": None, "agy_stop": None,
+            "hook_keys": {}, "new_work_turn": None,
             **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model call of this turn has started. agy_pre/agy_stop (2.24.2): last PreInvocation/Stop event seen, so a hook registered twice (project + user hooks.json) acts once
+    # hook_keys (2.25.0): the last SessionStart / UserPromptSubmit / Stop key of claude·codex hooks (a second identical call is a
+    # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work
 
 
 def load_session(d, tool, sid):
@@ -178,6 +211,10 @@ def load_session(d, tool, sid):
         raise SessionCorrupt(path)
     s = new_session()
     s.update({k: data[k] for k in s if k in data})
+    if not (isinstance(s["hook_keys"], dict) and all(isinstance(v, str) for v in s["hook_keys"].values())):
+        s["hook_keys"] = {}  # 2.25.0 helper keys: a bad value only loses duplicate detection, it never makes the file corrupt
+    if type(s["new_work_turn"]) is not int:
+        s["new_work_turn"] = None
     if (any(type(s[k]) is not int for k in SESSION_TURNS)
             or not (s["current_work"] is None or isinstance(s["current_work"], str))
             or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())
@@ -289,6 +326,12 @@ def home_json(name):
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def auto_mode():
+    """WL_HOME/config.json "auto": "off" keeps the 2.24 behaviour in folders that are not connected (wait for `새 작업:`);
+    anything else, or no key, is "on" (2.25.0, user decision). A project's .worklog/off still wins inside it."""
+    return "off" if home_json("config.json").get("auto") == "off" else "on"
 
 
 def update_mode():
@@ -657,6 +700,12 @@ def apply(state, ev):
             raise Reject("목표는 처음 한 번만 정합니다. 바뀐 목표는 decisions로 남기세요.")
         s["goal"] = c["goal"]
     ids = {x["id"] for x in s["decisions"]}
+    for did, why in (c.get("decisions_remove") or {}).items():  # 2.25.0: only reassign writes it (a misfiled decision leaves this work)
+        if did not in ids:
+            raise Reject(f"decisions_remove {did}: 유효 결정에 없는 ID입니다. 현재: {sorted(ids)}")
+        s["decisions"] = [x for x in s["decisions"] if x["id"] != did]
+        s["superseded"].append({"id": did, "by_event": eid, "reason": why})
+        ids.discard(did)
     for d in c.get("decisions", []):
         rep = d.get("replaces")
         if rep:
@@ -678,8 +727,9 @@ def apply(state, ev):
             raise Reject(f"constraints_remove {cid}: 유효 제약에 없는 ID입니다. 현재: {sorted(cids)}")
         s["constraints"] = [x for x in s["constraints"] if x["id"] != cid]
         s["removed_constraints"].append({"id": cid, "reason": why, "by_event": eid})
-    for text in c.get("constraints", []):
-        s["constraints"].append({"id": f"C{ev['next_c']}", "text": text, "event": eid, "source": source})
+    for text in c.get("constraints", []):  # a {"text", "source"} item (2.25.0, reassign only) keeps the source it had in the other work
+        text, src = (text["text"], text.get("source") or source) if isinstance(text, dict) else (text, source)
+        s["constraints"].append({"id": f"C{ev['next_c']}", "text": text, "event": eid, "source": src})
         ev["next_c"] += 1
     for key in ("waiting", "next_action", "status"):
         if key in c:
@@ -1058,6 +1108,12 @@ def cmd_new_work(args):
     fresh = not d.is_dir()  # 2.21.0: 폴더를 처음 만드는 new-work가 이 프로젝트를 연결한다
     d.mkdir(exist_ok=True)
     with locked(d):
+        sess = session_or_new(d, tool, sid)
+        # 2.25.0: a second new-work of one session in one counted turn is usually a retry after an unclear result, and would
+        # make "<id>-2". Turn 0 means no hook counts this session's turns (or its folder was just connected), so it is not checked.
+        if sess["turn"] > 0 and sess["new_work_turn"] == sess["turn"] and not getattr(args, "force", False):
+            raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {sess['current_work']}를 만들었습니다. 재시도라면 works로 확인하고 "
+                         "그 작업을 그대로 쓰세요. 정말 하나 더 만들려면 --force를 붙이세요.")
         index = index_or_new(d)
         works = works_root(d)
         wid = make_id(title, set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set()))
@@ -1067,7 +1123,7 @@ def cmd_new_work(args):
         write_index(d, index)
         # fresh: the hooks of this session ran while the folder was not connected and could not leave a record, so the
         # "Hook 미작동 의심" warning would be wrong here; "connect" in hooks_seen stands for them until a hook records itself.
-        update_session(d, tool, sid, current_work=wid, selected_turn=session_or_new(d, tool, sid)["turn"],
+        update_session(d, tool, sid, current_work=wid, selected_turn=sess["turn"], new_work_turn=sess["turn"],
                        **({"hooks_seen": {"connect": now()}} if fresh else {}))
         others = other_constraints(d, index, wid)
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
@@ -1100,8 +1156,7 @@ def set_status(args, status, summary):
         events, prev = read_events(work_dir(d, wid))
         ev = new_event(events, prev, "CHECKPOINT", tool, sid, summary, None, [], {"status": status})
         commit(d, index, wid, ev)
-        if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == len(events):  # 최신을 보던 세션은 자기 사건 뒤도 최신
-            update_session(d, tool, sid, seen=(wid, ev["seq"]))
+        mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])  # 최신을 보던 세션은 자기 사건 뒤도 최신
     print(json.dumps({"ok": True, "work": wid, "status": status, "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
 
 
@@ -1111,6 +1166,141 @@ def cmd_archive(args):
 
 def cmd_reopen(args):
     set_status(args, "ACTIVE", "작업 재개")
+
+
+# --- 잘못 고른 작업의 정정 (2.25.0). 원장은 작업별 추가 전용: 사건을 옮기지 않고 양쪽에 서로를 가리키는 CORRECTION을 남긴다 ---
+
+EVENT_ID = re.compile(r"E(\d{1,6})")
+
+
+def event_ids(spec, events):
+    """"E0003-E0005", "E0003,E0005" or "E0003" → those ids of this work, in ledger order (each must exist)."""
+    have, out = {e["id"] for e in events}, []
+    for part in str(spec or "").replace(" ", "").split(","):
+        lo, _, hi = part.partition("-")
+        a, b = EVENT_ID.fullmatch(lo), EVENT_ID.fullmatch(hi or lo)
+        if not (a and b) or int(a.group(1)) > int(b.group(1)):
+            raise Reject(f"--events 형식: E0003-E0005 또는 E0003,E0007 (받은 값: {spec!r})")
+        out += [f"E{n:04d}" for n in range(int(a.group(1)), int(b.group(1)) + 1)]
+    missing = [i for i in out if i not in have]
+    if missing:
+        raise Reject(f"작업에 없는 사건: {missing}. show의 사건 목록에서 범위를 고르세요.")
+    return sorted(set(out))
+
+
+def mark_seen_if_current(d, tool, sid, wid, before, after):
+    """A session that had read this work up to `before` has read its own event too (archive/reopen, reassign, rename)."""
+    if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == before:
+        update_session(d, tool, sid, seen=(wid, after))
+
+
+def cmd_reassign(args):
+    """reassign <wrong> <right> --events E0003-E0005 --quote: ⒜ CORRECTION in the wrong work that removes the decisions and
+    constraints those events added, ⒝ CORRECTION in the right work that records them again (new D/C ids, artifacts rehashed,
+    original quotes in refs), ⒞ the right work becomes this session's current work. One .lock; ⒝ failing after ⒜ is reported
+    as partial, and the same command run again writes ⒝ only."""
+    wrong, right = args.arg, getattr(args, "arg2", None)
+    usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"'
+    if not (wrong and right and getattr(args, "events", None)):
+        raise Reject(f"{usage} 형식입니다.")
+    if wrong == right:
+        raise Reject("잘못된 작업과 맞는 작업이 같습니다.")
+    tool, sid = identity(args)
+    need_quote(args, usage, said="잘못 골랐다고 한")
+    d = store(args.root)
+    if not d.is_dir():
+        raise Reject(NOT_CONNECTED.format(root=d.parent))
+    result, failed = None, None
+    with locked(d):
+        index = index_or_new(d)
+        entry(index, wrong), entry(index, right)
+        wevents, wprev = read_events(work_dir(d, wrong))
+        ids = event_ids(args.events, wevents)
+        span = ids[0] if len(ids) == 1 else (f"{ids[0]}-{ids[-1]}" if len(ids) == int(ids[-1][1:]) - int(ids[0][1:]) + 1 else ", ".join(ids))
+        marks = lambda e, kind, work: {r.get("id") for r in e.get("refs") or [] if r.get("kind") == kind and r.get("work", work) == work}
+        done_a = next((e for e in wevents if e.get("type") == "CORRECTION" and sorted(marks(e, "misfiled", wrong)) == ids
+                       and marks(e, "refiled_to", right)), None)  # a partial run before: ⒜ is there
+        revents, rprev = read_events(work_dir(d, right))
+        if done_a and any(done_a["id"] in marks(e, "correction", wrong) for e in revents):
+            raise Reject(f"이미 옮겼습니다: {wrong} {done_a['id']} ↔ {right}. show --work {right}로 확인하세요.")
+        before, _ = fold(wevents[:done_a["seq"] - 1] if done_a else wevents)  # what those events had put in the wrong work
+        sel = set(ids)
+        decs = [x for x in before["decisions"] if x["event"] in sel]
+        cons = [x for x in before["constraints"] if x["event"] in sel]
+        arts = [x for x in before["artifacts"] if x["event"] in sel]
+        a_id, b_id = (done_a["id"] if done_a else f"E{len(wevents) + 1:04d}"), f"E{len(revents) + 1:04d}"
+        if not done_a:
+            why = f"{right}로 옮김(reassign)"
+            changes = {k: v for k, v in (("decisions_remove", {x["id"]: why for x in decs}),
+                                         ("constraints_remove", {x["id"]: why for x in cons})) if v}
+            refs = [{"kind": "misfiled", "id": i} for i in ids] + [{"kind": "refiled_to", "work": right, "id": b_id}]
+            ev_a = new_event(wevents, wprev, "CORRECTION", tool, sid, f"[misfiled → {right}] {span}", args.quote, refs, changes)
+            commit(d, index, wrong, ev_a)
+            mark_seen_if_current(d, tool, sid, wrong, len(wevents), ev_a["seq"])
+        try:
+            rstate, _ = fold(revents)
+            have_d, have_c = {norm(x["text"]) for x in rstate["decisions"]}, {norm(x["text"]) for x in rstate["constraints"]}
+            src = lambda x: {"source": x["source"]} if x.get("source") else {}
+            changes = {}
+            new_d = [dict(text=x["text"], **src(x)) for x in decs if norm(x["text"]) not in have_d]
+            new_c = [dict(text=x["text"], **src(x)) for x in cons if norm(x["text"]) not in have_c]
+            already = [x["text"] for x in decs if norm(x["text"]) in have_d] + [x["text"] for x in cons if norm(x["text"]) in have_c]
+            new_a, gone = [], []
+            for a in arts:
+                path = d.parent / a["path"]
+                (new_a.append({"path": a["path"], "sha256": sha(path.read_bytes())}) if path.is_file() else gone.append(a["path"]))
+            for key, value in (("decisions", new_d), ("constraints", new_c), ("artifacts", new_a)):
+                if value:
+                    changes[key] = value
+            by_id = {e["id"]: e for e in wevents}
+            refs = [dict({"kind": "refiled_from", "work": wrong, "id": i}, **({"quote": by_id[i]["quote"]} if isinstance(by_id[i].get("quote"), str) else {}))
+                    for i in ids] + [{"kind": "correction", "work": wrong, "id": a_id}]
+            ev_b = new_event(revents, rprev, "CORRECTION", tool, sid, f"[refiled ← {wrong}] {span}", args.quote, refs, changes)
+            rebuilt = commit(d, index, right, ev_b)
+        except (Reject, OSError, ValueError) as e:
+            failed = f"{type(e).__name__}: {e}" if not isinstance(e, Reject) else str(e)
+        else:
+            update_session(d, tool, sid, seen=(right, ev_b["seq"]), current_work=right,
+                           selected_turn=session_or_new(d, tool, sid)["turn"])
+            result = {"ok": True, "from": wrong, "to": right, "events": ids, "misfiled": a_id, "refiled": ev_b["id"],
+                      "moved": {"decisions": [x["id"] for x in decs], "constraints": [x["id"] for x in cons],
+                                "artifacts": [a["path"] for a in new_a]},
+                      **({"artifacts_missing": gone} if gone else {}),
+                      **({"already_there": already} if already else {}),  # same text already active in the right work: not added twice
+                      "current_work": right,
+                      "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
+                      "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]]}
+    if failed:
+        print(json.dumps({"ok": False, "partial": True, "misfiled": a_id, "error": failed,
+                          "message": f"{wrong}에 정정 사건 {a_id}만 남고 {right} 쪽 기록이 실패했습니다. 원인을 고친 뒤 같은 reassign 명령을 "
+                                     "다시 실행하면 맞는 작업 쪽만 기록합니다."}, ensure_ascii=False))
+        sys.exit(2)
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_rename(args):
+    """rename <id> "<new title>" --quote: index title only (the id and the ledger lines stay), plus one CHANGE event."""
+    wid, title = args.arg, NEW_WORK_PREFIX.sub("", str(getattr(args, "arg2", None) or "")).strip()
+    usage = 'rename <id> "<새 제목>" --quote "<사용자 원문>"'
+    if not (wid and title):
+        raise Reject(f"{usage} 형식입니다.")
+    tool, sid = identity(args)
+    need_quote(args, usage, said="제목을 바꾸라고 한")
+    d = store(args.root)
+    if not d.is_dir():
+        raise Reject(NOT_CONNECTED.format(root=d.parent))
+    with locked(d):
+        index = index_or_new(d)
+        w = entry(index, wid)
+        old = w["title"]
+        if old == title:
+            raise Reject(f"작업 {wid}의 제목이 이미 '{title}'입니다.")
+        events, prev = read_events(work_dir(d, wid))
+        w["title"] = title  # commit writes the index and state.md (its heading shows the title)
+        ev = new_event(events, prev, "CHANGE", tool, sid, f"제목 변경: {old} → {title}", args.quote, [], {})
+        commit(d, index, wid, ev)
+        mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])
+    print(json.dumps({"ok": True, "work": wid, "title": title, "old_title": old, "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
 
 
 # --- 읽기 ---
@@ -1337,7 +1527,8 @@ def cmd_on(args):
 # --- Hook ---
 
 def hook_input(args):
-    """Hook event from stdin → (store dir, (tool, session) or None, event). args.root is set to the event's cwd.
+    """Hook event from stdin → (store dir, (tool, session) or None, event). args.root is set to candidate_root of the
+    event's cwd (2.25.0; an event without cwd keeps --root or the process cwd's candidate), args.root_info to its reasons.
     Connected = .worklog/ directory exists; otherwise store dir is None: SessionStart says so in one line and the other
     two hooks stay silent."""
     try:
@@ -1349,7 +1540,8 @@ def hook_input(args):
     cwd = event.get("cwd")
     if not cwd and isinstance(event.get("workspacePaths"), list) and event["workspacePaths"]:  # agy (Antigravity CLI) hooks.json payload (2.24.0)
         cwd = event["workspacePaths"][0]
-    d = store(cwd if isinstance(cwd, str) and cwd else args.root)
+    args.root_info = root_info(cwd) if isinstance(cwd, str) and cwd else {"root": Path(args.root).resolve(), "cwd": Path(args.root).resolve(), "git": git_top(Path(args.root).resolve()), "outside": None}
+    d = store(args.root_info["root"])
     args.root = str(d.parent)
     if not d.is_dir():
         return None, None, event
@@ -1407,7 +1599,7 @@ def injection(d, who):
         else:
             out.append("기록 없음. 첫 save가 기록을 만든다.")
     else:
-        out += ["## 현재 작업 없음", NO_WORK_GUIDE]
+        out += ["## 현재 작업 없음", EMPTY_GUIDE if not works and auto_mode() == "on" else NO_WORK_GUIDE]
     return ("EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"), "\n".join(out) + "\n"
 
 
@@ -1419,16 +1611,55 @@ def hook_output(tool, text):
     return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False)
 
 
+def not_connected_line(args, fork):
+    """The one NOT_CONNECTED line (2.25.0): root = candidate_root, auto = the user's config, git = whether cwd is in a git
+    work tree, then what to do (auto=on: connect on the first request worth recording; auto=off: the 2.24 text)."""
+    info, auto = args.root_info, auto_mode()
+    head = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={info['root']} | auto={auto} | git={'yes' if info['git'] else 'no'}"
+            + (" | FORK" if fork else "") + "] ")
+    if auto == "off":
+        body = ("이 폴더는 Worklog에 연결되지 않았다. 사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 "
+                "적용하지 않는다.")
+    else:
+        body = (f"이 폴더는 Worklog에 연결되지 않았다. 첫 기록 대상 요청(사용자가 결과를 원하는 요청. 인사·도구 조작·한 줄 확인은 아님)에서 "
+                f"묻지 않고 new-work \"<제목>\" --quote \"<요청 원문>\" --root {shlex.quote(str(info['root']))}로 연결하고 그 턴에 save한다. "
+                "그 전에는 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.")
+    if info["root"] != info["cwd"]:
+        body += f" root는 세션 폴더 {info['cwd']}가 아니라 " + ("가장 가까운 상위 Worklog 기록 폴더다." if has_works(info["root"]) else "git 최상위 폴더다.")
+    if info["outside"]:
+        body += f" 상위 폴더 {info['outside']}의 Worklog 기록은 git 경계 밖이라 쓰지 않는다(합류는 사용자가 --root로 정한다)."
+    return head + body + "\n"
+
+
+def sessionstart_duplicate(d, who, event):
+    """Inside locked(d), claude·codex (2.25.0): True when this SessionStart repeats the session's last one (same source within
+    SESSIONSTART_DUP seconds: the hook is registered twice, e.g. user + project settings). Otherwise records this one's key.
+    An event without `source` is never a duplicate (and records nothing)."""
+    src = event.get("source")
+    if not (isinstance(src, str) and src):
+        return False
+    s = session_or_new(d, *who)
+    last_src, _, at = s["hook_keys"].get("SessionStart", "").rpartition("@")
+    try:
+        if last_src == src and 0 <= time.time() - float(at) < SESSIONSTART_DUP:
+            return True
+    except ValueError:
+        pass
+    update_session(d, *who, hook_keys=dict(s["hook_keys"], SessionStart=f"{src}@{time.time():.3f}"))
+    return False
+
+
 def cmd_hook(args):
     """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection(); agy: injectSteps).
     Valid without a session ID; then no session file is touched and there is no current work.
-    Not connected (no .worklog/): one NOT_CONNECTED line, no session file, no update check (2.21.0) — without it the rules'
-    "no injection → show" path would make the model ask for a work in every folder once the hooks are user-level."""
-    d, who, _ = hook_input(args)
+    Not connected (no .worklog/ at candidate_root): one NOT_CONNECTED line, no session file, no update check (2.21.0) —
+    without it the rules' "no injection → show" path would make the model ask for a work in every folder once the hooks are
+    user-level. source "fork" (2.25.0) adds `| FORK` to the header: a side branch of a conversation (its own session id, so
+    its own session file without a current work); the rules keep it from saving until the user names a work."""
+    d, who, event = hook_input(args)
+    fork = event.get("source") == "fork"
     if not d:
-        line = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={args.root}] 이 폴더는 Worklog에 연결되지 않았다. "
-                "사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.\n")
-        print(hook_output(args.tool, line))
+        print(hook_output(args.tool, not_connected_line(args, fork)))
         return
     if args.tool == "agy" and who:  # 2.24.2: a second SessionStart from a duplicate registration, before any turn → nothing to add
         try:
@@ -1444,11 +1675,15 @@ def cmd_hook(args):
                 f"시각: {norm(off.get('at') or '') or '알 수 없음'}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
         print(hook_output(args.tool, line))
         return
+    if who and args.tool != "agy":
+        with locked(d):
+            if sessionstart_duplicate(d, who, event):
+                return  # the first call of the pair already injected
     try:
         status, text = injection(d, who)
     except (Reject, OSError, ValueError) as e:
         text, status = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE"
-    head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
+    head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}" + (" | FORK" if fork else "") + "]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
     spawn_update_check()
     head += update_note()
     if who:
@@ -1471,10 +1706,15 @@ def cmd_turn_start(args):
         with locked(d):
             s = session_or_new(d, *who)
             key = f"{event.get('invocationNum')}/{event.get('initialNumSteps')}" if agy else None
+            # claude·codex (2.25.0): the prompt's own id (Codex sends turn_id; prompt_id if a tool sends one). No id → counted as before
+            pid = None if agy else next((v for v in (event.get("prompt_id"), event.get("turn_id")) if isinstance(v, str) and v), None)
             if agy and key == s.get("agy_pre"):  # the same PreInvocation delivered again by a second hook registration (2.24.2)
                 pass
+            elif pid and s["hook_keys"].get("UserPromptSubmit") == pid:  # the same prompt delivered again by a second registration
+                pass
             elif not (agy and s.get("in_turn")):
-                update_session(d, *who, turn=s["turn"] + 1, in_turn=True, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()), **({"agy_pre": key} if agy else {}))
+                update_session(d, *who, turn=s["turn"] + 1, in_turn=True, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()),
+                               **({"agy_pre": key} if agy else {}), **({"hook_keys": dict(s["hook_keys"], UserPromptSubmit=pid)} if pid else {}))
             elif agy:
                 update_session(d, *who, agy_pre=key)
     if agy:
@@ -1505,13 +1745,24 @@ def cmd_stop_hook(args):
                 return
             if agy:
                 s["agy_stop"] = event.get("executionNum")
+            active = event.get("stop_hook_active") is True
+            last_turn, _, last = s["hook_keys"].get("Stop", "").partition("@")
+            try:  # claude·codex (2.25.0): started before the session's previous Stop had finished, at the turn that Stop left, with
+                # the same stop_hook_active: the same Stop run by a second registration (they run in parallel). Already judged
+                if not agy and last_turn == f"{s['turn']}/{int(active)}" and STARTED < float(last):
+                    answer(False)
+                    return
+            except ValueError:
+                pass
             # Blocked once already: stop_hook_active (Claude Code, Codex) or this core's own mark (2.24.0: agy and pi hooks carry no such
             # flag). agy re-enters the loop with a new PreInvocation, which starts turn+1 (2.24.1), so the mark covers that turn too.
             once = event.get("stop_hook_active") is True or s["blocked_turn"] == s["turn"] \
                 or (agy and s["blocked_turn"] and s["turn"] - s["blocked_turn"] == 1)
             done = s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]) or once
+            after = s["turn"] + 1 if done else s["turn"]
             update_session(d, *who, in_turn=False, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"agy_stop": s["agy_stop"], "agy_pre": None} if agy else {}),
-                           **({"turn": s["turn"] + 1} if done else {"blocked_turn": s["turn"]}))
+                           **({"turn": after} if done else {"blocked_turn": s["turn"]}),
+                           **({} if agy else {"hook_keys": dict(s["hook_keys"], Stop=f"{after}/{int(active)}@{time.time():.6f}")}))
     except SessionCorrupt as e:
         if event.get("stop_hook_active") is not True:  # 한 번 막힌 뒤에는 다시 막지 않는다(무한 반복 방지)
             answer(True, f"Worklog: 세션 파일을 읽을 수 없습니다({e}). save 또는 skip으로 다시 만든 뒤 마치세요.")
@@ -1555,20 +1806,24 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어 (형식 2)")
     commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
                 "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
+                "reassign": cmd_reassign, "rename": cmd_rename,
                 "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook,
                 "version": cmd_version, "update": cmd_update}
     ap.add_argument("command", choices=[*commands, "help"])
-    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen의 작업 id / new-work의 제목 / update의 check·rollback")
+    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen·rename의 작업 id / reassign의 잘못된 작업 id / new-work의 제목 / update의 check·rollback")
+    ap.add_argument("arg2", nargs="?", help="reassign의 맞는 작업 id / rename의 새 제목")
     ap.add_argument("--mode", choices=UPDATE_MODES, help="update: 갱신 알림 방식 설정(notify·off)")
     ap.add_argument("--root")
     ap.add_argument("--tool")
     ap.add_argument("--session")
-    ap.add_argument("--quote", help="use·new-work: 사용자가 작업을 지정한 원문 / off: 사용자가 끄라고 한 원문")
+    ap.add_argument("--quote", help="use·new-work·reassign·rename: 사용자가 작업을 지정하거나 고치라고 한 원문 / off: 사용자가 끄라고 한 원문")
     ap.add_argument("--reason", help="off: 끄는 이유(선택)")
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
+    ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
+    ap.add_argument("--force", action="store_true", help="new-work: 같은 턴의 두 번째 new-work 거부를 풀어 하나 더 만든다")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
-    args.root = args.root or os.getcwd()
+    args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
     if args.command == "help":
         print(f"worklog core {VERSION} (format {FORMAT})\n" + SAVE_HELP)
         return

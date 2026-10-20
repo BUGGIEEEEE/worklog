@@ -361,12 +361,13 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(json.loads(hook(self.root, "stop-hook", session="other")[1] or "{}"), {})  # 턴 시작 없는 세션은 통과
 
     def test_hooks_silent_without_worklog(self):
-        """2.21.0: SessionStart says NOT_CONNECTED in one line (root = the event's cwd); turn-start·stop-hook stay silent."""
+        """2.21.0: SessionStart says NOT_CONNECTED in one line (root = the event's cwd); turn-start·stop-hook stay silent.
+        2.25.0: the header also carries auto= and git=; with auto=on the line says to connect on the first request worth recording."""
         r, out = hook(self.root, "hook")
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         self.assertEqual((r, ctx.count("\n")), (0, 1))
-        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.root.resolve()}]"), ctx)
-        self.assertIn('"새 작업: <제목>"', ctx)
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.root.resolve()} | auto=on | git=no] "), ctx)
+        self.assertIn(f'new-work "<제목>" --quote "<요청 원문>" --root {self.root.resolve()}', ctx)
         for cmd in ("turn-start", "stop-hook"):
             self.assertEqual(hook(self.root, cmd), (0, ""), cmd)
         self.assertFalse((self.root / ".worklog").exists())
@@ -1239,7 +1240,7 @@ class WorksTest(Base):
         ctx = self.ctx()
         self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | EMPTY | root={self.root.resolve()}]\n"
                                        "이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"))
-        self.assertIn("/ 전체 0개)\n- (없음)\n## 현재 작업 없음\n사용자에게 작업을 지정받을 때까지 저장하지 않는다.", ctx)
+        self.assertIn("/ 전체 0개)\n- (없음)\n## 현재 작업 없음\n기존 작업이 없다. 첫 기록 대상 요청에서 묻지 않고 new-work로", ctx)  # 2.25.0 auto=on
         self.assertNotIn("## 프로젝트 공통", ctx)
         new_work(self.root, "Habit Plan", tool="claude")
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "h", "quote": "q", "next_action": "가" * 70}, tool="claude"))
@@ -1853,10 +1854,13 @@ class UserScopeTest(Base):
         code, out = self.install("--tool", "claude", "--user", "--dry-run")
         self.assertEqual((code, out["scope"], out["dry_run"]), (0, "user", True))
         self.assertEqual(sorted(Path(c).name for c in out["changed"]), ["CLAUDE.md", "SKILL.md", "settings.json"])
+        self.assertEqual(out["config"], {"path": str(self.wl_home / "config.json"), "auto": "on"})  # 2.25.0: auto 키가 없으면 on을 적는다(changed와 별도)
         self.assertEqual(self.tree(self.home), before)  # dry-run은 아무것도 안 쓴다
         self.assertFalse((self.wl_home / "install.json").exists())
+        self.assertEqual(json.loads((self.wl_home / "config.json").read_text()), {"update": "off"})
         code, out = self.install("--tool", "claude", "--user")
         self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads((self.wl_home / "config.json").read_text()), {"update": "off", "auto": "on"})  # 다른 키 유지
         guide = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertEqual(guide.count("worklog-shared:begin"), 1)
         self.assertIn("| NOT_CONNECTED |", guide)  # 2.21.0 규칙 첫 줄
@@ -1876,6 +1880,7 @@ class UserScopeTest(Base):
         after = self.tree(self.home)
         code, out = self.install("--tool", "claude", "--user")  # 두 번째 실행: 파일 불변(Hook 바이트 유지), 매니페스트만 다시 씀
         self.assertEqual((code, [Path(c).name for c in out["changed"]]), (0, ["install.json"]))
+        self.assertNotIn("config", out)  # auto 키가 이미 있으면 그대로 둔다
         self.assertEqual(self.tree(self.home), after)
         code, out = self.install("--tool", "codex", "--user")
         self.assertEqual(code, 0, out)
@@ -1901,7 +1906,7 @@ class UserScopeTest(Base):
     def test_not_connected_hook_and_commands(self):
         r, out = hook(self.proj, "hook", env=self.env)
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.proj.resolve()}]"), ctx)
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={self.proj.resolve()} | auto=on | git=yes] "), ctx)
         self.assertFalse((self.proj / ".worklog").exists())
         self.assertFalse((self.wl_home / "update.json").exists())  # 갱신 검사를 띄우지 않는다
         self.assertEqual(hook(self.proj, "turn-start", env=self.env), (0, ""))
@@ -2394,6 +2399,328 @@ class UninstallRoundTripTest(Base):
         r, raw = run(proj, "show", session="s3", tool="claude", env=self.env)
         self.assertIn("연결되지 않은 폴더", raw)  # 기록이 가면 NOT_CONNECTED로 돌아간다
         self.assertNotIn(str(proj), json.loads((self.wl_home / "installs.json").read_text()))  # registry에서 빠진다(proj_u만 남음)
+
+
+class AutoConnectTest(Base):
+    """2.25.0 (PLAN-auto-connect §7 U층): 루트 후보, NOT_CONNECTED 헤더, auto 설정, FORK, Hook 중복 키, 같은 턴 new-work 거부,
+    reassign·rename, 규칙 블록 1단계 축소."""
+    # 2.24.2 adapters/rules.md 2~17행(규칙 16항목)의 sha256 앞 16자리. 3행(NOT_CONNECTED)·6행(현재 작업 없음)은 2.25.0에서 교체
+    RULES_2_24_2 = {2: "6f4cbb6931ca7278", 3: "9415f22b28ed4f08", 4: "2e10507d74e79527", 5: "86b9cf7f20f0afbd", 6: "570ad4f7baee2e95",
+                    7: "22fc65f3ab7e8b9e", 8: "2308274279d90633", 9: "eeab50635b48198f", 10: "3385bef279bf3858", 11: "dcc8129b563ce938",
+                    12: "a5865adb6b96621d", 13: "9f29b4a6c8ecf04e", 14: "6838a8a38ec8acf4", 15: "eff8a02e99ac056d", 16: "7486ca233ae3ffa5",
+                    17: "349c6f0508465c04"}
+    REPLACED = {3, 6}
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+        self.wl = load_wl()
+
+    def home(self, **config):
+        h = Path(tempfile.mkdtemp())
+        (h / "config.json").write_text(json.dumps(dict({"update": "off"}, **config)))
+        return {"WL_HOME": str(h)}
+
+    def mk(self, *parts, git=False, records=False, worktree=False):
+        p = self.root.joinpath(*parts)
+        p.mkdir(parents=True, exist_ok=True)
+        if git:
+            (p / ".git").mkdir()
+        if worktree:
+            (p / ".git").write_text("gitdir: /elsewhere\n")
+        if records:
+            (p / ".worklog").mkdir()
+            (p / ".worklog/index.json").write_text('{"format": "worklog/2", "works": {}}')
+        return p
+
+    def plain(self, cwd, *argv, session="s1", tool="claude", payload=None, env=None):
+        """A command as the model runs it: no --root, cwd = the session folder."""
+        e = dict(clean_env(), WL_TOOL=tool, WL_SESSION_ID=session, **(env or {}))
+        p = subprocess.run([sys.executable, "-B", str(WL), *argv], input=json.dumps(payload) if payload else "",
+                           capture_output=True, text=True, env=e, cwd=str(cwd))
+        return p.returncode, p.stdout
+
+    def state(self, wid):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    def events(self, wid):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    # --- 루트 후보 (§6-2) ---
+    def test_candidate_root_cases(self):
+        info = lambda *parts: self.wl.root_info(self.root.joinpath(*parts))
+        r = self.mk("g", git=True)
+        self.mk("g", "a", "b")
+        self.assertEqual(info("g")["root"], r)                                  # git 루트에서 연 세션
+        self.assertEqual((info("g", "a", "b")["root"], info("g", "a", "b")["git"]), (r, r))  # 하위 폴더: 기록이 없으면 git 루트
+        self.mk("g", "a", records=True)
+        self.assertEqual(info("g", "a", "b")["root"], r / "a")                  # 가장 가까운 상위 .worklog/index.json
+        self.mk("g", records=True)
+        self.assertEqual(info("g", "a", "b")["root"], r / "a")                  # 중첩: 가까운 쪽이 이긴다
+        n = self.mk("n", "c")
+        self.mk("n", records=True)
+        self.assertEqual((info("n", "c")["root"], info("n", "c")["git"]), (n, None))  # git 아님: cwd, 상위 탐색 없음
+        x = self.mk("x", records=True)
+        y = self.mk("x", "y", git=True)
+        self.mk("x", "y", "z")
+        i = info("x", "y", "z")
+        self.assertEqual((i["root"], i["outside"]), (y, x))                    # git 경계 밖 기록은 합류하지 않고 알림만
+        w = self.mk("g", "wt", worktree=True)
+        self.mk("g", "wt", "s")
+        self.assertEqual(info("g", "wt", "s")["root"], w)                       # worktree: .git 파일이 있는 폴더
+        c = self.mk("g", "conn")
+        (c / ".worklog").mkdir()
+        self.assertEqual(info("g", "conn")["root"], c)                          # cwd가 연결돼 있으면 cwd(2.21.0 그대로)
+        h = self.mk("h", git=True)
+        self.mk("h", "home", records=True)
+        self.mk("h", "home", "s")
+        with mock.patch.object(self.wl, "WL_HOME", h / "home" / ".worklog"):
+            self.assertEqual(info("h", "home", "s")["root"], h)               # 상위 탐색은 WL_HOME을 고르지 않는다
+            bare = self.mk("bare")
+            (bare / ".worklog").mkdir()
+            with mock.patch.object(self.wl, "WL_HOME", bare / ".worklog"):
+                self.assertFalse(self.wl.connected_here(bare))                 # 기록 없는 WL_HOME(~/.worklog)은 연결이 아니다
+
+    def test_not_connected_header_fields(self):
+        g = self.mk("g", git=True)
+        sub = self.mk("g", "sub")
+        ctx = json.loads(hook(sub, "hook")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={g} | auto=on | git=yes] "), ctx)
+        self.assertIn(f"root는 세션 폴더 {sub}가 아니라 git 최상위 폴더다.", ctx)
+        self.assertEqual(ctx.count("\n"), 1)
+        x = self.mk("x", records=True)
+        y = self.mk("x", "y", git=True)
+        ctx = json.loads(hook(y, "hook")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f"상위 폴더 {x}의 Worklog 기록은 git 경계 밖이라 쓰지 않는다", ctx)
+        self.assertNotIn("세션 폴더", ctx)
+        ctx = json.loads(hook(sub, "hook", env=self.home(auto="off"))[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={g} | auto=off | git=yes] "), ctx)
+        self.assertIn('사용자가 "새 작업: <제목>"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.', ctx)  # 옛 동작
+        self.assertNotIn("new-work", ctx)
+        for cmd in ("turn-start", "stop-hook"):
+            self.assertEqual(hook(sub, cmd), (0, ""))
+        self.assertFalse((g / ".worklog").exists() or (sub / ".worklog").exists())  # 세션을 열기만 해서는 아무것도 만들지 않는다
+
+    def test_subfolder_session_joins_git_root(self):
+        g = self.mk("g", git=True)
+        sub = self.mk("g", "sub")
+        out = self.ok(self.plain(sub, "new-work", "구조 설명", "--quote", "이 코드 구조 설명해 줘"))  # --root 없이: 후보 루트
+        self.assertTrue(out["connected"])
+        self.assertTrue((g / ".worklog/index.json").is_file())
+        self.assertFalse((sub / ".worklog").exists())                          # 하위에 새로 만들지 않는다
+        self.assertIn(".worklog/", (g / ".gitignore").read_text())
+        ctx = json.loads(hook(sub, "hook")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | PROVIDED | root={g}]"), ctx)
+        hook(sub, "turn-start")
+        self.assertEqual(json.loads((g / ".worklog/sessions/claude_s1.json").read_text())["turn"], 1)
+        self.assertEqual(json.loads(hook(sub, "stop-hook")[1])["decision"], "block")  # 상위 프로젝트 기록으로 판정
+        self.ok(self.plain(sub, "save", payload={"type": "REQUEST", "summary": "[auto] 제목 자동: 구조 설명", "quote": "이 코드 구조 설명해 줘"}))
+        self.assertEqual(len(self.events_at(g, out["id"])), 1)
+        explicit = self.mk("other")
+        self.ok(run(explicit, "new-work", tool="claude", extra=["t", "--quote", "q"]))  # --root가 있으면 그대로
+        self.assertTrue((explicit / ".worklog/index.json").is_file())
+
+    def events_at(self, root, wid):
+        return (root / ".worklog/works" / wid / "events.jsonl").read_text().splitlines()
+
+    def test_new_work_unwritable_folder(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores permissions")
+        ro = self.mk("ro")
+        ro.chmod(0o555)
+        try:
+            r, out = run(ro, "new-work", tool="claude", extra=["t", "--quote", "q"])
+        finally:
+            ro.chmod(0o755)
+        self.assertEqual(r, 2, out)
+        res = json.loads(out)
+        self.assertEqual(res["ok"], False)
+        self.assertIn("PermissionError", res["error"])
+        self.assertFalse((ro / ".worklog").exists())
+        self.assertEqual(hook(ro, "stop-hook"), (0, ""))                       # 미연결: Stop은 막지 않는다
+
+    def test_off_wins_and_auto_off_keeps_connected_projects(self):
+        self.ok(new_work(self.root, "t", tool="claude"))
+        self.ok(run(self.root, "off", tool="claude", extra=["--quote", "워크로그 꺼"]))
+        self.assertIn("| OFF |", self.ctx())                                  # 프로젝트 off > 사용자 auto
+        self.ok(run(self.root, "on", tool="claude"))
+        self.assertIn("| PROVIDED |", self.ctx(env=self.home(auto="off")))    # auto=off는 미연결 폴더에만 영향
+        (self.d / "index.json").write_text('{"format": "worklog/2", "works": {}}')
+        self.assertIn("사용자에게 작업을 지정받을 때까지 저장하지 않는다.", self.ctx(session="z", env=self.home(auto="off")))  # 빈 목록 + auto=off: 옛 안내
+        self.assertIn("기존 작업이 없다.", self.ctx(session="y"))
+
+    def test_fork_header_and_separate_session(self):
+        self.ok(new_work(self.root, "t", tool="claude"))
+        parent = session_file(self.root).read_bytes()
+        ctx = self.ctx(session="f1", source="fork")
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NO_CURRENT_WORK | root={self.root} | FORK]\n"), ctx)
+        self.assertIsNone(json.loads(session_file(self.root, "claude_f1").read_text())["current_work"])
+        self.assertEqual(session_file(self.root).read_bytes(), parent)         # 본 세션 파일은 그대로
+        self.assertNotIn("FORK", self.ctx(session="f2", source="startup"))
+        bare = self.mk("bare")
+        ctx = json.loads(hook(bare, "hook", source="fork")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("| auto=on | git=no | FORK] ", ctx)
+
+    def test_second_new_work_in_one_turn(self):
+        self.ok(new_work(self.root, "A", tool="claude"))
+        self.ok(new_work(self.root, "B", tool="claude"))                       # 턴 0(Hook이 턴을 세지 않음): 검사하지 않는다
+        hook(self.root, "turn-start")
+        self.ok(new_work(self.root, "C", tool="claude"))
+        self.refused(new_work(self.root, "D", tool="claude"), "--force")         # 같은 턴 두 번째
+        self.assertNotIn("d", self.index()["works"])
+        out = self.ok(run(self.root, "new-work", tool="claude", extra=["D", "--quote", "q", "--force"]))
+        self.assertEqual(out["id"], "d")
+        self.assertEqual(hook(self.root, "stop-hook"), (0, ""))                # 선택한 턴: 통과
+        hook(self.root, "turn-start")
+        self.ok(new_work(self.root, "E", tool="claude"))                       # 다음 턴은 다시 된다
+        self.ok(new_work(self.root, "F", tool="other", session="s2"))          # 다른 세션은 따로 센다
+
+    # --- Hook 중복 키 ---
+    def test_duplicate_sessionstart_and_prompt(self):
+        self.ok(new_work(self.root, "t", tool="claude"))
+        self.assertIn("| PROVIDED |", self.ctx(source="startup"))
+        self.assertEqual(hook(self.root, "hook", source="startup"), (0, ""))   # 같은 source가 5초 안에 다시: 무동작
+        self.assertIn("| PROVIDED |", self.ctx(source="resume"))               # 다른 source는 새 SessionStart
+        self.assertIn("| PROVIDED |", self.ctx())                              # source 없는 이벤트는 키가 없다(지금처럼)
+        turn = lambda: json.loads(session_file(self.root).read_text())["turn"]
+        for kw, want in (({"turn_id": "t1"}, 1), ({"turn_id": "t1"}, 1), ({"turn_id": "t2"}, 2),
+                         ({"prompt_id": "p1"}, 3), ({"prompt_id": "p1"}, 3), ({}, 4), ({}, 5)):
+            self.assertEqual(hook(self.root, "turn-start", **kw), (0, ""))
+            self.assertEqual(turn(), want, kw)
+        self.assertEqual(json.loads(session_file(self.root).read_text())["hook_keys"]["UserPromptSubmit"], "p1")
+
+    def test_duplicate_stop(self):
+        """A Stop that started before the session's previous Stop finished, at the turn that Stop left, is the same Stop run by a
+        second registration (claude·codex run hooks in parallel). STARTED is set by hand here; sequential Stops keep 2.16.0."""
+        self.ok(new_work(self.root, "t", tool="claude"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
+        hook(self.root, "turn-start")
+        wl = self.wl
+        def stop(started, **event):
+            buf = io.StringIO()
+            with mock.patch.object(wl, "STARTED", started), mock.patch("sys.stdin", io.StringIO(json.dumps(dict(cwd=str(self.root), session_id="s1", **event)))), \
+                    mock.patch("sys.stdout", buf):
+                wl.cmd_stop_hook(Namespace(tool="claude", root=str(self.root), session=None))
+            return buf.getvalue()
+        sess = lambda: json.loads(session_file(self.root).read_text())
+        self.assertEqual(json.loads(stop(time.time()))["decision"], "block")
+        self.assertEqual((stop(0.0), sess()["turn"], sess()["blocked_turn"]), ("", 1, 1))     # 중복: 차단을 풀지 않는다
+        self.assertEqual(stop(time.time(), stop_hook_active=True), "")
+        self.assertEqual(sess()["turn"], 2)                                                     # 한 번 막힌 뒤 Stop: 통과, 턴 진행
+        self.assertEqual((stop(0.0, stop_hook_active=True), sess()["turn"]), ("", 2))           # 그 중복은 턴을 또 넘기지 않는다
+        self.assertEqual(json.loads(stop(time.time()))["decision"], "block")                    # 차례로 온 다음 Stop은 판정(2.16.0)
+        self.assertEqual(json.loads(hook(self.root, "stop-hook", stop_hook_active=True)[1] or "{}"), {})
+
+    # --- reassign · rename (§4-5) ---
+    def two_works(self):
+        self.ok(new_work(self.root, "A"))
+        self.ok(new_work(self.root, "B"))
+        self.used(use(self.root, "b"), "b")
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "b1", "quote": "b 요청", "decisions": [{"text": "b 고유 결정"}]}))
+        self.used(use(self.root, "a"), "a")
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "a1", "quote": "3장까지, 게시 금지", "decisions": [{"text": "3장까지"}],
+                                        "constraints": ["게시 금지"]}))
+        (self.root / "note.md").write_text("3장까지 표로 정리한다.")
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "a2", "quote": "표로", "decisions": [{"text": "표로 정리", "source": "model"}],
+                                        "artifacts": [{"path": "note.md"}], "check": {"D1": "'3장까지 표로'", "D2": "'표로 정리한다'", "C1": "미반영: 게시 안 함"}}))
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "a3", "constraints": ["외부 공유 금지"]}))
+
+    def test_reassign_moves_decisions_and_constraints(self):
+        self.two_works()
+        before = (self.d / "works/a/events.jsonl").read_bytes()
+        out = self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "그거 B 작업이야"]))
+        self.assertEqual((out["misfiled"], out["refiled"], out["current_work"]), ("E0004", "E0002", "b"))
+        self.assertEqual(out["moved"], {"decisions": ["D1", "D2"], "constraints": ["C1"], "artifacts": ["note.md"]})
+        a, b = self.state("a"), self.state("b")
+        self.assertEqual(a["decisions"], [])                                                    # 잘못된 작업의 현황에서 사라진다
+        self.assertEqual([c["text"] for c in a["constraints"]], ["외부 공유 금지"])               # 범위 밖 사건의 제약은 그대로
+        self.assertEqual([(x["id"], x["text"], x["source"]) for x in b["decisions"]],
+                         [("D1", "b 고유 결정", "user"), ("D2", "3장까지", "user"), ("D3", "표로 정리", "model")])  # 새 id, 출처 유지
+        self.assertEqual([(x["id"], x["text"], x["source"]) for x in b["constraints"]], [("C1", "게시 금지", "user")])
+        self.assertEqual([x["path"] for x in b["artifacts"]], ["note.md"])
+        self.assertTrue((self.d / "works/a/events.jsonl").read_bytes().startswith(before))      # 원본 사건은 그대로
+        ea, eb = self.events("a")[-1], self.events("b")[-1]
+        self.assertEqual((ea["type"], ea["summary"], ea["quote"]), ("CORRECTION", "[misfiled → b] E0001-E0002", "그거 B 작업이야"))
+        self.assertIn({"kind": "refiled_to", "work": "b", "id": "E0002"}, ea["refs"])
+        self.assertEqual([r["id"] for r in ea["refs"] if r["kind"] == "misfiled"], ["E0001", "E0002"])
+        self.assertEqual(eb["summary"], "[refiled ← a] E0001-E0002")
+        self.assertIn({"kind": "correction", "work": "a", "id": "E0004"}, eb["refs"])
+        self.assertIn({"kind": "refiled_from", "work": "a", "id": "E0001", "quote": "3장까지, 게시 금지"}, eb["refs"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+        self.assertIn("[모델]", (self.d / "works/b/state.md").read_text())
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "b 이어감"}))           # 현재 작업 b, 읽은 것으로 침
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "다시"]), "이미 옮겼습니다")
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0009", "--quote", "q"]), "작업에 없는 사건")
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001"]), "사용자 원문")
+        self.refused(run(self.root, "reassign", extra=["a", "a", "--events", "E0001", "--quote", "q"]), "같습니다")
+
+    def test_reassign_partial_then_retry(self):
+        self.two_works()
+        wl, real, calls = self.wl, self.wl.commit, []
+        def flaky(*a):
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("디스크 가득 참")
+            return real(*a)
+        buf = io.StringIO()
+        with mock.patch.object(wl, "commit", flaky), mock.patch("sys.stdout", buf), self.assertRaises(SystemExit) as cm:
+            wl.cmd_reassign(Namespace(arg="a", arg2="b", events="E0001", quote="B야", root=str(self.root), tool="codex", session="s1"))
+        self.assertEqual(cm.exception.code, 2)
+        res = json.loads(buf.getvalue())
+        self.assertEqual((res["ok"], res["partial"], res["misfiled"]), (False, True, "E0004"))
+        self.assertEqual(len(self.events("b")), 1)                                              # 맞는 작업 쪽은 아직 없음
+        self.assertEqual(self.state("a")["decisions"][0]["text"], "표로 정리")                  # E0001의 D1만 빠졌다
+        out = self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0001", "--quote", "B야"]))  # 같은 명령: ⒝만
+        self.assertEqual((out["misfiled"], out["refiled"]), ("E0004", "E0002"))
+        self.assertEqual([e["type"] for e in self.events("a")].count("CORRECTION"), 1)
+        self.assertEqual([x["text"] for x in self.state("b")["decisions"]], ["b 고유 결정", "3장까지"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+
+    def test_rename_title_only(self):
+        self.ok(new_work(self.root, "Habit"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "7분"}]}))
+        before = (self.d / "works/habit/events.jsonl").read_bytes()
+        out = self.ok(run(self.root, "rename", extra=["habit", "습관 계획", "--quote", "제목은 습관 계획으로"]))
+        self.assertEqual((out["work"], out["title"], out["old_title"], out["saved"]), ("habit", "습관 계획", "Habit", "E0002"))
+        self.assertEqual(self.index()["works"]["habit"]["title"], "습관 계획")
+        self.assertEqual(sorted(self.index()["works"]), ["habit"])                              # id 그대로
+        self.assertTrue((self.d / "works/habit/events.jsonl").read_bytes().startswith(before))  # 해시 체인: 앞 줄 불변
+        last = self.events("habit")[-1]
+        self.assertEqual((last["type"], last["summary"], last["changes"]), ("CHANGE", "제목 변경: Habit → 습관 계획", {}))
+        self.assertIn("habit · 습관 계획", (self.d / "works/habit/state.md").read_text())
+        self.assertEqual([d["text"] for d in self.state("habit")["decisions"]], ["7분"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+        self.refused(run(self.root, "rename", extra=["habit", "습관 계획", "--quote", "q"]), "이미")
+        self.refused(run(self.root, "rename", extra=["habit", "새 제목"]), "사용자 원문")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "이어감"}))            # 읽던 세션은 계속 저장
+
+    # --- 규칙 블록 1단계 (PLAN-block-size §7) ---
+    def test_rules_items_kept_and_save_help_dedup(self):
+        lines = (WL.parents[1] / "adapters/rules.md").read_text().split("\n")
+        have = {hashlib.sha256(l.encode()).hexdigest()[:16] for l in lines}
+        for n, h in self.RULES_2_24_2.items():
+            self.assertEqual(h in have, n not in self.REPLACED, f"2.24.2 rules.md {n}행")  # 교체한 두 줄 외에는 글자 하나 바뀌지 않았다
+        text = "\n".join(lines)
+        for part in ("`auto=on`이면 첫 기록 대상 요청", "④ 기존 작업이 하나도 없으면", "`reassign <잘못된 id> <맞는 id>", "`| FORK`가 보이면",
+                     '"기록하지 마"·"워크로그 꺼"는 `off --quote', "`기록: <id> 새 작업으로 시작(제목 자동)`"):
+            self.assertIn(part, text)
+        wl = self.wl
+        for gone in ("위임한 턴은 첫머리에", "지금 고른 방법·범위", "모델이 제안한 것은 사용자 발언과 같은 save에", "계속 지킬 금지·자료 범위만",
+                     '"다음 요청까지 작성 보류"처럼', '"파일은 만들지 마"·"두 줄로 답해"', "운영 지시(도구·서브에이전트", "그런 인용은 결과의 self_quoted",
+                     "제약 문장을 본문에 옮겨 적지 않는다", "기록이 바뀌었습니다", "소스 코드를 읽을 필요는 없다", "작업 선택 — 사용자가 지정한다"):
+            self.assertNotIn(gone, wl.SAVE_HELP)                                                # 규칙과 겹치는 9줄·거부 처리·명령 목록
+        tail = wl.SAVE_HELP.split("\n}\n", 1)[1].split("\n")
+        self.assertEqual(len(tail), 4)
+        self.assertTrue(tail[-1].startswith("명령: works · use <id> --quote · new-work"))      # 명령 목록 한 줄
+        r, out = run(self.root, "help")
+        self.assertEqual(out, f"worklog core {wl.VERSION} (format worklog/2)\n{wl.SAVE_HELP}\n")
+        spec = importlib.util.spec_from_file_location("inst_rules", INST)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        block = inst.rules("claude")
+        self.assertIn(wl.SAVE_HELP.split("\n", 1)[1], block)                                    # 코어 help와 설치 블록의 {FORMAT}이 같다
+        self.assertEqual(block.count("python3 -B wl.py"), 0)
 
 
 class LongLedgerTest(unittest.TestCase):
