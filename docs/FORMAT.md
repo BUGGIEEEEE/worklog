@@ -11,7 +11,7 @@
 ```text
 .worklog/
   index.json
-  project.md                         # 선택, 사용자 편집
+  project.md                         # 선택, 사용자 확정 뒤 기록(아래 '프로젝트 공통' 절)
   works/<id>/
     events.jsonl
     state.json
@@ -24,12 +24,12 @@
 | 파일 | 역할 | 쓰는 주체 |
 |---|---|---|
 | `index.json` | `{"format":"worklog/2","works":{"<id>":{"title":…, "status":…, "created_at":…, "updated_at":…, "last_seq":…}}}` | 코어, `.lock` flock 안에서만 갱신 |
-| `project.md` | 프로젝트 공통 목표·제약, 원장 아님 | 사용자만 편집, 설치기·코어는 생성하지 않음 |
+| `project.md` | 작업을 넘어 이 프로젝트에 적용되는 안내·결정·제약, 원장 아님 | 사용자, 또는 사용자가 "넣어"라고 확정한 뒤의 모델·확장 모듈. 코어는 읽어 주입만 하고 만들지도 쓰지도 않음 |
 | `works/<id>/events.jsonl` | 해당 작업의 추가 전용 원장, 한 줄 = 사건 | 코어 save·archive·reopen |
 | `works/<id>/state.json` | 해당 원장에서 재계산하는 기계용 현황 | 코어 |
 | `works/<id>/state.md` | 같은 현황의 사람·주입용 본문 | 코어 |
 | `works/<id>/writer.json` | 마지막 작성자 정보 `{tool, session_id, seq}`, 원장·선택·독점권의 근거 아님 | 코어 |
-| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn}` | 코어, 원장·해시 연결 대상 아님 |
+| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn}`. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
 | `.lock` | 프로젝트 내 동시 변경을 flock으로 직렬화 | 코어 |
 | `off` | `{at, reason, by, quote}` JSON(reason·by는 없으면 null). 있으면 이 프로젝트 전체의 Worklog가 꺼짐, 원장 아님 | 코어 off·on, `.lock` 안에서 생성·삭제 |
 
@@ -75,6 +75,7 @@
 - ID: 결정 `D1..`, 제약 `C1..`. 원장 순서로 다시 계산해도 같은 값이 나온다.
 - `state.md`의 산출물은 15개까지 경로·해시를 나열하고, 그보다 많으면 폴더별 개수와 최근 사건만 보여 준다. 전체 목록은 `state.json`에 있다.
 - `state.md` 제목에는 작업 id·제목이 들어간다. 각 작업의 상태를 독립적으로 계산한다. `project.md`는 원장이나 투영이 아니다.
+- `state.md`의 `## 안내 — 먼저 볼 것(Map: 결정)` 절(2.23.0): 텍스트가 `Map:`으로 시작하는 유효 결정(앞 공백 무시, 제약은 제외)을 `## 유효 결정` 앞에 따로 보인다. 그 결정은 목록에도 그대로 남고, `현재 범위(최신 결정)` 줄은 Map이 아닌 마지막 결정으로 계산한다(Map만 있으면 줄 생략). Map 결정이 없으면 절도 없다. `state.json`은 바뀌지 않는다.
 
 ## 저장과 보호
 
@@ -109,9 +110,9 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 | 명령 | 역할 |
 |---|---|
 | `works` | 전체 작업 목록 JSON, 상태별 정렬 |
-| `use <id> --quote "<원문>"` | current_work·selected_turn 지정, show와 같은 상태를 본문으로 출력·last_seen 갱신, 없는 id·빈 quote 거부 |
+| `use <id> --quote "<원문>"` | current_work·selected_turn 지정, show와 같은 상태(못 본 사건 절 포함)를 본문으로 출력·last_seen 갱신, 없는 id·빈 quote 거부 |
 | `new-work "<제목>" --quote "<원문>"` | 작업 생성 후 선택, 결과에 id 반환 |
-| `show [--work <id>]` | 현재 또는 지정 작업 현황 출력·투영 복구·last_seen 갱신, 현재 작업 없으면 목록·exit 0 |
+| `show [--work <id>]` | 현재 또는 지정 작업 현황 출력·투영 복구·last_seen 갱신, 현재 작업 없으면 목록·exit 0. 세션이 알려져 있고 `last_seen` 뒤에 사건이 있으면 본문 끝에 `## 이 세션이 아직 못 본 사건 (seq a~b)` 절(한 줄 `- <id> · <tool>:<세션 앞 8자> · <type> · <summary 80자>`, 최신 20건, 초과분은 `…외 n건` 한 줄)을 붙인다(2.23.0). 0건이면 절이 없다 |
 | `save` | stdin JSON으로 현재 또는 입력 work 작업에 사건 추가, index 갱신·saved_turn 기록 |
 | `skip "<이유>"` | 원장에 쓰지 않고 skipped_turn 기록 |
 | `verify [--work <id> \| --all]` | 잠금 안에서 투영 검증, --all은 전체와 index↔폴더 일관성 검증·writer 손상 등의 warnings 출력 |
@@ -137,6 +138,8 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 - 그 외 COMPLETED N개: <id> · <제목> (<날짜>), … (최근 갱신 3개까지. 끝난 작업도 "<id> 이어서"로 바로 잇는다)
 ## 현재 작업: <id> · <제목>
 … 이 세션 현재 작업의 state.md 전체 …
+## 이 세션이 아직 못 본 사건 (seq a~b)
+… 선택 절: 이 세션의 last_seen 뒤에 사건이 있을 때만, 최신 20건 …
 ```
 
 현재 작업이 없으면 마지막 부분은 아래와 같다. EMPTY는 index가 없거나 작업 0개, NO_CURRENT_WORK는 작업이 있지만 현재 선택 없음, PROVIDED는 현재 작업 상태 제공이다. UNAVAILABLE은 원장·index 읽기 실패나 형식 1 루트 원장 잔존으로 주입을 만들 수 없는 상태다. OFF는 `.worklog/off`가 있는 상태로, 다른 내용 없이 한 줄 `[Worklog worklog/2 SessionStart | OFF | root=…] Worklog가 꺼져 있다(이유: …, 시각: …). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.`만 주입하고 세션 파일을 만들거나 갱신하지 않는다. 꺼진 동안 turn-start·stop-hook은 아무것도 하지 않는다(차단 없음). save·skip·use·new-work·show·works는 평소대로 동작하며 JSON 결과 최상위에 `"off": true`, show·use 본문 앞에 `[Worklog OFF]` 줄을 더한다.
@@ -159,6 +162,32 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 5. 전후 원장의 줄별 해시와 파일 SHA-256을 함께 대조한다(`line_hashes_match`·`hashes_match`). 재실행은 "이미 형식 2"로 거부한다. 도구는 .worklog 밖에 쓰지 않는다.
 
 형식 1 루트 기록을 읽는 코어는 유지하지 않는다.
+
+## 프로젝트 공통 (project.md)
+
+`project.md`는 원장도 투영도 아니다. 한 작업의 결정·제약은 그 작업의 `state.md`에 남고, **여러 작업에 걸쳐 이 프로젝트에 적용되는 항목**만 여기에 둔다. 원장이나 `state.md`에서 고른 항목을 사용자가 확정("넣어")한 뒤에 기록한다. 모델은 작업을 COMPLETED로 바꾸는 턴과 사용자가 "앞으로 이 프로젝트에서는 …"이라고 말한 턴에만 넣을 줄을 보여 주고 한 번 권유하며, 확정 전에는 쓰지 않는다(규칙 2.23.0). 코어는 SessionStart마다 앞 4,000자를 주입할 뿐 이 파일을 만들거나 쓰지 않는다.
+
+권장 양식(코어는 강제하지 않는다): 절 제목 없이 유효 항목 줄만 둔다. 한 항목은 한 줄이다.
+
+```text
+- [P#] (Map:) 본문 (worklog:<프로젝트>/<작업>#E… · YYYY-MM-DD)
+```
+
+- `[P#]`는 줄 ID다. 누가 쓰든 다음 번호를 붙인다. `check` 인용으로 사용 여부를 남길 때 쓴다.
+- `Map:`은 선택이다. "무엇을 먼저 보라"는 안내(기준 문서·시작점)에만 붙이고, 규칙·제약에는 붙이지 않는다. 적용 조건은 절을 나누지 않고 본문에 자연어로 쓴다("설계 문서를 고칠 때는 …").
+- 괄호 꼬리는 출처 포인터와 확인일이다. 포인터 형식은 `worklog:<프로젝트>/<작업>#E…`이며, `<프로젝트>`는 `~/.worklog/installs.json`에 등록된 그 프로젝트 항목의 이름(등록 경로의 마지막 폴더 이름), `<작업>`은 작업 id, `E…`는 사건 ID다. 같은 형식을 확장 모듈의 전역 파일도 쓴다.
+- 항목이 바뀌면 같은 줄을 고치고 꼬리에 새 사건을 덧붙인다 `(…#E0058 → #E0144 · 날짜)`. 삭제는 사용자 확정 때만 한다.
+- 본문에 사용자 원문 quote를 옮겨 적지 않는다(출처 포인터가 대신한다). 개인 선호는 이 파일이 아니라 사용자 범위 파일(확장 모듈)에 둔다.
+- 주입은 앞 4,000자에서 잘리므로 낡은 항목은 사용자 확정으로 `project-archive.md`(주입되지 않음)로 옮긴다.
+
+```text
+- [P1] Map: 설계 기준은 docs/design-spec.md §11을 먼저 본다 (worklog:habit-app/summary-review#E0010 · 2026-10-17)
+- [P2] 대상 프로젝트 자료는 읽기 전용으로만 본다 (worklog:habit-app/summary-review#E0144 · 2026-10-17)
+- [P3] 블록 상태 표현은 C 혼합형을 쓴다 (worklog:habit-app/summary-review#E0058 → #E0123 · 2026-10-17)
+- 회의록은 docs/minutes/에 둔다
+```
+
+`.worklog/`는 보통 `.gitignore`에 들어 있으므로 이 파일은 기기 안에서만 유지된다. 공유하려면 `.gitignore`에 `!.worklog/project.md` 한 줄을 둔다.
 
 ## 의도적 생략과 한계
 

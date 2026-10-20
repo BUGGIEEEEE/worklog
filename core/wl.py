@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.22.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.23.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -26,6 +26,7 @@ ID_MAX = 40
 PROJECT_MAX = 4000
 LIST_MAX = 10
 DONE_MAX = 3      # SessionStart 목록 뒤에 보여 주는 최근 COMPLETED 작업 수
+UNSEEN_MAX = 20   # show·use·주입의 "못 본 사건" 절에 보이는 최대 사건 수(2.23.0, 가정값)
 ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
 NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
 WORKTREE_WARNING = ("git worktree 안입니다. 여기서 저장한 기록은 본 저장소와 갈라져 병합 때 .worklog/works/*/events.jsonl이 충돌합니다. "
@@ -41,7 +42,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 {
   "work": "habit-plan",                    # 선택. 생략하면 이 세션의 현재 작업(use/new-work로 정함)
   "type": "REQUEST",                       # REQUEST APPROVAL D_USER D_AGENT ASSUMPTION RESULT VERIFICATION BLOCKER CORRECTION CHECKPOINT HANDOFF CHANGE Q
-  "summary": "이번 턴에 일어난 일 한두 문장",   # 위임한 턴은 첫머리에 "[위임: 안내문 초안] 서브에이전트가 note-guide.md 초안 작성, 두 문장 확인". 결정·제약 글자에는 쓰지 않는다
+  "summary": "이번 턴에 일어난 일 한두 문장",   # 위임한 턴은 첫머리에 "[delegated: 안내문 초안] E0003 서브에이전트가 note-guide.md 초안 작성, 두 문장 확인". 결정·제약 글자에는 쓰지 않는다
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
   "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
@@ -708,12 +709,19 @@ def render(s, wid, title):
     by = s["updated_by"] or {}
     out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
            f"최초 목표(원문): {s['goal'] or '(미정)'}"]
-    if s["decisions"]:
-        last = s["decisions"][-1]
+    is_map = lambda d: str(d["text"]).lstrip().startswith("Map:")  # 2.23.0: "무엇을 먼저 보라"는 안내 결정. 범위가 아니므로 현재 범위 줄에서는 뺀다
+    scope = [d for d in s["decisions"] if not is_map(d)]
+    if scope:
+        last = scope[-1]
         out.append(f"현재 범위(최신 결정): {last['id']}: {last['text']}")
     out += ["※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
-            f"상태: {s['status']}", "", "## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
-    out += [f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d) for d in s["decisions"]] or ["- (없음)"]
+            f"상태: {s['status']}", ""]
+    line = lambda d: f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d)
+    maps = [d for d in s["decisions"] if is_map(d)]
+    if maps:  # 2.23.0: Map 결정은 결정 목록 위에도 따로 보인다. 목록에서 빼지 않으며, 없으면 절도 없다(기존 state.md와 바이트 동일)
+        out += ["## 안내 — 먼저 볼 것(Map: 결정)"] + [line(d) for d in maps] + [""]
+    out += ["## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
+    out += [line(d) for d in s["decisions"]] or ["- (없음)"]
     out += ["", "## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
     out += [f"- {c['id']}: {c['text']}{tag(c)}" for c in s["constraints"]] or ["- (없음)"]
     out += ["", "## 대기"] + ([f"- {w}" for w in s["waiting"]] or ["- (없음)"])
@@ -1140,9 +1148,31 @@ def cmd_show(args):
     print(off_note(d) + text, end="")
 
 
+def unseen_section(d, who, wid, events):
+    """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
+    the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
+    if not who or not events:
+        return ""
+    try:
+        seen = ((load_session(d, *who) or {}).get("last_seen") or {}).get(wid) or 0
+    except SessionCorrupt:
+        seen = 0
+    unseen = events[seen:]
+    if not unseen:
+        return ""
+    lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{len(events)})"]
+    for e in unseen[-UNSEEN_MAX:]:
+        summary = norm(e.get("summary") or "")
+        lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')} · "
+                     + (summary if len(summary) <= 80 else summary[:80] + "…"))
+    if len(unseen) > UNSEEN_MAX:
+        lines.append(f"- …외 {len(unseen) - UNSEEN_MAX}건(오래된 것부터 생략)")
+    return "\n".join(lines) + "\n"
+
+
 def read_work(d, wid, title, who, **session_changes):
     """Inside locked(d): one work's state text (projection repaired from the ledger if stale) and, when the
-    session is known, mark it as seen (plus session_changes). Shared by show and use."""
+    session is known, the events it has not seen yet (2.23.0) and mark it as seen (plus session_changes). Shared by show and use."""
     wd = work_dir(d, wid)
     events, _ = read_events(wd)
     state, _ = fold(events)
@@ -1154,9 +1184,10 @@ def read_work(d, wid, title, who, **session_changes):
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
     note += artifacts_note(own_missing_artifacts(d, events, state, who))
+    unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
-    return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n")
+    return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") + unseen
 
 
 def check_work(d, wid, title):
@@ -1354,12 +1385,13 @@ def injection(d, who):
     if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
         out.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
                                                               for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
-    cur = None
+    cur, unseen = None, ""
     if who:
         with locked(d):
             cur = current_work(d, who, index)
             if cur:
                 events, _ = read_events(work_dir(d, cur))
+                unseen = unseen_section(d, who, cur, events)
                 update_session(d, *who, seen=(cur, len(events)))
             mark_hook(d, who, "SessionStart")
     if cur:
@@ -1369,6 +1401,8 @@ def injection(d, who):
             st = fold(events)[0]
             out += [x for x in (artifacts_note(own_missing_artifacts(d, events, st, who)).rstrip("\n"),) if x]
             out.append(render(st, cur, title).rstrip("\n"))
+            if unseen:
+                out.append(unseen.rstrip("\n"))
         else:
             out.append("기록 없음. 첫 save가 기록을 만든다.")
     else:
