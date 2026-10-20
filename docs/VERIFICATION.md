@@ -15,7 +15,7 @@
 | M2 pi | PASS | all three | 28.8 |
 | M3 pi | PASS | all three | 64.3 |
 
-In every run the model's own `save` landed in the session the hooks had created (hooks all true, no warning), which is the point of the session-id paths (`ANTIGRAVITY_CONVERSATION_ID`; the extension's `PI_SESSION_ID`). The Stop-block path was not exercised (every run saved); it is covered by unit tests. One run per cell; the user-level files and agy's 20,000-token rules budget were checked only after the merge on this machine. Details: `worklog-control/shared/runs/m-20261020-v2240/RESULTS.md`.
+In every run the model's own `save` landed in the session the hooks had created (hooks all true, no warning), which is the point of the session-id paths (`ANTIGRAVITY_CONVERSATION_ID`; the extension's `PI_SESSION_ID`). The Stop-block path was not exercised (every run saved); it is covered by unit tests. One run per cell; the user-level files and agy's 20,000-token rules budget were checked only after the merge on this machine. Details: [`docs/verification/m-20261020-v2240.md`](verification/m-20261020-v2240.md).
 
 2.24.0은 **agy**(Antigravity CLI: 전용 always-on 규칙 파일, `hooks.json`의 이름 붙은 훅, `PreInvocation`은 `invocationNum` 0에서만 턴으로 셈, Stop은 `{"decision": "continue"}`로 차단)와 **pi**(`session_start`·`before_agent_start`·`agent_before_settle`에서 코어를 부르고 `PI_SESSION_ID`를 설정하는 확장)에 같은 규칙·훅 지점 3개·스킬을 설치한다. 도구마다 M2(빈 `.worklog/`에서 새 작업)·M3(산출물 2개·check) 각 1회, release 브랜치로 그 도구만 프로젝트 설치, `WL_HOME` 격리. agy는 `agy -p --mode auto` 기본 모델, pi는 이 기기에 인증이 없어 격리 에이전트 폴더(`PI_CODING_AGENT_DIR`)의 `models.json`으로 로컬 OpenAI 호환 프록시(`gpt-6-astra`)를 쓰고 `-a`로 프로젝트 확장을 신뢰. 판정은 기존 M층과 같다.
 
@@ -26,7 +26,7 @@ In every run the model's own `save` landed in the session the hooks had created 
 | M2 pi | PASS | 셋 모두 | 28.8 |
 | M3 pi | PASS | 셋 모두 | 64.3 |
 
-모든 회차에서 모델의 `save`가 훅이 만든 세션에 기록됐다(hooks 모두 true, 경고 없음). 이것이 세션 id 경로(`ANTIGRAVITY_CONVERSATION_ID`, 확장의 `PI_SESSION_ID`)의 확인이다. Stop 차단 경로는 타지 않았고(모두 save함) 단위 테스트로 확인한다. 셀당 1회이며, 사용자 수준 파일과 agy의 20,000토큰 규칙 예산은 병합 뒤 이 기기에서만 확인했다. 상세: `worklog-control/shared/runs/m-20261020-v2240/RESULTS.md`.
+모든 회차에서 모델의 `save`가 훅이 만든 세션에 기록됐다(hooks 모두 true, 경고 없음). 이것이 세션 id 경로(`ANTIGRAVITY_CONVERSATION_ID`, 확장의 `PI_SESSION_ID`)의 확인이다. Stop 차단 경로는 타지 않았고(모두 save함) 단위 테스트로 확인한다. 셀당 1회이며, 사용자 수준 파일과 agy의 20,000토큰 규칙 예산은 병합 뒤 이 기기에서만 확인했다. 상세: [`docs/verification/m-20261020-v2240.md`](verification/m-20261020-v2240.md).
 
 ## 2.23.0 rule bundle — `[behavior]`, `[delegated:]`, project.md suggestion, `Map:`, unseen events (2026-10-20, 4 model runs)
 
