@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.24.1"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.24.2"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -161,7 +161,8 @@ class SessionCorrupt(Exception):
 
 
 def new_session():
-    return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model invocation of the current turn has started (agy: PreInvocation comes before every model call)
+    return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, "agy_pre": None, "agy_stop": None,
+            **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model call of this turn has started. agy_pre/agy_stop (2.24.2): last PreInvocation/Stop event seen, so a hook registered twice (project + user hooks.json) acts once
 
 
 def load_session(d, tool, sid):
@@ -1429,6 +1430,14 @@ def cmd_hook(args):
                 "사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.\n")
         print(hook_output(args.tool, line))
         return
+    if args.tool == "agy" and who:  # 2.24.2: a second SessionStart from a duplicate registration, before any turn → nothing to add
+        try:
+            s0 = load_session(d, *who)
+        except SessionCorrupt:
+            s0 = None
+        if s0 and "SessionStart" in s0["hooks_seen"] and s0["turn"] == 0:
+            print("{}")
+            return
     off = off_marker(d)
     if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
         line = (f"[Worklog {FORMAT} SessionStart | OFF | root={d.parent}] Worklog가 꺼져 있다(이유: {norm(off.get('reason') or '') or '없음'}, "
@@ -1457,12 +1466,18 @@ def cmd_turn_start(args):
     a turn counted per tool call put save and Stop out of step and looped). So for agy the first PreInvocation after a Stop
     (or SessionStart) starts the turn and the rest of that turn is ignored: session in_turn."""
     d, who, event = hook_input(args)
+    agy = args.tool == "agy"
     if d and who and not is_off(d):
         with locked(d):
             s = session_or_new(d, *who)
-            if not (args.tool == "agy" and s.get("in_turn")):
-                update_session(d, *who, turn=s["turn"] + 1, in_turn=True, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()))
-    if args.tool == "agy":
+            key = f"{event.get('invocationNum')}/{event.get('initialNumSteps')}" if agy else None
+            if agy and key == s.get("agy_pre"):  # the same PreInvocation delivered again by a second hook registration (2.24.2)
+                pass
+            elif not (agy and s.get("in_turn")):
+                update_session(d, *who, turn=s["turn"] + 1, in_turn=True, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()), **({"agy_pre": key} if agy else {}))
+            elif agy:
+                update_session(d, *who, agy_pre=key)
+    if agy:
         print("{}")
 
 
@@ -1485,12 +1500,18 @@ def cmd_stop_hook(args):
     try:
         with locked(d):
             s = load_session(d, *who) or new_session()
+            if agy and event.get("executionNum") is not None and s.get("agy_stop") == event.get("executionNum"):
+                answer(False)  # the same Stop delivered again by a second hook registration (2.24.2): already judged
+                return
+            if agy:
+                s["agy_stop"] = event.get("executionNum")
             # Blocked once already: stop_hook_active (Claude Code, Codex) or this core's own mark (2.24.0: agy and pi hooks carry no such
             # flag). agy re-enters the loop with a new PreInvocation, which starts turn+1 (2.24.1), so the mark covers that turn too.
             once = event.get("stop_hook_active") is True or s["blocked_turn"] == s["turn"] \
                 or (agy and s["blocked_turn"] and s["turn"] - s["blocked_turn"] == 1)
             done = s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]) or once
-            update_session(d, *who, in_turn=False, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"turn": s["turn"] + 1} if done else {"blocked_turn": s["turn"]}))
+            update_session(d, *who, in_turn=False, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"agy_stop": s["agy_stop"], "agy_pre": None} if agy else {}),
+                           **({"turn": s["turn"] + 1} if done else {"blocked_turn": s["turn"]}))
     except SessionCorrupt as e:
         if event.get("stop_hook_active") is not True:  # 한 번 막힌 뒤에는 다시 막지 않는다(무한 반복 방지)
             answer(True, f"Worklog: 세션 파일을 읽을 수 없습니다({e}). save 또는 skip으로 다시 만든 뒤 마치세요.")
