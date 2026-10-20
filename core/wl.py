@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.25.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.26.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -43,8 +43,10 @@ NO_WORK_GUIDE = ("사용자에게 작업을 지정받을 때까지 저장하지 
                  "작업이 하나뿐이고 \"이어서\"면 그 작업을 use한다.")
 EMPTY_GUIDE = ("기존 작업이 없다. 첫 기록 대상 요청에서 묻지 않고 new-work로 새 작업을 만들고 그 턴에 save한다"
                "(제목은 사용자가 주면 그대로, 없으면 요청에서 정한다).")  # 2.25.0, auto=on. auto=off: NO_WORK_GUIDE
-NOT_CONNECTED = ("Worklog에 연결되지 않은 폴더입니다({root}에 .worklog 없음). 사용자가 `새 작업: <제목>`이라 하면 "
+NOT_CONNECTED_HEAD = "Worklog에 연결되지 않은 폴더입니다({root}에 .worklog 없음)."  # show's first line (2.26.0); the line after it is not_connected_line()
+NOT_CONNECTED = (NOT_CONNECTED_HEAD + " 사용자가 `새 작업: <제목>`이라 하면 "
                  "`new-work \"<제목>\" --quote \"<원문>\"`이 이 폴더를 연결합니다. 그 전에는 Worklog 절차(작업 지정 질문·save·skip)를 적용하지 않습니다.")
+FIRST_CONNECT_NOTICE = "첫 연결 턴: Hook 세션 파일이 없어 hooks는 null(다음 턴부터 true/false)."  # 2.26.0 (D48)
 
 SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  예) python3 -B wl.py save <<'EOF' ... EOF
 {
@@ -61,6 +63,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "next_action": "다음 행동",
   "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
   "artifacts": [{"path": "note-guide.md"}],
+  "artifacts_moved": {"note-guide.md": "docs/note-guide.md"},  # 기록한 산출물 파일을 옮겼을 때 옛 경로 → 새 경로(새 경로 파일이 있어야 한다)
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
                                            # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
@@ -69,7 +72,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
 결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·삭제). 사용자에게 알린다.
-명령: works · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force] · show [--work <id>] · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id> · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
+명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -200,10 +203,11 @@ class SessionCorrupt(Exception):
 
 def new_session():
     return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, "agy_pre": None, "agy_stop": None,
-            "hook_keys": {}, "new_work_turn": None,
+            "hook_keys": {}, "new_work_turn": None, "new_work_id": None,
             **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model call of this turn has started. agy_pre/agy_stop (2.24.2): last PreInvocation/Stop event seen, so a hook registered twice (project + user hooks.json) acts once
     # hook_keys (2.25.0): the last SessionStart / UserPromptSubmit / Stop key of claude·codex hooks (a second identical call is a
-    # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work
+    # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work.
+    # new_work_id (2.26.0): the id that new-work was creating, written with new_work_turn before index.json (retry marker)
 
 
 def load_session(d, tool, sid):
@@ -223,6 +227,8 @@ def load_session(d, tool, sid):
         s["hook_keys"] = {}  # 2.25.0 helper keys: a bad value only loses duplicate detection, it never makes the file corrupt
     if type(s["new_work_turn"]) is not int:
         s["new_work_turn"] = None
+    if not isinstance(s["new_work_id"], str):
+        s["new_work_id"] = None
     if (any(type(s[k]) is not int for k in SESSION_TURNS)
             or not (s["current_work"] is None or isinstance(s["current_work"], str))
             or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())
@@ -287,7 +293,8 @@ def install_report(d, tool):
     A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
     connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
     WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
-    entry = manifest_entry(d / "install.json", tool)
+    # 2.26.0: the home folder as a project has WL_HOME as its store, whose install.json is the user-level manifest: user scope
+    entry = None if is_wl_home(d) else manifest_entry(d / "install.json", tool)
     user = entry is None or entry.get("scope") == "user"
     if user:
         entry = manifest_entry(WL_HOME / "install.json", tool)
@@ -551,7 +558,10 @@ def hooks_report(d, tool, sid):
     except SessionCorrupt:
         s = new_session()
     seen = s["hooks_seen"]
-    out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
+    if set(seen) == {"connect"}:  # 2.26.0 (D48): first connection turn, no hook has had a session file to mark yet → unknown, not false
+        out = {"hooks": dict.fromkeys(("session_start", "turn_start", "stop")), "notice": FIRST_CONNECT_NOTICE}
+    else:
+        out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
     if not seen and tool != "pi":  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
         out["warning"] = HOOK_WARNING  # pi: hooks exist only with the user-level extension (2.24.0); a project-level install has none, so no warning
     out.update(install_report(d, tool))
@@ -742,6 +752,10 @@ def apply(state, ev):
     for key in ("waiting", "next_action", "status"):
         if key in c:
             s[key] = c[key]
+    for old, new in (c.get("artifacts_moved") or {}).items():  # 2.26.0: {"<old path>": {"path", "sha256"}} — the entry keeps its place
+        if old not in {x["path"] for x in s["artifacts"]}:
+            raise Reject(f"artifacts_moved {old}: 산출물 목록에 없는 경로입니다. 현재: {[x['path'] for x in s['artifacts']]}")
+        s["artifacts"] = [dict(new, event=eid) if x["path"] == old else x for x in s["artifacts"] if x["path"] != new["path"]]
     for a in c.get("artifacts", []):
         s["artifacts"] = [x for x in s["artifacts"] if x["path"] != a["path"]] + [dict(a, event=eid)]
     s["seq"], s["updated_at"], s["updated_by"] = ev["seq"], ev["at"], {"tool": ev["tool"], "session_id": ev["session_id"]}
@@ -856,7 +870,7 @@ def validate(p, root, state):
     if not isinstance(p, dict):
         raise Reject("입력은 JSON 객체여야 합니다. `wl.py help` 참고.")
     unknown = set(p) - {"work", "type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
-                        "waiting", "next_action", "status", "artifacts", "check", "refs", "takeover",
+                        "waiting", "next_action", "status", "artifacts", "artifacts_moved", "check", "refs", "takeover",
                         "occurred_at", "source"}
     if unknown:
         raise Reject(f"알 수 없는 필드: {sorted(unknown)}. `wl.py help` 참고.")
@@ -901,6 +915,10 @@ def validate(p, root, state):
         raise Reject('decisions의 source는 "model"만 쓸 수 있습니다(모델 제안 표시). 사용자 결정은 type REQUEST/APPROVAL/D_USER로 저장합니다.')
     if not all(x for x in p.get("constraints", [])):
         raise Reject("constraints에 빈 문자열이 있습니다.")
+    moved_in = p.get("artifacts_moved")
+    if moved_in is not None and (not isinstance(moved_in, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v
+                                                                           for k, v in moved_in.items())):
+        raise Reject('artifacts_moved는 {"옛 경로": "새 경로"}처럼 문자열 값을 가진 객체여야 합니다.')
     arts, bodies = [], []
     for a in arts_in:
         path = (Path(root) / a.get("path", "")).resolve()
@@ -914,6 +932,22 @@ def validate(p, root, state):
         except UnicodeDecodeError:
             pass
     return arts, bodies
+
+
+def moved_artifacts(p, root, state):
+    """save input artifacts_moved {"old": "new"} → changes.artifacts_moved {"old": {"path": new, "sha256": hash of the new file}}
+    (2.26.0). The old path must be a recorded artifact and the new file must exist; no check quote is asked for a move."""
+    have, out = {x["path"] for x in state["artifacts"]}, {}
+    for old, new in (p.get("artifacts_moved") or {}).items():
+        if old not in have:
+            raise Reject(f"artifacts_moved: 산출물 목록에 없는 경로입니다: {old}. 현재: {sorted(have)}")
+        if old == new:
+            raise Reject(f"artifacts_moved: 옛 경로와 새 경로가 같습니다: {old}")
+        path = (Path(root) / new).resolve()
+        if not path.is_file():
+            raise Reject(f"artifacts_moved: 새 경로의 파일이 없습니다: {new}")
+        out[old] = {"path": new, "sha256": sha(path.read_bytes())}
+    return out
 
 
 def cmd_save(args):
@@ -990,6 +1024,9 @@ def cmd_save(args):
             changes["decisions"] = keep
         if arts:
             changes["artifacts"] = arts
+        moved = moved_artifacts(p, root, state)
+        if moved:
+            changes["artifacts_moved"] = moved
         ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
         for k in ("occurred_at", "source"):
             if k in p:
@@ -1117,22 +1154,29 @@ def cmd_new_work(args):
     d.mkdir(exist_ok=True)
     with locked(d):
         sess = session_or_new(d, tool, sid)
-        # 2.25.0: a second new-work of one session in one counted turn is usually a retry after an unclear result, and would
-        # make "<id>-2". Turn 0 means no hook counts this session's turns (or its folder was just connected), so it is not checked.
-        if sess["turn"] > 0 and sess["new_work_turn"] == sess["turn"] and not getattr(args, "force", False):
-            raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {sess['current_work']}를 만들었습니다. 재시도라면 works로 확인하고 "
-                         "그 작업을 그대로 쓰세요. 정말 하나 더 만들려면 --force를 붙이세요.")
         index = index_or_new(d)
+        # A second new-work of one session in one turn is usually a retry after an unclear result, and would make "<id>-2"
+        # (2.25.0). 2.26.0: turn 0 too (the first connection turn is the one that matters most), and the marker
+        # new_work_turn/new_work_id is written before index.json: a retry after a failed index write is let through (the id is
+        # not in the index), a retry after a failed session write is refused (the work exists).
+        made = sess["new_work_id"]
+        if sess["new_work_turn"] == sess["turn"] and (made is None or made in index["works"]) and not getattr(args, "force", False):
+            made = made or sess["current_work"]
+            raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {made}를 만들었습니다. 재시도라면 works로 확인하고 그 작업을 그대로 쓰세요"
+                         f"(현재 작업이 {made}가 아니면 use {made} --quote). 정말 하나 더 만들려면 --force를 붙이세요.")
         works = works_root(d)
-        wid = make_id(title, set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set()))
-        at = now()
-        index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
-        work_dir(d, wid).mkdir(parents=True)
-        write_index(d, index)
+        taken = set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set())
+        if made and made not in index["works"] and (works / made).is_dir() and not any((works / made).iterdir()):
+            taken.discard(made)  # the empty folder an earlier attempt of this turn made before its index write failed: reuse the id
+        wid = make_id(title, taken)
         # fresh: the hooks of this session ran while the folder was not connected and could not leave a record, so the
         # "Hook 미작동 의심" warning would be wrong here; "connect" in hooks_seen stands for them until a hook records itself.
-        update_session(d, tool, sid, current_work=wid, selected_turn=sess["turn"], new_work_turn=sess["turn"],
-                       **({"hooks_seen": {"connect": now()}} if fresh else {}))
+        update_session(d, tool, sid, new_work_turn=sess["turn"], new_work_id=wid, **({"hooks_seen": {"connect": now()}} if fresh else {}))
+        at = now()
+        index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
+        work_dir(d, wid).mkdir(parents=True, exist_ok=True)
+        write_index(d, index)
+        update_session(d, tool, sid, current_work=wid, selected_turn=sess["turn"])
         others = other_constraints(d, index, wid)
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
     if fresh:
@@ -1145,9 +1189,12 @@ def cmd_new_work(args):
     above = next((p for p in d.parent.parents if (p / ".worklog" / "index.json").is_file()), None)  # works there, not ~/.worklog (WL_HOME) or an empty connection
     if above:  # 상위 폴더에 이미 기록이 있으면 하위에 따로 기록하는 것이 맞는지 확인한다(기록이 갈라진다)
         notices.append(f"상위 폴더 {above}에 Worklog가 있습니다. 이 하위 폴더에 따로 기록하려는 것이 맞는지 사용자에게 확인하세요.")
+    report = hooks_report(d, tool, sid)
+    report.pop("notice", None)  # 2.26.0: new-work's notice means "constraints of other works do not apply" (the rules ask the user
+    # then); the first-connection notice goes with the turn's save·skip results only, hooks stay null here
     if notices:
         result["notice"] = " ".join(notices)
-    print(json.dumps({**result, **off_flag(d), **hooks_report(d, tool, sid)}, ensure_ascii=False))
+    print(json.dumps({**result, **off_flag(d), **report}, ensure_ascii=False))
 
 
 def set_status(args, status, summary):
@@ -1202,11 +1249,80 @@ def mark_seen_if_current(d, tool, sid, wid, before, after):
         update_session(d, tool, sid, seen=(wid, after))
 
 
+def ref_ids(e, kind, work=None):
+    """The ids of event e's refs of this kind; a ref that names a work must name `work` (misfiled refs name none)."""
+    return {r.get("id") for r in e.get("refs") or [] if isinstance(r, dict) and r.get("kind") == kind and r.get("work", work) == work}
+
+
+REASSIGN_STEPS = ("refiled", "refiled_state", "misfiled", "misfiled_state", "session")
+
+
+def reassign_progress(d, wrong, right, ids, who):
+    """Inside locked(d), 2.26.0: which steps of `reassign wrong right --events ids` are on disk, read fresh. refiled = the right
+    work's CORRECTION whose refiled_from refs are exactly these events; refiled_state = that work's state.json·state.md and index
+    entry match its ledger; misfiled = the wrong work's CORRECTION with exactly these misfiled refs and a refiled_to the right work;
+    misfiled_state = the same for the wrong work; session = this session has seen the refiled event. Also returns the events."""
+    index = index_or_new(d)
+    (wevents, wprev), (revents, rprev) = read_events(work_dir(d, wrong)), read_events(work_dir(d, right))
+    ev_b = next((e for e in revents if e.get("type") == "CORRECTION" and sorted(ref_ids(e, "refiled_from", wrong)) == ids), None)
+    ev_a = next((e for e in wevents if e.get("type") == "CORRECTION" and sorted(ref_ids(e, "misfiled")) == ids
+                 and ref_ids(e, "refiled_to", right)), None)
+
+    def state_ok(wid, events):
+        w, st = index["works"][wid], fold(events)[0]
+        return all(projection_ok(work_dir(d, wid), st, wid, w["title"], events)) and (w["last_seq"], w["status"]) == (len(events), st["status"])
+    steps = {"refiled": bool(ev_b), "refiled_state": bool(ev_b) and state_ok(right, revents),
+             "misfiled": bool(ev_a), "misfiled_state": bool(ev_a) and state_ok(wrong, wevents),
+             "session": bool(ev_b) and session_or_new(d, *who)["last_seen"].get(right, 0) >= ev_b["seq"]}
+    return {"steps": steps, "index": index, "refiled": ev_b, "misfiled": ev_a, "wrong": (wevents, wprev), "right": (revents, rprev)}
+
+
+def repair_state(d, index, wid):
+    """Inside locked(d): rebuild one work's projection and index entry from its ledger (reassign recovery, 2.26.0)."""
+    events, _ = read_events(work_dir(d, wid))
+    st = fold(events)[0]
+    project(work_dir(d, wid), st, wid, index["works"][wid]["title"])
+    index["works"][wid].update(last_seq=len(events), status=st["status"], **({"updated_at": events[-1]["at"]} if events else {}))
+    write_index(d, index)
+
+
+UPGRADE_WHY = "출처 승격: 같은 글자의 사용자 항목을 옮겨 옴(reassign)"
+
+
+def refile_changes(rstate, decs, cons):
+    """F07 (2.26.0): what the right work gets for the wrong work's decisions and constraints, judged by text and source. Not there
+    → added with its source. Same text and source, or an incoming model item over an existing user one → skipped (already_there).
+    An incoming user item over an existing model one → that model item is removed (decisions_remove / constraints_remove) and the
+    text added again as user (upgraded), so the fold says user. Returns (changes, already_there, upgraded)."""
+    changes, already, upgraded = {}, [], []
+    for key, items, remove_key in (("decisions", decs, "decisions_remove"), ("constraints", cons, "constraints_remove")):
+        have, add, remove = {}, [], {}
+        for x in rstate[key]:
+            have.setdefault(norm(x["text"]), x)
+        for x in items:
+            item = dict(text=x["text"], **({"source": x["source"]} if x.get("source") else {}))
+            old = have.get(norm(x["text"]))
+            if old is not None and not (x.get("source") == "user" and old.get("source") == "model" and old.get("id")):
+                already.append(x["text"])
+                continue
+            if old is not None:
+                remove[old["id"]] = UPGRADE_WHY
+                upgraded.append(x["text"])
+            add.append(item)
+            have[norm(x["text"])] = item  # a second same text in the selection is not added twice
+        if remove:
+            changes[remove_key] = remove
+        if add:
+            changes[key] = add
+    return changes, already, upgraded
+
+
 def cmd_reassign(args):
-    """reassign <wrong> <right> --events E0003-E0005 --quote: ⒜ CORRECTION in the wrong work that removes the decisions and
-    constraints those events added, ⒝ CORRECTION in the right work that records them again (new D/C ids, artifacts rehashed,
-    original quotes in refs), ⒞ the right work becomes this session's current work. One .lock; ⒝ failing after ⒜ is reported
-    as partial, and the same command run again writes ⒝ only."""
+    """reassign <wrong> <right> --events E0003-E0005 --quote (2.26.0 order): ⒜ CORRECTION in the right work that records the
+    decisions and constraints those events added (new D/C ids, their source kept or upgraded, artifacts rehashed, original quotes
+    in refs, refs point only at the wrong work's existing events), ⒝ CORRECTION in the wrong work that removes them, its refiled_to
+    naming the id ⒜ really got, ⒞ the right work becomes this session's current work. One .lock. A failure anywhere is reported as
+    partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones."""
     wrong, right = args.arg, getattr(args, "arg2", None)
     usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"'
     if not (wrong and right and getattr(args, "events", None)):
@@ -1218,75 +1334,97 @@ def cmd_reassign(args):
     d = store(args.root)
     if not connected(d):
         raise Reject(NOT_CONNECTED.format(root=d.parent))
-    result, failed = None, None
+    who, result, failed, after = (tool, sid), None, None, None
     with locked(d):
         index = index_or_new(d)
         entry(index, wrong), entry(index, right)
-        wevents, wprev = read_events(work_dir(d, wrong))
+        wevents, _ = read_events(work_dir(d, wrong))
         ids = event_ids(args.events, wevents)
         span = ids[0] if len(ids) == 1 else (f"{ids[0]}-{ids[-1]}" if len(ids) == int(ids[-1][1:]) - int(ids[0][1:]) + 1 else ", ".join(ids))
-        marks = lambda e, kind, work: {r.get("id") for r in e.get("refs") or [] if r.get("kind") == kind and r.get("work", work) == work}
         sel = set(ids)
-        for e in wevents:  # an event already refiled to another work is not refiled again (its rules left this work then)
-            hit = marks(e, "misfiled", wrong) & sel if e.get("type") == "CORRECTION" else set()
-            other = next((r.get("work") for r in e.get("refs") or [] if r.get("kind") == "refiled_to" and r.get("work") != right), None)
+        # An event already refiled to another work is not refiled again (its rules left this work then). 2.26.0: judged from
+        # every work's refiled_from refs (written first), and from the wrong work's own misfiled marks (2.25.0 ledgers).
+        for other in sorted(set(index["works"]) - {wrong, right}):
+            try:
+                oevents = read_events(work_dir(d, other))[0]
+            except Reject:
+                continue
+            for e in oevents:
+                hit = ref_ids(e, "refiled_from", wrong) & sel if e.get("type") == "CORRECTION" else set()
+                if hit:
+                    raise Reject(f"이미 {other}로 옮긴 사건입니다: {', '.join(sorted(hit))}({other} {e['id']}). show --work {other}로 확인하세요.")
+        for e in wevents:
+            hit = ref_ids(e, "misfiled") & sel if e.get("type") == "CORRECTION" else set()
+            other = next((r.get("work") for r in e.get("refs") or [] if isinstance(r, dict) and r.get("kind") == "refiled_to"
+                          and r.get("work") != right), None)
             if hit and other:
                 raise Reject(f"이미 {other}로 옮긴 사건입니다: {', '.join(sorted(hit))}({wrong} {e['id']}). show --work {other}로 확인하세요.")
-        done_a = next((e for e in wevents if e.get("type") == "CORRECTION" and sorted(marks(e, "misfiled", wrong)) == ids
-                       and marks(e, "refiled_to", right)), None)  # a partial run before: ⒜ is there
-        revents, rprev = read_events(work_dir(d, right))
-        if done_a and any(done_a["id"] in marks(e, "correction", wrong) for e in revents):
-            raise Reject(f"이미 옮겼습니다: {wrong} {done_a['id']} ↔ {right}. show --work {right}로 확인하세요.")
-        before, _ = fold(wevents[:done_a["seq"] - 1] if done_a else wevents)  # what those events had put in the wrong work
+        pr = reassign_progress(d, wrong, right, ids, who)
+        steps, index, ev_b, ev_a = pr["steps"], pr["index"], pr["refiled"], pr["misfiled"]
+        (wevents, wprev), (revents, rprev) = pr["wrong"], pr["right"]
+        if all(steps.values()):
+            raise Reject(f"이미 옮겼습니다: {wrong} {ev_a['id']} ↔ {right} {ev_b['id']}. show --work {right}로 확인하세요.")
+        before, _ = fold(wevents[:ev_a["seq"] - 1] if ev_a else wevents)  # what those events had put in the wrong work
         decs = [x for x in before["decisions"] if x["event"] in sel]
         cons = [x for x in before["constraints"] if x["event"] in sel]
         arts = [x for x in before["artifacts"] if x["event"] in sel]
-        a_id, b_id = (done_a["id"] if done_a else f"E{len(wevents) + 1:04d}"), f"E{len(revents) + 1:04d}"
-        if not done_a:
-            why = f"{right}로 옮김(reassign)"
-            changes = {k: v for k, v in (("decisions_remove", {x["id"]: why for x in decs}),
-                                         ("constraints_remove", {x["id"]: why for x in cons})) if v}
-            refs = [{"kind": "misfiled", "id": i} for i in ids] + [{"kind": "refiled_to", "work": right, "id": b_id}]
-            ev_a = new_event(wevents, wprev, "CORRECTION", tool, sid, f"[misfiled → {right}] {span}", args.quote, refs, changes)
-            commit(d, index, wrong, ev_a)
-            mark_seen_if_current(d, tool, sid, wrong, len(wevents), ev_a["seq"])
         try:
-            rstate, _ = fold(revents)
-            have_d, have_c = {norm(x["text"]) for x in rstate["decisions"]}, {norm(x["text"]) for x in rstate["constraints"]}
-            src = lambda x: {"source": x["source"]} if x.get("source") else {}
-            changes = {}
-            new_d = [dict(text=x["text"], **src(x)) for x in decs if norm(x["text"]) not in have_d]
-            new_c = [dict(text=x["text"], **src(x)) for x in cons if norm(x["text"]) not in have_c]
-            already = [x["text"] for x in decs if norm(x["text"]) in have_d] + [x["text"] for x in cons if norm(x["text"]) in have_c]
-            new_a, gone = [], []
-            for a in arts:
-                path = d.parent / a["path"]
-                (new_a.append({"path": a["path"], "sha256": sha(path.read_bytes())}) if path.is_file() else gone.append(a["path"]))
-            for key, value in (("decisions", new_d), ("constraints", new_c), ("artifacts", new_a)):
-                if value:
-                    changes[key] = value
-            by_id = {e["id"]: e for e in wevents}
-            refs = [dict({"kind": "refiled_from", "work": wrong, "id": i}, **({"quote": by_id[i]["quote"]} if isinstance(by_id[i].get("quote"), str) else {}))
-                    for i in ids] + [{"kind": "correction", "work": wrong, "id": a_id}]
-            ev_b = new_event(revents, rprev, "CORRECTION", tool, sid, f"[refiled ← {wrong}] {span}", args.quote, refs, changes)
-            rebuilt = commit(d, index, right, ev_b)
+            if not ev_b:  # ⒜ the right work first
+                changes = refile_changes(fold(revents)[0], decs, cons)[0]
+                new_a = [{"path": a["path"], "sha256": sha((d.parent / a["path"]).read_bytes())} for a in arts if (d.parent / a["path"]).is_file()]
+                if new_a:
+                    changes["artifacts"] = new_a
+                by_id = {e["id"]: e for e in wevents}
+                refs = [dict({"kind": "refiled_from", "work": wrong, "id": i}, **({"quote": by_id[i]["quote"]} if isinstance(by_id[i].get("quote"), str) else {}))
+                        for i in ids] + ([{"kind": "correction", "work": wrong, "id": ev_a["id"]}] if ev_a else [])  # ev_a: a 2.25.0 partial run
+                ev_b = new_event(revents, rprev, "CORRECTION", tool, sid, f"[refiled ← {wrong}] {span}", args.quote, refs, changes)
+                commit(d, index, right, ev_b)
+            elif not steps["refiled_state"]:
+                repair_state(d, index, right)
+            if not ev_a:  # ⒝ the wrong work, pointing at the id ⒜ really got
+                why = f"{right}로 옮김(reassign)"
+                changes = {k: v for k, v in (("decisions_remove", {x["id"]: why for x in decs}),
+                                             ("constraints_remove", {x["id"]: why for x in cons})) if v}
+                refs = [{"kind": "misfiled", "id": i} for i in ids] + [{"kind": "refiled_to", "work": right, "id": ev_b["id"]}]
+                ev_a = new_event(wevents, wprev, "CORRECTION", tool, sid, f"[misfiled → {right}] {span}", args.quote, refs, changes)
+                commit(d, index, wrong, ev_a)
+                mark_seen_if_current(d, tool, sid, wrong, len(wevents), ev_a["seq"])
+            elif not steps["misfiled_state"]:
+                repair_state(d, index, wrong)
+            if not steps["session"]:  # ⒞
+                s = session_or_new(d, tool, sid)
+                update_session(d, tool, sid, seen=(right, max(s["last_seen"].get(right, 0), ev_b["seq"])), current_work=right,
+                               selected_turn=s["turn"])
         except (Reject, OSError, ValueError) as e:
             failed = f"{type(e).__name__}: {e}" if not isinstance(e, Reject) else str(e)
+            try:
+                after = reassign_progress(d, wrong, right, ids, who)
+            except (Reject, OSError, ValueError):
+                after = None
         else:
-            update_session(d, tool, sid, seen=(right, ev_b["seq"]), current_work=right,
-                           selected_turn=session_or_new(d, tool, sid)["turn"])
-            result = {"ok": True, "from": wrong, "to": right, "events": ids, "misfiled": a_id, "refiled": ev_b["id"],
-                      "moved": {"decisions": [x["id"] for x in decs], "constraints": [x["id"] for x in cons],
-                                "artifacts": [a["path"] for a in new_a]},
+            revents = read_events(work_dir(d, right))[0]
+            _, already, upgraded = refile_changes(fold(revents[:ev_b["seq"] - 1])[0], decs, cons)
+            moved_paths = [a["path"] for a in (ev_b.get("changes") or {}).get("artifacts", [])]
+            gone = [a["path"] for a in arts if a["path"] not in moved_paths]
+            rebuilt = fold(revents)[0]
+            resumed = [k for k in REASSIGN_STEPS if steps[k]]
+            result = {"ok": True, "from": wrong, "to": right, "events": ids, "misfiled": ev_a["id"], "refiled": ev_b["id"],
+                      "moved": {"decisions": [x["id"] for x in decs], "constraints": [x["id"] for x in cons], "artifacts": moved_paths},
                       **({"artifacts_missing": gone} if gone else {}),
                       **({"already_there": already} if already else {}),  # same text already active in the right work: not added twice
+                      **({"upgraded": upgraded} if upgraded else {}),     # 2.26.0: a model item there became the user item moved here
+                      **({"resumed": resumed} if resumed else {}),        # 2.26.0: steps an earlier run had done (this run did the rest)
                       "current_work": right,
                       "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]]}
     if failed:
-        print(json.dumps({"ok": False, "partial": True, "misfiled": a_id, "error": failed,
-                          "message": f"{wrong}에 정정 사건 {a_id}만 남고 {right} 쪽 기록이 실패했습니다. 원인을 고친 뒤 같은 reassign 명령을 "
-                                     "다시 실행하면 맞는 작업 쪽만 기록합니다."}, ensure_ascii=False))
+        done = [k for k in REASSIGN_STEPS if after["steps"][k]] if after else None
+        b_id = (after["refiled"] or {}).get("id") if after else None
+        a_id = (after["misfiled"] or {}).get("id") if after else None
+        print(json.dumps({"ok": False, "partial": True, "done": done, "refiled": b_id, "misfiled": a_id, "error": failed,
+                          "next": "원인을 고친 뒤 같은 reassign 명령을 다시 실행한다(끝난 단계는 건너뛰고 빠진 단계만 한다).",
+                          "message": f"reassign이 중간에 멈췄습니다(끝난 단계: {', '.join(done) if done else ('없음' if done is not None else '확인 못함')}). "
+                                     "원인을 고친 뒤 같은 reassign 명령을 다시 실행하면 빠진 단계만 합니다."}, ensure_ascii=False))
         sys.exit(2)
     print(json.dumps(result, ensure_ascii=False))
 
@@ -1331,8 +1469,11 @@ def current_work(d, who, index):
 
 def cmd_show(args):
     d = store(args.root)
-    if not connected(d):
-        print(NOT_CONNECTED.format(root=d.parent))
+    if not connected(d):  # 2.26.0: the hook's NOT_CONNECTED line (root·auto·git and what to do), after the plain first line
+        info = root_info(os.getcwd()) if not getattr(args, "root_explicit", False) else None
+        if not info or info["root"] != d.parent:
+            info = {"root": d.parent, "cwd": d.parent, "git": git_top(d.parent), "outside": None}
+        print(NOT_CONNECTED_HEAD.format(root=d.parent) + "\n" + not_connected_line(info, False, "show"), end="")
         return
     index = load_index(d)
     if not index or not index["works"]:
@@ -1444,7 +1585,7 @@ def verify_result(d, args, index):
         report = hooks_report(d, *who)
         if report:
             result["hooks"] = {"session": f"{who[0]}:{who[1]}", **report["hooks"]}
-            for key in ("warning", "warning_install", "warning_worktree"):
+            for key in ("warning", "warning_install", "warning_worktree", "notice"):
                 if key in report:
                     result["hooks"][key] = report[key]
     return result
@@ -1628,13 +1769,14 @@ def hook_output(tool, text):
     return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False)
 
 
-def not_connected_line(args, fork):
+def not_connected_line(info, fork, event="SessionStart"):
     """The one NOT_CONNECTED line (2.25.0): root = candidate_root, auto = the user's config, git = whether cwd is in a git
     work tree, then what to do (auto=on: connect on the first request worth recording; auto=off: the 2.24 text). A root
-    whose store is WL_HOME (the home folder) gets the auto=off text whatever auto says: it is never connected by itself."""
-    info, auto = args.root_info, auto_mode()
+    whose store is WL_HOME (the home folder) gets the auto=off text whatever auto says: it is never connected by itself.
+    info = root_info(); event = "SessionStart" for the hook, "show" for the show command (2.26.0, same text)."""
+    auto = auto_mode()
     home = is_wl_home(store(info["root"]))
-    head = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={info['root']} | auto={auto} | git={'yes' if info['git'] else 'no'}"
+    head = (f"[Worklog {FORMAT} {event} | NOT_CONNECTED | root={info['root']} | auto={auto} | git={'yes' if info['git'] else 'no'}"
             + (" | FORK" if fork else "") + "] ")
     if auto == "off" or home:
         body = ("이 폴더는 Worklog에 연결되지 않았다. 사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 "
@@ -1650,9 +1792,16 @@ def not_connected_line(args, fork):
     return head + body + "\n"
 
 
+def turn_mark(s):
+    """What a turn changes in a session file: the turn counter and the last UserPromptSubmit / Stop times (2.26.0)."""
+    return f"{s['turn']}|{s['hooks_seen'].get('UserPromptSubmit', '')}|{s['hooks_seen'].get('Stop', '')}"
+
+
 def sessionstart_duplicate(d, who, event):
     """Inside locked(d), claude·codex (2.25.0): True when this SessionStart repeats the session's last one (same source within
-    SESSIONSTART_DUP seconds: the hook is registered twice, e.g. user + project settings). Otherwise records this one's key.
+    SESSIONSTART_DUP seconds: the hook is registered twice, e.g. user + project settings) and no turn happened in between
+    (2.26.0: turn counter, UserPromptSubmit and Stop as the first one saw them, key SessionStartTurn — a prompt or a Stop between
+    them makes the second a real resume, injected again). Otherwise records this one's keys.
     An event without `source` is never a duplicate (and records nothing)."""
     src = event.get("source")
     if not (isinstance(src, str) and src):
@@ -1660,11 +1809,11 @@ def sessionstart_duplicate(d, who, event):
     s = session_or_new(d, *who)
     last_src, _, at = s["hook_keys"].get("SessionStart", "").rpartition("@")
     try:
-        if last_src == src and 0 <= time.time() - float(at) < SESSIONSTART_DUP:
+        if last_src == src and 0 <= time.time() - float(at) < SESSIONSTART_DUP and s["hook_keys"].get("SessionStartTurn") == turn_mark(s):
             return True
     except ValueError:
         pass
-    update_session(d, *who, hook_keys=dict(s["hook_keys"], SessionStart=f"{src}@{time.time():.3f}"))
+    update_session(d, *who, hook_keys=dict(s["hook_keys"], SessionStart=f"{src}@{time.time():.3f}", SessionStartTurn=turn_mark(s)))
     return False
 
 
@@ -1678,7 +1827,7 @@ def cmd_hook(args):
     d, who, event = hook_input(args)
     fork = event.get("source") == "fork"
     if not d:
-        print(hook_output(args.tool, not_connected_line(args, fork)))
+        print(hook_output(args.tool, not_connected_line(args.root_info, fork)))
         return
     if args.tool == "agy" and who:  # 2.24.2: a second SessionStart from a duplicate registration, before any turn → nothing to add
         try:

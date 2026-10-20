@@ -442,7 +442,14 @@ def main():
                           "홈 폴더는 자동 연결하지 않습니다"))
     else:
         out["registry"] = registry
-        out["next"] = "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
+        if wl.auto_mode() == "off":
+            out["next"] = "다음: auto=off이므로 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
+        elif a.no_worklog_dir:  # 2.26.0: no .worklog here, so a session folder (its git top level) is connected on its first request
+            out["next"] = ("다음: 이 폴더에는 .worklog/를 만들지 않았습니다. 세션을 연 폴더의 첫 기록 대상 요청이 그 폴더(git이면 최상위)를 "
+                           "연결하고 새 작업을 만듭니다(auto=on)")
+        else:  # 2.26.0: the connected, empty project gets EMPTY + "create without asking" (auto=on), not "say 새 작업:"
+            out["next"] = ("다음: 첫 세션의 첫 기록 대상 요청(결과를 원하는 요청)이 묻지 않고 새 작업을 만듭니다(auto=on). "
+                           "제목을 정하려면 `새 작업: <제목>`이라 하세요")
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
