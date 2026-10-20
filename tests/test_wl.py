@@ -2142,6 +2142,29 @@ class AgyPiTest(Base):
         self.assertEqual(out["hooks"], {"session_start": True, "turn_start": True, "stop": True})
         self.assertNotIn("warning", out)
 
+    def test_agy_auto_mode_tool_calls_do_not_advance_turn(self):
+        """2.24.1: in auto mode agy sends PreInvocation (invocationNum 0 again) before every model call, i.e. after every tool call.
+        Only the first one after a Stop or SessionStart counts; save/skip in that turn satisfies the Stop; a blocked turn is
+        blocked once even though the re-entry starts turn+1."""
+        self.d.mkdir()
+        self.agy("hook")
+        for _ in range(3):  # new-work, save, answer: three model calls, one turn
+            self.agy("turn-start", invocationNum=0)
+        self.assertEqual(self.session()["turn"], 1)
+        run(self.root, "new-work", session="c1", tool="agy", extra=["t", "--quote", "새 작업"])
+        self.agy("turn-start", invocationNum=0)  # the model call after the new-work tool result
+        r, out = run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, session="c1", tool="agy")
+        self.assertEqual(r, 0, out)
+        self.assertEqual(self.agy("stop-hook", terminationReason="NO_TOOL_CALL")[1], {})  # saved in this turn → pass
+        self.assertEqual((self.session()["turn"], self.session()["in_turn"]), (2, False))
+        self.agy("turn-start", invocationNum=0)  # next user turn
+        self.agy("turn-start", invocationNum=0)  # a tool call inside it
+        self.assertEqual(self.session()["turn"], 3)
+        self.assertEqual(self.agy("stop-hook", terminationReason="NO_TOOL_CALL")[1]["decision"], "continue")  # nothing saved → blocked once
+        self.agy("turn-start", invocationNum=0)  # re-entry starts turn 4
+        self.assertEqual(self.agy("stop-hook", terminationReason="NO_TOOL_CALL")[1], {})  # still nothing saved → passes (blocked once), no loop
+        self.assertEqual(self.session()["turn"], 5)
+
     def test_claude_stop_blocks_once_without_flag(self):
         """2.24.0: a second Stop of the same turn passes even without stop_hook_active (pi's extension sends none)."""
         self.d.mkdir()
