@@ -10,7 +10,10 @@ reports which tools this machine seems to have (~/.claude, ~/.codex), since an a
         is opened in has them. A folder is connected the moment its .worklog/ exists: the first `새 작업: <title>` in it
         runs `new-work`, which creates .worklog/ and does what --root did per project (the `.worklog/` line in .gitignore
         of a git project, the registry entry, install.json). Elsewhere the SessionStart hook says NOT_CONNECTED and nothing
-        else happens. Manifest: WL_HOME/install.json[tool] = {version, rules_src_sha, installed_at}.
+        else happens (2.25.0: with "auto": "on", the default, the model connects a folder on its first request worth
+        recording). Manifest: WL_HOME/install.json[tool] = {version, rules_src_sha, installed_at}. WL_HOME/config.json gets
+        "auto": "on" when it has no "auto" key (other keys kept); reported as `config`, not in `changed`, because it is a
+        preference the uninstaller leaves (like "update").
         claude: ~/.claude/CLAUDE.md + ~/.claude/settings.json + ~/.claude/skills/worklog
         codex:  ~/.codex/AGENTS.md + ~/.codex/hooks.json + ~/.agents/skills/worklog   (user trust in /hooks, once)
         A project that still has this tool's project-level hooks (registry ~/.worklog/installs.json) is refused: the hooks
@@ -254,6 +257,24 @@ def manifest(folder, tool):
     return path
 
 
+def user_config():
+    """(WL_HOME/config.json, new text) when it has no "auto" key: the 2.25.0 default "on" is added next to the other keys
+    ("update" …). None when the key is already there (any value: the user's choice stays). Unreadable JSON is refused."""
+    path = HOME / "config.json"
+    try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        data = json.loads(text) if text.strip() else {}
+    except (OSError, ValueError) as e:
+        raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 설치하세요.")
+    if not isinstance(data, dict):
+        raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위는 JSON 객체). 고친 뒤 다시 설치하세요.")
+    if path.is_symlink():
+        raise Refuse(f"{path}는 심볼릭 링크입니다. 실제 파일이어야 합니다.")
+    if "auto" in data:
+        return None
+    return path, json.dumps(dict(data, auto="on"), ensure_ascii=False, indent=1) + "\n"
+
+
 def targets(tool, root, user):
     """(guide file, hook file or None, SKILL.md or None) for a tool — in the user's home (user=True) or in a project."""
     if user:
@@ -343,7 +364,8 @@ def main():
         epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
     ap.add_argument("--tool", choices=list(TOOLS), help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
     where = ap.add_mutually_exclusive_group(required=True)
-    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents, ~/.gemini/config, ~/.pi/agent)에 한 번 설치. 프로젝트는 첫 `새 작업:`이 연결")
+    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents, ~/.gemini/config, ~/.pi/agent)에 한 번 설치. "
+                       "프로젝트는 auto=on(기본)이면 첫 기록 대상 요청이, auto=off면 `새 작업:`이 연결")
     where.add_argument("--root", help="한 프로젝트에만 설치(2.x 방식)")
     ap.add_argument("--migrate", action="store_true", help="--user: registry의 프로젝트에서 프로젝트 단위 블록·Hook·스킬을 먼저 제거(기록·세션·.gitignore 줄 유지)")
     ap.add_argument("--dry-run", action="store_true")
@@ -368,6 +390,7 @@ def main():
             if a.migrate:
                 migrations = migration_plans(a.tool, left, stamp())
         files, worklog = plan(root, a.tool, not a.no_worklog_dir, stamp(), user=a.user)
+        config = user_config() if a.user else None
     except Refuse as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         sys.exit(2)
@@ -386,6 +409,9 @@ def main():
                 write(path, text, backup)
                 done.append((path, backup, existed))
             if a.user:
+                if config:  # before the manifest: a failed config write leaves no manifest entry behind (rollback covers tool files only)
+                    HOME.mkdir(parents=True, exist_ok=True)
+                    wl.write_atomic(config[0], config[1])
                 changes.append(str(manifest(HOME, a.tool)))
             else:
                 if worklog:
@@ -405,9 +431,15 @@ def main():
     out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes}
     if a.user:
         out["migrated"] = migrated
+        if config:
+            out["config"] = {"path": str(config[0]), "auto": "on"}
         out["next"] = ("다음: " + {"codex": "Codex는 /hooks에서 Hook 3개를 신뢰하고, ", "pi": "pi는 확장(~/.pi/agent/extensions/worklog.ts)을 읽도록 ",
                                   "agy": "agy는 규칙 파일(~/.gemini/config/rules/worklog.md)과 hooks.json의 worklog 훅을 읽도록 "}.get(a.tool, "")
-                       + "열린 세션을 다시 시작한 뒤 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)")
+                       + "열린 세션을 다시 시작하세요. "
+                       + ("auto=off이므로 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)"
+                          if wl.auto_mode() == "off" else
+                          "프로젝트 폴더의 첫 세션은 자동 연결 대상이 되고, 첫 기록 대상 요청이 새 작업을 만듭니다(그때 .worklog/가 생깁니다). "
+                          "홈 폴더는 자동 연결하지 않습니다"))
     else:
         out["registry"] = registry
         out["next"] = "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
