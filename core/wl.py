@@ -13,14 +13,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.23.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.24.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
 USER_TYPES = {"REQUEST", "APPROVAL", "D_USER"}
 REMOVE_TYPES = {"D_USER", "APPROVAL", "CORRECTION"}
 STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"]
-TOOL_ENV = [("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID"), ("pi", "PI_SESSION_ID")]
+TOOL_ENV = [("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID"), ("agy", "ANTIGRAVITY_CONVERSATION_ID"), ("pi", "PI_SESSION_ID")]  # pi: set by the Worklog extension (2.24.0)
 WORK_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 ID_MAX = 40
 PROJECT_MAX = 4000
@@ -119,7 +119,7 @@ def identity(args):
                 tool, sid = name, sid or os.environ[env]
                 break
     if not (tool and sid):
-        raise Reject("세션을 확인할 수 없습니다. --tool <codex|claude|pi> --session <ID>를 지정하세요.")
+        raise Reject("세션을 확인할 수 없습니다. --tool <codex|claude|agy|pi> --session <ID>를 지정하세요.")
     return tool, sid
 
 
@@ -153,7 +153,7 @@ def session_path(d, tool, sid):
     return d / "sessions" / re.sub(r"[^A-Za-z0-9._-]", "_", f"{tool}_{sid}.json")
 
 
-SESSION_TURNS = ("turn", "saved_turn", "skipped_turn", "selected_turn")
+SESSION_TURNS = ("turn", "saved_turn", "skipped_turn", "selected_turn", "blocked_turn")  # blocked_turn (2.24.0): the turn the Stop hook already blocked once
 
 
 class SessionCorrupt(Exception):
@@ -494,16 +494,14 @@ def hooks_report(d, tool, sid):
     not trusted, not installed, or another session id) and "warning_worktree" inside a git worktree. Pi has no hooks, so only
     the worktree warning is reported for it. A missing UserPromptSubmit alone is not a warning: a turn started by `!` shell
     input or by another session's notification does not fire it (observed 2026-10-15), while SessionStart and Stop still run."""
-    if tool == "pi":
-        return worktree_report(d)
     try:
         s = load_session(d, tool, sid) or new_session()
     except SessionCorrupt:
         s = new_session()
     seen = s["hooks_seen"]
     out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
-    if not seen:  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark
-        out["warning"] = HOOK_WARNING
+    if not seen and tool != "pi":  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
+        out["warning"] = HOOK_WARNING  # pi: hooks exist only with the user-level extension (2.24.0); a project-level install has none, so no warning
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
     return out
@@ -1348,11 +1346,13 @@ def hook_input(args):
     if not isinstance(event, dict):
         event = {}
     cwd = event.get("cwd")
+    if not cwd and isinstance(event.get("workspacePaths"), list) and event["workspacePaths"]:  # agy (Antigravity CLI) hooks.json payload (2.24.0)
+        cwd = event["workspacePaths"][0]
     d = store(cwd if isinstance(cwd, str) and cwd else args.root)
     args.root = str(d.parent)
     if not d.is_dir():
         return None, None, event
-    sid = event.get("session_id")
+    sid = event.get("session_id") or event.get("conversationId")  # conversationId: agy
     if isinstance(sid, str) and sid:
         args.session = sid
     return d, try_identity(args), event
@@ -1410,8 +1410,16 @@ def injection(d, who):
     return ("EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"), "\n".join(out) + "\n"
 
 
+def hook_output(tool, text):
+    """The SessionStart injection in the tool's own hook output format: Claude Code and Codex (and the pi extension, which
+    reads the same shape) take hookSpecificOutput.additionalContext; agy's hooks.json takes injectSteps (2.24.0)."""
+    if tool == "agy":
+        return json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": text}}]}, ensure_ascii=False)
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False)
+
+
 def cmd_hook(args):
-    """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection()).
+    """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection(); agy: injectSteps).
     Valid without a session ID; then no session file is touched and there is no current work.
     Not connected (no .worklog/): one NOT_CONNECTED line, no session file, no update check (2.21.0) — without it the rules'
     "no injection → show" path would make the model ask for a work in every folder once the hooks are user-level."""
@@ -1419,13 +1427,13 @@ def cmd_hook(args):
     if not d:
         line = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={args.root}] 이 폴더는 Worklog에 연결되지 않았다. "
                 "사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 적용하지 않는다.\n")
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}}, ensure_ascii=False))
+        print(hook_output(args.tool, line))
         return
     off = off_marker(d)
     if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
         line = (f"[Worklog {FORMAT} SessionStart | OFF | root={d.parent}] Worklog가 꺼져 있다(이유: {norm(off.get('reason') or '') or '없음'}, "
                 f"시각: {norm(off.get('at') or '') or '알 수 없음'}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line}}, ensure_ascii=False))
+        print(hook_output(args.tool, line))
         return
     try:
         status, text = injection(d, who)
@@ -1440,17 +1448,20 @@ def cmd_hook(args):
             head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
     if (d.parent / ".git").is_file():
         head += f"[Worklog worktree 경고] {WORKTREE_WARNING} 사용자에게 알린다.\n"
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": head + text}},
-                     ensure_ascii=False))
+    print(hook_output(args.tool, head + text))
 
 
 def cmd_turn_start(args):
-    """UserPromptSubmit hook: turn += 1. No output. Does nothing while off."""
-    d, who, _ = hook_input(args)
-    if d and who and not is_off(d):
+    """UserPromptSubmit hook: turn += 1. No output (agy: `{}`). Does nothing while off.
+    agy's PreInvocation fires before every model call of a turn; only invocationNum 0 starts a turn (2.24.0)."""
+    d, who, event = hook_input(args)
+    first = not (args.tool == "agy" and event.get("invocationNum"))
+    if d and who and first and not is_off(d):
         with locked(d):
             s = session_or_new(d, *who)
             update_session(d, *who, turn=s["turn"] + 1, hooks_seen=dict(s["hooks_seen"], UserPromptSubmit=now()))
+    if args.tool == "agy":
+        print("{}")
 
 
 def cmd_stop_hook(args):
@@ -1458,24 +1469,37 @@ def cmd_stop_hook(args):
     When the turn ends (satisfied, or already blocked once: stop_hook_active) the turn counter advances here too, so a next
     turn that starts without UserPromptSubmit (`!` shell input, another session's notification) still needs its own save or skip."""
     d, who, event = hook_input(args)
-    if not (d and who) or is_off(d):
+    agy = args.tool == "agy"
+
+    def answer(block, reason=None):  # Claude/Codex/pi: block → {"decision": "block"}, else nothing; agy: {"decision": "continue"} or {}
+        if agy:
+            print(json.dumps({"decision": "continue", "reason": reason} if block else {}, ensure_ascii=False))
+        elif block:
+            print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+
+    if not (d and who) or is_off(d) or (agy and event.get("terminationReason") in ("USER_CANCELED", "ERROR")):
+        answer(False)
         return
     try:
         with locked(d):
             s = load_session(d, *who) or new_session()
-            done = s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]) or event.get("stop_hook_active") is True
-            update_session(d, *who, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"turn": s["turn"] + 1} if done else {}))
+            # Blocked once already: stop_hook_active (Claude Code, Codex) or this core's own mark (2.24.0: agy and pi hooks carry no such flag)
+            once = event.get("stop_hook_active") is True or s["blocked_turn"] == s["turn"]
+            done = s["turn"] in (s["saved_turn"], s["skipped_turn"], s["selected_turn"]) or once
+            update_session(d, *who, hooks_seen=dict(s["hooks_seen"], Stop=now()), **({"turn": s["turn"] + 1} if done else {"blocked_turn": s["turn"]}))
     except SessionCorrupt as e:
         if event.get("stop_hook_active") is not True:  # 한 번 막힌 뒤에는 다시 막지 않는다(무한 반복 방지)
-            print(json.dumps({"decision": "block", "reason": f"Worklog: 세션 파일을 읽을 수 없습니다({e}). "
-                              "save 또는 skip으로 다시 만든 뒤 마치세요."}, ensure_ascii=False))
+            answer(True, f"Worklog: 세션 파일을 읽을 수 없습니다({e}). save 또는 skip으로 다시 만든 뒤 마치세요.")
+        else:
+            answer(False)
         return
     if done:
+        answer(False)
         return
     q = shlex.quote
     skip = f'python3 -B {q(str(Path(__file__).resolve()))} skip "이유" --tool {q(who[0])} --session {q(who[1])} --root {q(str(d.parent))}'
-    print(json.dumps({"decision": "block", "reason": "Worklog: 이번 턴에 save가 없습니다. 기록할 것이 있으면 save, "
-                      f"읽기 전용 턴이거나 작업이 지정되지 않았으면 `{skip}`를 실행한 뒤 마치세요."}, ensure_ascii=False))
+    answer(True, "Worklog: 이번 턴에 save가 없습니다. 기록할 것이 있으면 save, "
+                 f"읽기 전용 턴이거나 작업이 지정되지 않았으면 `{skip}`를 실행한 뒤 마치세요.")
 
 
 def cmd_skip(args):

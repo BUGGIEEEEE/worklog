@@ -29,7 +29,7 @@
 | `works/<id>/state.json` | 해당 원장에서 재계산하는 기계용 현황 | 코어 |
 | `works/<id>/state.md` | 같은 현황의 사람·주입용 본문 | 코어 |
 | `works/<id>/writer.json` | 마지막 작성자 정보 `{tool, session_id, seq}`, 원장·선택·독점권의 근거 아님 | 코어 |
-| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn}`. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
+| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn, blocked_turn}`. `blocked_turn`(2.24.0)은 Stop이 한 번 막은 턴으로, 같은 턴의 두 번째 Stop은 도구가 `stop_hook_active`를 보내지 않아도 통과한다. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
 | `.lock` | 프로젝트 내 동시 변경을 flock으로 직렬화 | 코어 |
 | `off` | `{at, reason, by, quote}` JSON(reason·by는 없으면 null). 있으면 이 프로젝트 전체의 Worklog가 꺼짐, 원장 아님 | 코어 off·on, `.lock` 안에서 생성·삭제 |
 
@@ -126,7 +126,7 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 
 ## Hook과 주입 형식
 
-세 Hook은 stdin의 cwd·세션 ID를 받는다. `.worklog/`가 없으면 빈 출력·exit 0이다. 디렉터리가 비어 있어도 연결된다. `hook` 출력 계약은 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`다.
+세 Hook은 stdin의 cwd·세션 ID를 받는다(agy는 `workspacePaths[0]`·`conversationId`, 2.24.0). `.worklog/`가 없으면 빈 출력·exit 0이다(agy는 `{}`). 디렉터리가 비어 있어도 연결된다. `hook` 출력 계약은 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`다(agy: `{"injectSteps":[{"systemMessage":{"systemMessage":"…"}}]}`; Stop 차단은 agy에서 `{"decision":"continue","reason":…}`, 통과는 `{}`).
 
 ```text
 [Worklog worklog/2 SessionStart | <PROVIDED|NO_CURRENT_WORK|EMPTY|UNAVAILABLE|OFF> | root=…]

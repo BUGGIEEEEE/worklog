@@ -37,22 +37,22 @@ python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-
 
 ## 도구별 비교
 
-| | Claude Code | Codex | Pi |
-|---|---|---|---|
-| 시작 지침 | `~/.claude/CLAUDE.md` 블록(`--user`) 또는 프로젝트 `CLAUDE.md` 블록(`--root`) | `~/.codex/AGENTS.md` 블록(`--user`) 또는 프로젝트 `AGENTS.md` 블록(`--root`) | `AGENTS.md` 블록(cwd·상위 폴더에서 읽음, `--root`만) |
-| Skill | `~/.claude/skills/worklog` 또는 `.claude/skills/worklog` | `~/.agents/skills/worklog`(공식 문서의 사용자 범위 경로, 2026-10-16) 또는 `.agents/skills/worklog` (`$worklog`로 호출 확인, 2026-10-14) | `.pi/skills/worklog` (프로젝트 신뢰 후 로드) |
-| Hook 위치 | `~/.claude/settings.json` 또는 `.claude/settings.local.json` | `~/.codex/hooks.json` 또는 `.codex/hooks.json` | 없음 |
-| SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact·fork¹ → `wl.py hook --tool claude` | startup·resume·clear·compact·fork² → `wl.py hook --tool codex` | 없음 — 지침("못 봤으면 `show`") |
-| UserPromptSubmit (턴 시작) | `wl.py turn-start --tool claude` | `wl.py turn-start --tool codex` | 없음 — 지침 |
-| Stop (저장 확인) | `wl.py stop-hook --tool claude` | `wl.py stop-hook --tool codex` | 없음 — 지침 |
+| | Claude Code | Codex | agy (Antigravity CLI, 2.24.0) | Pi (2.24.0) |
+|---|---|---|---|---|
+| 시작 지침 | `~/.claude/CLAUDE.md` 블록(`--user`) 또는 프로젝트 `CLAUDE.md` 블록(`--root`) | `~/.codex/AGENTS.md` 블록(`--user`) 또는 프로젝트 `AGENTS.md` 블록(`--root`) | 전용 규칙 파일 `~/.gemini/config/rules/worklog.md`(`--user`, frontmatter `trigger: always_on`, 파일당 24,000바이트 상한이라 GEMINI.md는 건드리지 않음) 또는 프로젝트 `.agents/rules/worklog.md`(`--root`) | `~/.pi/agent/AGENTS.md` 블록(`--user`) 또는 프로젝트 `AGENTS.md` 블록(`--root`, codex와 공유) |
+| Skill | `~/.claude/skills/worklog` 또는 `.claude/skills/worklog` | `~/.agents/skills/worklog`(공식 문서의 사용자 범위 경로, 2026-10-16) 또는 `.agents/skills/worklog` (`$worklog`로 호출 확인, 2026-10-14) | `~/.gemini/config/skills/worklog`(2026-10-20 실측: 전역 탐색은 `~/.gemini/config/`). 프로젝트 단위는 스킬 없음(`.agents/skills/worklog`는 codex 것) | `~/.pi/agent/skills/worklog` 또는 `.pi/skills/worklog`(프로젝트 신뢰 뒤 로드) |
+| Hook 위치 | `~/.claude/settings.json` 또는 `.claude/settings.local.json` | `~/.codex/hooks.json` 또는 `.codex/hooks.json` | `~/.gemini/config/hooks.json` 또는 `.agents/hooks.json`의 이름 붙은 훅 `worklog`(다른 이름의 훅은 유지) | 확장 `~/.pi/agent/extensions/worklog.ts` 또는 `.pi/extensions/worklog.ts`(템플릿 `adapters/pi/worklog.ts`) |
+| SessionStart (시작·압축 뒤 주입) | startup·resume·clear·compact·fork¹ → `wl.py hook --tool claude` | startup·resume·clear·compact·fork² → `wl.py hook --tool codex` | `SessionStart` → `wl.py hook --tool agy`(출력 `injectSteps` systemMessage) | 확장 `session_start`(startup·resume·fork 등) → `wl.py hook --tool pi`, 주입은 다음 턴의 custom message |
+| UserPromptSubmit (턴 시작) | `wl.py turn-start --tool claude` | `wl.py turn-start --tool codex` | `PreInvocation` → `wl.py turn-start --tool agy`(모델 호출마다 오므로 `invocationNum` 0에서만 턴 증가) | 확장 `before_agent_start`(사용자 프롬프트) → `wl.py turn-start --tool pi` |
+| Stop (저장 확인) | `wl.py stop-hook --tool claude` | `wl.py stop-hook --tool codex` | `Stop` → `wl.py stop-hook --tool agy`(차단은 `{"decision": "continue"}`, 취소·오류 종료는 통과) | 확장 `agent_before_settle` → `wl.py stop-hook --tool pi`(차단은 메시지 + `continue: true`) |
 
 ¹ `fork`는 `/branch`·`--fork-session`·`/fork`(세션 복사)·백그라운드 전환으로 생긴 분기 세션의 시작(Claude Code 2.1.214+). 그 미만 버전은 분기를 `resume`으로 보고하므로 영향이 없다. 2.12.0부터 설치기가 넣는다.
 ² Codex는 `/fork`·`/side`(임시 포크 대화)를 `fork`, `/clear`를 `clear`로 보고하며 새 thread id를 쓴다(2026-10-14 실측, codex-cli 0.158.0). SessionStart는 새 thread의 첫 프롬프트 때 발화한다. 2.14.0부터 설치기가 넣는다. hooks.json 내용이 바뀌므로 기존 설치는 재설치 뒤 `/hooks`에서 재신뢰가 필요하다.
-| 신뢰 절차 | Hook 승인 불필요. git 저장소면 첫 시작 때 폴더 신뢰 대화상자 1회 | 프로젝트 신뢰 + `/hooks`에서 Hook 3개 신뢰. Hook 정의가 바뀌면 재신뢰. 설치기를 다시 실행해도 같은 설치의 Hook은 그대로 두므로(파일 바이트 유지) 클론을 옮긴 경우에만 재신뢰 | AGENTS.md는 신뢰 불필요, Skill은 프로젝트 신뢰 후 |
-| 세션 ID | `CLAUDE_CODE_SESSION_ID` (실측) | `CODEX_THREAD_ID` (실측) | `PI_SESSION_ID` (공식 문서 기준, 미실측) |
-| 한계 | — | — | Hook 없음·지침만, 강제되지 않음, 미검증 |
+| 신뢰 절차 | Hook 승인 불필요. git 저장소면 첫 시작 때 폴더 신뢰 대화상자 1회 | 프로젝트 신뢰 + `/hooks`에서 Hook 3개 신뢰. Hook 정의가 바뀌면 재신뢰. 설치기를 다시 실행해도 같은 설치의 Hook은 그대로 두므로(파일 바이트 유지) 클론을 옮긴 경우에만 재신뢰 | 전역 훅·규칙은 확인 없이 적용(2026-10-20 `agy -p` 실측). 전역 규칙 합계 20,000토큰 예산을 넘으면 규칙이 경로 포인터로 강등되므로 설치 뒤 한 턴 확인 | 사용자 수준 확장은 신뢰 불필요(문서). 프로젝트 확장·스킬은 프로젝트 신뢰(`--approve`) 뒤 로드 |
+| 세션 ID | `CLAUDE_CODE_SESSION_ID` (실측) | `CODEX_THREAD_ID` (실측) | `ANTIGRAVITY_CONVERSATION_ID`(셸 환경, 실측) = 훅 입력의 `conversationId` | `PI_SESSION_ID` — 확장이 `session_start`에서 설정 |
+| 한계 | — | — | 훅 입력에 cwd가 없어 `workspacePaths[0]`을 루트로 씀. PreInvocation이 모델 호출마다 돔(비용) | 확장이 코어를 자식 프로세스로 부름. 프로젝트 단위 AGENTS.md는 codex와 공유(마지막 설치의 `--tool`이 남음) |
 
-저장 보호는 세 도구 공통입니다: 잠금 + 작업별 신선도 검사(`last_seen`). 마지막으로 읽은 뒤 그 작업의 기록이 바뀌었으면 저장이 거부되고, `show` 후 다시 저장합니다. `writer.json`은 마지막 작성자 정보일 뿐 독점이 아닙니다.
+저장 보호는 네 도구 공통입니다: 잠금 + 작업별 신선도 검사(`last_seen`). 마지막으로 읽은 뒤 그 작업의 기록이 바뀌었으면 저장이 거부되고, `show` 후 다시 저장합니다. `writer.json`은 마지막 작성자 정보일 뿐 독점이 아닙니다.
 
 ## Hook 동작
 

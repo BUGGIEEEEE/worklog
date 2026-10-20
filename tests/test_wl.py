@@ -1884,8 +1884,12 @@ class UserScopeTest(Base):
         self.assertTrue((self.home / ".agents/skills/worklog/SKILL.md").exists())
         self.assertEqual(sorted(self.user_manifest()), ["claude", "codex"])
         self.assertIn("/hooks", out["next"])
-        code, out = self.install("--tool", "pi", "--user")
-        self.assertEqual((code, "pi" in out["error"]), (2, True))
+        code, out = self.install("--tool", "pi", "--user")  # 2.24.0: pi has a user-level install (block, extension, skill)
+        self.assertEqual(code, 0, out)
+        self.assertIn("worklog-shared:begin", (self.home / ".pi/agent/AGENTS.md").read_text())
+        self.assertIn(json.dumps(str(WL)), (self.home / ".pi/agent/extensions/worklog.ts").read_text())
+        self.assertTrue((self.home / ".pi/agent/skills/worklog/SKILL.md").exists())
+        self.assertEqual(sorted(self.user_manifest()), ["claude", "codex", "pi"])
         p = subprocess.run([sys.executable, "-B", str(INST), "--tool", "claude", "--user", "--root", str(self.proj)], capture_output=True, text=True, env=self.env)
         self.assertEqual(p.returncode, 2)  # --user와 --root는 배타
         p = subprocess.run([sys.executable, "-B", str(INST), "--tool", "claude", "--root", str(self.proj), "--migrate"], capture_output=True, text=True, env=self.env)
@@ -2076,6 +2080,135 @@ class UserScopeTest(Base):
         text = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertTrue(text.startswith("# 사용자 글") and text.count("worklog-shared:begin") == 1)
         self.assertFalse((self.proj / "CLAUDE.md").exists())
+
+
+class AgyPiTest(Base):
+    """2.24.0: agy (Antigravity CLI) hooks.json payloads/outputs, Stop blocked once per turn without a tool flag, and the
+    user-level installs of agy (own rule file, named hook, global skill) and pi (block, extension, skill)."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = self.root / "home"
+        (self.home / ".gemini" / "config").mkdir(parents=True)
+        (self.home / ".pi" / "agent").mkdir(parents=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+        self.other = {"SessionStart": [{"type": "command", "command": "echo other", "timeout": 5}]}
+        (self.home / ".gemini/config/hooks.json").write_text(json.dumps({"herdr": self.other}, indent=1))
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def agy(self, cmd, **event):
+        """A hook as agy runs it: hooks.json payload (conversationId, workspacePaths), JSON on stdout."""
+        raw = json.dumps({"conversationId": "c1", "workspacePaths": [str(self.root)], "modelName": "x", **event})
+        p = subprocess.run([sys.executable, "-B", str(WL), cmd, "--tool", "agy"], input=raw, capture_output=True, text=True,
+                           env=clean_env(), cwd=tempfile.gettempdir())
+        return p.returncode, (json.loads(p.stdout) if p.stdout.strip() else None)
+
+    def session(self):
+        return json.loads(session_file(self.root, "agy_c1").read_text())
+
+    def test_agy_hook_payloads_and_outputs(self):
+        r, out = self.agy("hook")
+        self.assertEqual(r, 0)
+        self.assertIn("NOT_CONNECTED", out["injectSteps"][0]["systemMessage"]["systemMessage"])  # 미연결: injectSteps 형식의 한 줄
+        self.assertFalse(session_file(self.root, "agy_c1").exists())
+        self.assertEqual(self.agy("turn-start")[1], {})
+        self.assertEqual(self.agy("stop-hook")[1], {})
+        self.d.mkdir()
+        run(self.root, "new-work", session="c1", tool="agy", extra=["t", "--quote", "새 작업"])
+        r, out = self.agy("hook")
+        text = out["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertTrue(text.startswith("[Worklog worklog/2 SessionStart | PROVIDED"), text)
+        self.assertIn("SessionStart", self.session()["hooks_seen"])
+        self.assertEqual(self.agy("turn-start", invocationNum=0)[1], {})
+        self.assertEqual(self.session()["turn"], 1)
+        self.assertEqual(self.agy("turn-start", invocationNum=1)[1], {})  # 같은 턴의 두 번째 모델 호출: 턴이 늘지 않는다
+        self.assertEqual(self.session()["turn"], 1)
+        r, out = self.agy("stop-hook", terminationReason="NO_TOOL_CALL")  # save 없음 → 차단(continue)
+        self.assertEqual(out["decision"], "continue")
+        self.assertIn("save", out["reason"])
+        self.assertEqual(self.session()["blocked_turn"], 1)
+        self.assertEqual(self.agy("stop-hook", terminationReason="NO_TOOL_CALL")[1], {})  # 같은 턴 두 번째 Stop: 통과, 턴 진행
+        self.assertEqual(self.session()["turn"], 2)
+        self.assertEqual(self.agy("stop-hook", terminationReason="USER_CANCELED")[1], {})  # 취소·오류 종료는 막지 않는다
+        self.assertEqual(self.session()["turn"], 2)
+        out = json.loads(run(self.root, "skip", session="c1", tool="agy", extra=["읽기"])[1])
+        self.assertEqual(out["hooks"], {"session_start": True, "turn_start": True, "stop": True})
+        self.assertNotIn("warning", out)
+
+    def test_claude_stop_blocks_once_without_flag(self):
+        """2.24.0: a second Stop of the same turn passes even without stop_hook_active (pi's extension sends none)."""
+        self.d.mkdir()
+        run(self.root, "new-work", session="s1", tool="claude", extra=["t", "--quote", "새 작업"])
+        hook(self.root, "turn-start")
+        r, out = hook(self.root, "stop-hook")
+        self.assertEqual(json.loads(out)["decision"], "block")
+        r, out = hook(self.root, "stop-hook")
+        self.assertEqual(out.strip(), "")
+        self.assertEqual(json.loads(session_file(self.root).read_text())["turn"], 2)
+
+    def test_user_install_agy_and_pi_and_uninstall(self):
+        code, out = self.script(INST, "--tool", "agy", "--user", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(Path(c).name for c in out["changed"]), ["SKILL.md", "hooks.json", "worklog.md"])
+        code, out = self.script(INST, "--tool", "agy", "--user")
+        self.assertEqual(code, 0, out)
+        rule = (self.home / ".gemini/config/rules/worklog.md").read_text()
+        self.assertTrue(rule.startswith("---\ntrigger: always_on\n---\n<!-- worklog-shared:begin -->"), rule[:80])
+        self.assertIn("--tool agy", rule)
+        hooks = json.loads((self.home / ".gemini/config/hooks.json").read_text())
+        self.assertEqual(hooks["herdr"], self.other)  # 다른 이름의 훅은 그대로
+        self.assertEqual(sorted(hooks["worklog"]), ["PreInvocation", "SessionStart", "Stop"])
+        self.assertTrue(hooks["worklog"]["Stop"][0]["command"].endswith("stop-hook --tool agy"))
+        self.assertTrue((self.home / ".gemini/config/skills/worklog/SKILL.md").exists())
+        self.assertEqual(len(list((self.home / ".gemini/config").glob("hooks.json.bak-worklog-*"))), 1)
+        code, out = self.script(INST, "--tool", "agy", "--user")  # 재실행: 매니페스트만
+        self.assertEqual([Path(c).name for c in out["changed"]], ["install.json"])
+        code, out = self.script(INST, "--tool", "pi", "--user")
+        self.assertEqual(code, 0, out)
+        ext = (self.home / ".pi/agent/extensions/worklog.ts").read_text()
+        self.assertIn(f"const WL = {json.dumps(str(WL))};", ext)
+        self.assertIn("agent_before_settle", ext)
+        manifest = json.loads((self.wl_home / "install.json").read_text())
+        self.assertEqual(sorted(manifest), ["agy", "pi"])
+        code, out = self.script(UNINST, "--user", "--tool", "agy")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.home / ".gemini/config/rules/worklog.md").exists())
+        self.assertEqual(json.loads((self.home / ".gemini/config/hooks.json").read_text()), {"herdr": self.other})
+        self.assertFalse((self.home / ".gemini/config/skills").exists())
+        self.assertEqual(sorted(json.loads((self.wl_home / "install.json").read_text())), ["pi"])
+        code, out = self.script(UNINST, "--user", "--tool", "pi")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.home / ".pi/agent/extensions/worklog.ts").exists())
+        self.assertFalse((self.home / ".pi/agent/AGENTS.md").exists())  # 블록뿐이던 파일은 삭제
+        self.assertFalse((self.wl_home / "install.json").exists())
+
+    def test_project_install_agy_has_no_skill_and_does_not_shadow_codex(self):
+        proj = self.root / "proj"
+        proj.mkdir()
+        code, out = self.script(INST, "--tool", "agy", "--root", str(proj))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(Path(c).name for c in out["changed"]), [".worklog", "hooks.json", "install.json", "worklog.md"])
+        self.assertTrue((proj / ".worklog").is_dir() and (proj / ".agents/hooks.json").exists())
+        self.assertTrue((proj / ".agents/rules/worklog.md").read_text().startswith("---\ntrigger: always_on\n---\n"))
+        self.assertFalse((proj / ".agents/skills").exists() or (proj / "AGENTS.md").exists())
+        code, out = self.script(INST, "--tool", "codex", "--root", str(proj))
+        self.assertEqual(code, 0, out)
+        self.assertIn("--tool codex", (proj / ".agents/skills/worklog/SKILL.md").read_text())
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "codex", "--keep-records")
+        self.assertEqual(code, 0, out)
+        self.assertIn("agy가 아직 설치돼 있어", out["projects"][0]["notes"][0])
+        self.assertTrue((proj / ".agents/hooks.json").exists() and (proj / ".agents/rules/worklog.md").exists())  # agy의 훅·규칙 파일은 남는다
+        self.assertFalse((proj / "AGENTS.md").exists())  # codex의 블록뿐이던 AGENTS.md는 사라진다
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "agy", "--keep-records", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((proj / ".agents").exists(), sorted(str(q) for q in proj.rglob(".agents/**/*")))  # 규칙 파일·훅·빈 폴더 모두 정리
 
 
 class LongLedgerTest(unittest.TestCase):
@@ -2272,7 +2405,9 @@ class FinalPlanTest(unittest.TestCase):
         self.assertEqual(out["warnings"], [])
         out = self.ok(run(self.root, "verify", extra=["--all"], tool="claude", session="other"))
         self.assertIn("warning", out["hooks"])  # 다른 세션 ID: Hook 기록 없음 → 경고
-        self.assertNotIn("hooks", self.ok(run(self.root, "skip", extra=["읽기"], tool="pi")))  # Pi는 Hook이 없다
+        out = self.ok(run(self.root, "skip", extra=["읽기"], tool="pi"))  # 2.24.0: pi hooks exist only with the user-level extension → reported, never warned
+        self.assertEqual(out["hooks"], {"session_start": False, "turn_start": False, "stop": False})
+        self.assertNotIn("warning", out)
 
     def test_stop_hook_advances_turn(self):
         """UserPromptSubmit 없이 시작하는 턴(`!` 셸 입력, 다른 세션의 알림)도 Stop Hook이 지나간 뒤에는 새 턴으로 센다 (2.16.0)."""

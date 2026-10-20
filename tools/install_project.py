@@ -36,7 +36,9 @@ SHARED = Path(__file__).resolve().parents[1]
 WL = SHARED / "core" / "wl.py"
 WL_CMD = f"python3 -B {shlex.quote(str(WL))}"
 # A Worklog hook from any install path or quoting style (plain, "double", shlex 'single').
-WL_HOOK = re.compile(r"""python3 -B (['"]?)(.*/)?core/wl\.py\1 (hook|turn-start|stop-hook) --tool (claude|codex|pi)""")
+WL_HOOK = re.compile(r"""python3 -B (['"]?)(.*/)?core/wl\.py\1 (hook|turn-start|stop-hook) --tool (claude|codex|agy|pi)""")
+TOOLS = ("claude", "codex", "agy", "pi")
+AGY_FRONT = "---\ntrigger: always_on\n---\n"  # agy rule file: loaded unconditionally (2.24.0)
 BEGIN, END = "<!-- worklog-shared:begin -->", "<!-- worklog-shared:end -->"
 
 
@@ -136,12 +138,14 @@ def rollback(done, made_dir):
     return undone
 
 
-def with_block(path, tool):
+def with_block(path, tool, front=""):
     block = f"{BEGIN}\n{rules(tool).strip()}\n{END}\n"
     old = path.read_text() if path.exists() else ""
     if BEGIN in old:
         head, rest = old.split(BEGIN, 1)
         return head + block + rest.split(END, 1)[1].lstrip("\n")
+    if not old.strip() and front:  # a file of our own (agy's rule file): its frontmatter comes first
+        return front + block
     return (old.rstrip() + "\n\n" if old.strip() else "") + block
 
 
@@ -198,6 +202,40 @@ def hook_settings(path, tool):
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
 
 
+def agy_hooks(path):
+    """agy hooks.json (user: ~/.gemini/config/hooks.json, project: .agents/hooks.json): named hooks, each a map of event → flat
+    handler list. Ours is "worklog" (SessionStart → hook, PreInvocation → turn-start, Stop → stop-hook); other names stay.
+    Unchanged content is returned byte-for-byte."""
+    try:
+        text = path.read_text() if path.exists() else ""
+        data = json.loads(text) if text.strip() else {}
+    except (OSError, ValueError) as e:
+        raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 설치하세요.")
+    if not isinstance(data, dict):
+        raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위는 JSON 객체). 고친 뒤 다시 설치하세요.")
+    ours = {event: [{"type": "command", "command": f"{WL_CMD} {command} --tool agy", "timeout": 10}]
+            for event, command in (("SessionStart", "hook"), ("PreInvocation", "turn-start"), ("Stop", "stop-hook"))}
+    if data.get("worklog") == ours:
+        return text
+    data["worklog"] = ours
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def pi_extension():
+    """~/.pi/agent/extensions/worklog.ts (or .pi/extensions/worklog.ts): the extension that calls the core like the other
+    tools' hooks do. Template adapters/pi/worklog.ts with the core path filled in."""
+    return (SHARED / "adapters" / "pi" / "worklog.ts").read_text().replace("__WL__", json.dumps(str(WL)))
+
+
+def hook_file(path, tool):
+    """Text of the tool's hook file: settings JSON (claude, codex), named-hook JSON (agy) or the extension (pi)."""
+    if tool == "agy":
+        return agy_hooks(path)
+    if tool == "pi":
+        return pi_extension()
+    return hook_settings(path, tool)
+
+
 def manifest(folder, tool):
     """Write <folder>/install.json[tool] = {version, rules_src_sha, installed_at}: what this copy of the rules was made from
     (folder = the project's .worklog, or WL_HOME for --user). The core compares rules_src_sha with its own adapters/rules.md
@@ -217,15 +255,22 @@ def manifest(folder, tool):
 
 
 def targets(tool, root, user):
-    """(guide file, hook settings file or None, SKILL.md) for a tool — in the user's home (user=True) or in a project."""
+    """(guide file, hook file or None, SKILL.md or None) for a tool — in the user's home (user=True) or in a project."""
     if user:
         if tool == "claude":
             return root / ".claude" / "CLAUDE.md", root / ".claude" / "settings.json", root / ".claude" / "skills" / "worklog" / "SKILL.md"
-        return root / ".codex" / "AGENTS.md", root / ".codex" / "hooks.json", root / ".agents" / "skills" / "worklog" / "SKILL.md"
+        if tool == "codex":
+            return root / ".codex" / "AGENTS.md", root / ".codex" / "hooks.json", root / ".agents" / "skills" / "worklog" / "SKILL.md"
+        if tool == "agy":  # its own rule file (24,000-byte cap per file; GEMINI.md untouched), named hook, global skill (2.24.0)
+            return root / ".gemini" / "config" / "rules" / "worklog.md", root / ".gemini" / "config" / "hooks.json", root / ".gemini" / "config" / "skills" / "worklog" / "SKILL.md"
+        return root / ".pi" / "agent" / "AGENTS.md", root / ".pi" / "agent" / "extensions" / "worklog.ts", root / ".pi" / "agent" / "skills" / "worklog" / "SKILL.md"
     if tool == "claude":
         return root / "CLAUDE.md", root / ".claude" / "settings.local.json", root / ".claude" / "skills" / "worklog" / "SKILL.md"
-    settings = root / ".codex" / "hooks.json" if tool == "codex" else None  # Trust is a user action.
-    return root / "AGENTS.md", settings, root / (".agents" if tool == "codex" else ".pi") / "skills" / "worklog" / "SKILL.md"
+    if tool == "codex":
+        return root / "AGENTS.md", root / ".codex" / "hooks.json", root / ".agents" / "skills" / "worklog" / "SKILL.md"
+    if tool == "agy":  # its own always-on rule file (AGENTS.md there binds codex); no project skill (codex owns .agents/skills/worklog)
+        return root / ".agents" / "rules" / "worklog.md", root / ".agents" / "hooks.json", None
+    return root / "AGENTS.md", root / ".pi" / "extensions" / "worklog.ts", root / ".pi" / "skills" / "worklog" / "SKILL.md"  # loaded after project trust
 
 
 def plan(root, tool, worklog_dir, when, user=False):
@@ -237,14 +282,15 @@ def plan(root, tool, worklog_dir, when, user=False):
     for path in (guide, settings, sk, worklog):
         if path:
             inside(root, path)
-    make_dir = bool(worklog) and worklog_dir and tool in {"claude", "codex"} and not worklog.is_dir()
+    make_dir = bool(worklog) and worklog_dir and not worklog.is_dir()
     if make_dir and worklog.exists():
         raise Refuse(f".worklog exists but is not a directory: {worklog}")
-    files = [(guide, with_block(guide, tool))]
+    files = [(guide, with_block(guide, tool, AGY_FRONT if tool == "agy" else ""))]
     if settings:
-        files.append((settings, hook_settings(settings, tool)))
-    files.append((sk, skill(tool)))
-    if worklog and worklog_dir and tool in {"claude", "codex"} and (root / ".git").exists():  # git project: keep the record out of commits
+        files.append((settings, hook_file(settings, tool)))
+    if sk:
+        files.append((sk, skill(tool)))
+    if worklog and worklog_dir and (root / ".git").exists():  # git project: keep the record out of commits
         gi = root / ".gitignore"
         inside(root, gi)
         text = gitignore_text(gi)
@@ -256,7 +302,7 @@ def plan(root, tool, worklog_dir, when, user=False):
 
 def detected_tools():
     """Which tools this machine seems to use: their home folders exist. A hint for the agent's question, not a decision."""
-    return {t: (Path.home() / f".{t}").is_dir() for t in ("claude", "codex")}
+    return {t: (Path.home() / d).is_dir() for t, d in (("claude", ".claude"), ("codex", ".codex"), ("agy", ".gemini"), ("pi", ".pi"))}
 
 
 def uninstaller():
@@ -272,7 +318,7 @@ def project_hooks_left(tool):
     out = []
     for r in un.load_registry():
         settings = targets(tool, Path(r), False)[1]
-        if settings and un.has_worklog_hook(settings):
+        if settings and (settings.exists() if settings.suffix == ".ts" else un.has_worklog_hook(settings)):  # .ts: the pi extension
             out.append(Path(r))
     return out
 
@@ -295,9 +341,9 @@ def main():
                     ".worklog) when this machine has more than your own tool (~/.claude, ~/.codex). Do not install for a tool the user "
                     "did not choose. Default is --user (once per machine); --root installs one project only. See AGENT.md 'Install'.",
         epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
-    ap.add_argument("--tool", choices=["claude", "codex", "pi"], help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
+    ap.add_argument("--tool", choices=list(TOOLS), help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
     where = ap.add_mutually_exclusive_group(required=True)
-    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents)에 한 번 설치. 프로젝트는 첫 `새 작업:`이 연결")
+    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents, ~/.gemini/config, ~/.pi/agent)에 한 번 설치. 프로젝트는 첫 `새 작업:`이 연결")
     where.add_argument("--root", help="한 프로젝트에만 설치(2.x 방식)")
     ap.add_argument("--migrate", action="store_true", help="--user: registry의 프로젝트에서 프로젝트 단위 블록·Hook·스킬을 먼저 제거(기록·세션·.gitignore 줄 유지)")
     ap.add_argument("--dry-run", action="store_true")
@@ -310,11 +356,9 @@ def main():
     try:
         if not a.tool:
             found = ", ".join(f"{t}={'있음' if v else '없음'}" for t, v in detected_tools().items())
-            raise Refuse("사용자에게 어느 도구에 설치할지 확인한 뒤 도구별로 실행하세요: --tool claude | codex (pi는 미검증). "
+            raise Refuse("사용자에게 어느 도구에 설치할지 확인한 뒤 도구별로 실행하세요: --tool claude | codex | agy | pi. "
                          f"이 기기에서 발견: {found}. 기기에 한 번 설치하려면 --user, 한 프로젝트만이면 --root <프로젝트>. "
                          "두 도구는 같은 .worklog를 공유하며, Codex는 설치 뒤 /hooks 신뢰가 필요합니다.")
-        if a.user and a.tool == "pi":
-            raise Refuse("pi는 사용자 범위 설치를 지원하지 않습니다(미검증). --root <프로젝트>로 설치하세요.")
         if a.user:
             left = project_hooks_left(a.tool)
             if left and not a.migrate:
@@ -348,7 +392,7 @@ def main():
                     worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
                     made_dir = worklog
                 wl_dir = root / ".worklog"
-                if a.tool in ("claude", "codex") and not a.no_worklog_dir and wl_dir.is_dir():
+                if not a.no_worklog_dir and wl_dir.is_dir():
                     changes.append(str(manifest(wl_dir, a.tool)))
         except OSError as e:
             undone = rollback(done, made_dir)
@@ -361,7 +405,8 @@ def main():
     out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes}
     if a.user:
         out["migrated"] = migrated
-        out["next"] = ("다음: " + ("Codex는 /hooks에서 Hook 3개를 신뢰하고, " if a.tool == "codex" else "")
+        out["next"] = ("다음: " + {"codex": "Codex는 /hooks에서 Hook 3개를 신뢰하고, ", "pi": "pi는 확장(~/.pi/agent/extensions/worklog.ts)을 읽도록 ",
+                                  "agy": "agy는 규칙 파일(~/.gemini/config/rules/worklog.md)과 hooks.json의 worklog 훅을 읽도록 "}.get(a.tool, "")
                        + "열린 세션을 다시 시작한 뒤 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)")
     else:
         out["registry"] = registry

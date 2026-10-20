@@ -36,12 +36,12 @@ import argparse, json, os, shutil, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from install_project import BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, stamp, targets  # noqa: E402
+from install_project import AGY_FRONT, BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, stamp, targets  # noqa: E402
 
 HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
 REGISTRY = HOME / "installs.json"
-TOOLS = ("claude", "codex", "pi")
-USER_TOOLS = ("claude", "codex")  # pi has no user-level install
+TOOLS = ("claude", "codex", "agy", "pi")
+USER_TOOLS = TOOLS  # 2.24.0: every tool has a user-level install
 RECORDS = ("works", "index.json", "project.md")  # kept by --keep-records
 STATE = ("sessions", ".lock", "off", "install.json")  # Worklog's own state: removed once no tool remains
 
@@ -101,12 +101,40 @@ def without_hooks(path, text):
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n" if settings else ""
 
 
+def walk_hooks(value):
+    """Every dict with a "command" anywhere in a hooks file: Claude/Codex groups and agy's named hooks alike."""
+    if isinstance(value, dict):
+        if "command" in value:
+            yield value
+        for v in value.values():
+            yield from walk_hooks(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from walk_hooks(v)
+
+
 def has_worklog_hook(path):
     try:
-        hooks = json.loads(path.read_text()).get("hooks", {})
-        return any(is_worklog_hook(h) for groups in hooks.values() for g in groups for h in g.get("hooks", []))
+        return any(is_worklog_hook(h) for h in walk_hooks(json.loads(path.read_text())))
     except (OSError, ValueError, AttributeError, TypeError):
         return False
+
+
+def without_agy_hooks(path, text):
+    """agy hooks.json without the named hooks whose handlers are all Worklog's; None when there is none, "" when empty."""
+    try:
+        data = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 실행하세요.")
+    if not isinstance(data, dict):
+        raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위는 JSON 객체). 고친 뒤 다시 실행하세요.")
+    ours = [name for name, spec in data.items() if isinstance(spec, dict)
+            and (handlers := list(walk_hooks(spec))) and all(is_worklog_hook(h) for h in handlers)]
+    if not ours:
+        return None
+    for name in ours:
+        del data[name]
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n" if data else ""
 
 
 def manifest_tools(worklog):
@@ -120,7 +148,8 @@ def manifest_tools(worklog):
 def installed(root, tool):
     """Whether `tool` still has a hook, a skill or a manifest entry here (the guide block is shared by codex and pi)."""
     _, settings, sk = paths(root, tool)
-    return (settings is not None and has_worklog_hook(settings)) or sk.exists() or tool in manifest_tools(root / ".worklog")
+    hooked = settings is not None and (settings.exists() if settings.suffix == ".ts" else has_worklog_hook(settings))
+    return hooked or (sk is not None and sk.exists()) or tool in manifest_tools(root / ".worklog")
 
 
 class Plan:
@@ -221,16 +250,22 @@ def plan_files(plan, root, tool, guide, settings, sk):
     if plan.exists(guide):
         text = without_block(plan.read(guide))
         if text is not None:
+            if tool == "agy" and text.strip() == AGY_FRONT.strip():  # our own rule file: only its frontmatter would remain
+                text = ""
             plan.edit(guide, text)
     if settings and plan.exists(settings):
-        text = without_hooks(settings, plan.read(settings))
-        if text is not None:
-            plan.edit(settings, text)
-            if tool == "codex" and text:
-                plan.notes.append(f"Codex: {settings.name}에 다른 Hook이 남아 있어 다음 /hooks에서 다시 신뢰해야 합니다. ~/.codex/config.toml의 신뢰 기록은 건드리지 않았습니다.")
-    if plan.exists(sk):
+        if tool == "pi":  # the extension file is entirely Worklog's
+            plan.delete(settings)
+        else:
+            text = (without_agy_hooks if tool == "agy" else without_hooks)(settings, plan.read(settings))
+            if text is not None:
+                plan.edit(settings, text)
+                if tool == "codex" and text:
+                    plan.notes.append(f"Codex: {settings.name}에 다른 Hook이 남아 있어 다음 /hooks에서 다시 신뢰해야 합니다. ~/.codex/config.toml의 신뢰 기록은 건드리지 않았습니다.")
+    if sk and plan.exists(sk):
         plan.delete(sk)
-    for d in (sk.parent, sk.parent.parent, sk.parent.parent.parent) + ((settings.parent,) if settings else ()):  # worklog/, skills/, .claude|.agents|.pi, .codex
+    for d in ((sk.parent, sk.parent.parent, sk.parent.parent.parent) if sk else ()) + ((guide.parent,) if tool == "agy" else ()) \
+            + ((settings.parent,) if settings else ()):  # worklog/, skills/, .claude|.agents|.pi; agy's rules/; .codex|.agents|extensions
         plan.prune(d)
 
 
@@ -292,7 +327,7 @@ def plan_state(plan, root, delete_records):
 
 def plan_backups(plan, root, folders=None):
     """Every *.bak-worklog-* the installer (or this tool) can have left."""
-    for folder in folders or [root, root / ".claude", root / ".codex"] + [paths(root, t)[2].parent for t in TOOLS]:
+    for folder in folders or [root, root / ".claude", root / ".codex", root / ".agents"] + [p.parent for t in TOOLS for p in paths(root, t)[1:] if p]:
         if folder.is_dir():
             for b in sorted(folder.glob("*.bak-worklog-*")):
                 if b.is_file():
@@ -443,8 +478,8 @@ def main():
     a = ap.parse_args()
     if not (a.root or a.user or a.all_projects or a.home):
         ap.error("--root, --user, --all-projects, --home 중 하나는 필요합니다")
-    if a.user and a.tool in (None, "pi"):
-        ap.error("--user에는 --tool claude | codex | all이 필요합니다")
+    if a.user and a.tool is None:
+        ap.error("--user에는 --tool claude | codex | agy | pi | all이 필요합니다")
     out = {"dry_run": a.dry_run, "projects": [], "notes": []}
     try:
         if a.user:
