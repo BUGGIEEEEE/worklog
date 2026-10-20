@@ -4,6 +4,30 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## agy and pi support (2.24.0, 2026-10-20, 4 model runs)
+
+2.24.0 installs the same rules, three hook points and skill for **agy** (Antigravity CLI: its own always-on rule file, a named hook in `hooks.json`, `PreInvocation` counted as a turn only at `invocationNum` 0, Stop answered with `{"decision": "continue"}`) and **pi** (an extension that calls the core on `session_start`, `before_agent_start` and `agent_before_settle` and sets `PI_SESSION_ID`). One run each of M2 (new work from an empty `.worklog/`) and M3 (two artifacts with check) per tool, project-level install of that tool only from the release branch, `WL_HOME` isolated. agy ran `agy -p --mode auto` with its default model; pi had no credentials on this machine, so it ran with an isolated agent dir (`PI_CODING_AGENT_DIR`) whose `models.json` points at a local OpenAI-compatible proxy (`gpt-6-astra`), `-a` trusting the project extension. Judged mechanically as in the earlier M layer.
+
+| Run | result | hooks recorded | s |
+|---|---|---|---|
+| M2 agy | PASS | SessionStart·UserPromptSubmit·Stop | 132.8 |
+| M3 agy | PASS | all three | 113.6 |
+| M2 pi | PASS | all three | 28.8 |
+| M3 pi | PASS | all three | 64.3 |
+
+In every run the model's own `save` landed in the session the hooks had created (hooks all true, no warning), which is the point of the session-id paths (`ANTIGRAVITY_CONVERSATION_ID`; the extension's `PI_SESSION_ID`). The Stop-block path was not exercised (every run saved); it is covered by unit tests. One run per cell; the user-level files and agy's 20,000-token rules budget were checked only after the merge on this machine. Details: `worklog-control/shared/runs/m-20261020-v2240/RESULTS.md`.
+
+2.24.0은 **agy**(Antigravity CLI: 전용 always-on 규칙 파일, `hooks.json`의 이름 붙은 훅, `PreInvocation`은 `invocationNum` 0에서만 턴으로 셈, Stop은 `{"decision": "continue"}`로 차단)와 **pi**(`session_start`·`before_agent_start`·`agent_before_settle`에서 코어를 부르고 `PI_SESSION_ID`를 설정하는 확장)에 같은 규칙·훅 지점 3개·스킬을 설치한다. 도구마다 M2(빈 `.worklog/`에서 새 작업)·M3(산출물 2개·check) 각 1회, release 브랜치로 그 도구만 프로젝트 설치, `WL_HOME` 격리. agy는 `agy -p --mode auto` 기본 모델, pi는 이 기기에 인증이 없어 격리 에이전트 폴더(`PI_CODING_AGENT_DIR`)의 `models.json`으로 로컬 OpenAI 호환 프록시(`gpt-6-astra`)를 쓰고 `-a`로 프로젝트 확장을 신뢰. 판정은 기존 M층과 같다.
+
+| 회차 | 판정 | 기록된 훅 | 초 |
+|---|---|---|---|
+| M2 agy | PASS | SessionStart·UserPromptSubmit·Stop | 132.8 |
+| M3 agy | PASS | 셋 모두 | 113.6 |
+| M2 pi | PASS | 셋 모두 | 28.8 |
+| M3 pi | PASS | 셋 모두 | 64.3 |
+
+모든 회차에서 모델의 `save`가 훅이 만든 세션에 기록됐다(hooks 모두 true, 경고 없음). 이것이 세션 id 경로(`ANTIGRAVITY_CONVERSATION_ID`, 확장의 `PI_SESSION_ID`)의 확인이다. Stop 차단 경로는 타지 않았고(모두 save함) 단위 테스트로 확인한다. 셀당 1회이며, 사용자 수준 파일과 agy의 20,000토큰 규칙 예산은 병합 뒤 이 기기에서만 확인했다. 상세: `worklog-control/shared/runs/m-20261020-v2240/RESULTS.md`.
+
 ## 2.23.0 rule bundle — `[behavior]`, `[delegated:]`, project.md suggestion, `Map:`, unseen events (2026-10-20, 4 model runs)
 
 2.23.0 changes five rule sentences and two projections: a correction of how the model works starts with `[behavior]` and carries the user's words (type CORRECTION when it only records the correction, D_USER when it also adds a lasting constraint or decision); the delegation tag is `[delegated: …]` and adoption cites the sub-session's event ids; a separate session is opened in the work root with the same first line whatever the channel; `project.md` is suggested once (only when a work is set to COMPLETED or the user says "앞으로 이 프로젝트에서는 …") and never written before the user says so; a "look here first" decision is prefixed `Map:` and `state.md` shows such decisions in a `## 안내` section; `show`, `use` and the injection append the events this session has not seen yet. Two-turn runs per tool (M11: `claude -p` + `--resume`, `codex exec` + `resume`, default models) in a project installed from the release branch with a seeded work, a sub-session's saved draft (E0002) and a `docs/tone.md`. Turn 1 asks to review and record the sub-session's file and adds "앞으로 이 프로젝트에서는 … docs/tone.md … 먼저 봐"; turn 2 corrects how the model reports ("결론부터 … 네가 일하는 방식을 바로잡는 거야"). The user-level rules of this machine were kept out (Claude `--setting-sources project,local`, Codex a scratch `CODEX_HOME`). Judged mechanically before each run: a `[delegated:` summary citing E0002 and no `[위임`; a new decision starting with `Map:` and the `## 안내` section in `state.md`; exactly one "넣을까" with `project.md` in the answers and no `.worklog/project.md`; a `[behavior]` event whose quote is in the prompt, whose constraints have the user source, saved once in turn 2.

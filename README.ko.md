@@ -18,6 +18,8 @@
 git clone https://github.com/BUGGIEEEEE/worklog.git
 python3 -B worklog/tools/install_project.py --tool claude --user
 python3 -B worklog/tools/install_project.py --tool codex  --user
+python3 -B worklog/tools/install_project.py --tool agy    --user   # Antigravity CLI (2.24.0)
+python3 -B worklog/tools/install_project.py --tool pi     --user   # pi (2.24.0)
 ```
 
 설치 확인 — 코어 버전이 출력되면 됩니다(`CHANGELOG.md` 참고):
