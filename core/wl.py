@@ -5,9 +5,10 @@ Commands:  works | use | new-work | show | save | skip | verify | archive | reop
            | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
            sessions/<tool>_<session>.json, install.json?, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
-Connected: a folder whose .worklog/ exists. The first new-work creates it (user-level install, 2.21.0) and the
-           installer's --root mode creates it too; the hooks say NOT_CONNECTED elsewhere.
-Root:      without --root, commands and hooks use candidate_root(cwd) (2.25.0): cwd when it is connected, else the nearest
+Connected: a folder whose .worklog/ exists (WL_HOME, ~/.worklog, only with index.json). The first new-work creates it
+           (user-level install, 2.21.0) and the installer's --root mode creates it too; the hooks say NOT_CONNECTED elsewhere.
+Root:      --root as given (hooks too); without it, commands use candidate_root(cwd) and hooks candidate_root(event cwd)
+           (2.25.0): cwd when it is connected, else the nearest
            folder with .worklog/index.json up to the git top level, else the git top level, else (not git) cwd.
 Standard library only. Never runs business commands.
 """
@@ -93,13 +94,20 @@ def store(root):
     return Path(root).resolve() / ".worklog"
 
 
+def is_wl_home(d):
+    """d (a .worklog store) is the user's WL_HOME (~/.worklog: config, registry, user-level manifest)."""
+    return Path(d).resolve() == WL_HOME.resolve()
+
+
+def connected(d):
+    """The store d is a connection: a directory that is not just WL_HOME (it counts only when it also holds works, i.e. the
+    home folder itself is a Worklog project). Every "is this folder connected" check of the commands and hooks uses this."""
+    return d.is_dir() and (not is_wl_home(d) or (d / "index.json").is_file())
+
+
 def connected_here(p):
-    """p/.worklog is a connection: a directory that is not just the user's WL_HOME (~/.worklog holds config, registry and
-    manifest; it counts only when it also holds works, i.e. the home folder itself is a Worklog project)."""
-    d = p / ".worklog"
-    if not d.is_dir():
-        return False
-    return d.resolve() != WL_HOME.resolve() or (d / "index.json").is_file()
+    """p/.worklog is a connection (see connected)."""
+    return connected(p / ".worklog")
 
 
 def has_works(p):
@@ -469,8 +477,8 @@ def connect(root, tool):
         changed.append(registry)
     else:
         notes.append(f"{WL_HOME / 'installs.json'}에 등록하지 못함(제거기 --all-projects 목록에 빠짐).")
-    try:
-        if mark_connected(root / ".worklog", tool):
+    try:  # the home folder as a project: its .worklog is WL_HOME, whose install.json is the user-level manifest (left alone)
+        if not is_wl_home(root / ".worklog") and mark_connected(root / ".worklog", tool):
             changed.append(str(root / ".worklog" / "install.json"))
     except OSError as e:
         notes.append(f"install.json을 쓰지 못함({e}).")
@@ -917,7 +925,7 @@ def cmd_save(args):
     except json.JSONDecodeError as e:
         raise Reject(f"JSON 해석 실패: {e}. `wl.py help` 참고.")
     d = store(root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(no_work_msg({"works": {}}))
     with locked(d):
         index = index_or_new(d)
@@ -1056,9 +1064,9 @@ def cmd_version(args):
 
 def cmd_works(args):
     d = store(args.root)
-    index = (load_index(d) if d.is_dir() else None) or {"works": {}}
+    index = (load_index(d) if connected(d) else None) or {"works": {}}
     who, current = try_identity(args), None
-    if who and d.is_dir():
+    if who and connected(d):
         try:
             current = (load_session(d, *who) or {}).get("current_work")
         except SessionCorrupt:
@@ -1073,7 +1081,7 @@ def cmd_use(args):
     tool, sid = identity(args)
     need_quote(args, f'use {args.arg} --quote "<사용자 원문>"')
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(NOT_CONNECTED.format(root=d.parent))
     with locked(d):
         w = entry(index_or_new(d), args.arg)
@@ -1105,7 +1113,7 @@ def cmd_new_work(args):
     tool, sid = identity(args)
     need_quote(args, f'new-work "{title}" --quote "<사용자 원문>"')
     d = store(args.root)
-    fresh = not d.is_dir()  # 2.21.0: 폴더를 처음 만드는 new-work가 이 프로젝트를 연결한다
+    fresh = not connected(d)  # 2.21.0: 폴더를 처음 만드는 new-work가 이 프로젝트를 연결한다
     d.mkdir(exist_ok=True)
     with locked(d):
         sess = session_or_new(d, tool, sid)
@@ -1147,7 +1155,7 @@ def set_status(args, status, summary):
     wid = args.arg
     tool, sid = identity(args)
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(f"없는 작업입니다: {wid}. 작업 목록: (없음)")
     with locked(d):
         index = index_or_new(d)
@@ -1208,7 +1216,7 @@ def cmd_reassign(args):
     tool, sid = identity(args)
     need_quote(args, usage, said="잘못 골랐다고 한")
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(NOT_CONNECTED.format(root=d.parent))
     result, failed = None, None
     with locked(d):
@@ -1218,13 +1226,18 @@ def cmd_reassign(args):
         ids = event_ids(args.events, wevents)
         span = ids[0] if len(ids) == 1 else (f"{ids[0]}-{ids[-1]}" if len(ids) == int(ids[-1][1:]) - int(ids[0][1:]) + 1 else ", ".join(ids))
         marks = lambda e, kind, work: {r.get("id") for r in e.get("refs") or [] if r.get("kind") == kind and r.get("work", work) == work}
+        sel = set(ids)
+        for e in wevents:  # an event already refiled to another work is not refiled again (its rules left this work then)
+            hit = marks(e, "misfiled", wrong) & sel if e.get("type") == "CORRECTION" else set()
+            other = next((r.get("work") for r in e.get("refs") or [] if r.get("kind") == "refiled_to" and r.get("work") != right), None)
+            if hit and other:
+                raise Reject(f"이미 {other}로 옮긴 사건입니다: {', '.join(sorted(hit))}({wrong} {e['id']}). show --work {other}로 확인하세요.")
         done_a = next((e for e in wevents if e.get("type") == "CORRECTION" and sorted(marks(e, "misfiled", wrong)) == ids
                        and marks(e, "refiled_to", right)), None)  # a partial run before: ⒜ is there
         revents, rprev = read_events(work_dir(d, right))
         if done_a and any(done_a["id"] in marks(e, "correction", wrong) for e in revents):
             raise Reject(f"이미 옮겼습니다: {wrong} {done_a['id']} ↔ {right}. show --work {right}로 확인하세요.")
         before, _ = fold(wevents[:done_a["seq"] - 1] if done_a else wevents)  # what those events had put in the wrong work
-        sel = set(ids)
         decs = [x for x in before["decisions"] if x["event"] in sel]
         cons = [x for x in before["constraints"] if x["event"] in sel]
         arts = [x for x in before["artifacts"] if x["event"] in sel]
@@ -1287,7 +1300,7 @@ def cmd_rename(args):
     tool, sid = identity(args)
     need_quote(args, usage, said="제목을 바꾸라고 한")
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(NOT_CONNECTED.format(root=d.parent))
     with locked(d):
         index = index_or_new(d)
@@ -1318,7 +1331,7 @@ def current_work(d, who, index):
 
 def cmd_show(args):
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         print(NOT_CONNECTED.format(root=d.parent))
         return
     index = load_index(d)
@@ -1390,7 +1403,7 @@ def check_work(d, wid, title):
 
 def cmd_verify(args):
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         result = verify_result(d, args, {"works": {}})
     else:
         with locked(d):  # index·원장·투영을 저장 도중이 아닌 한 시점에서 함께 읽는다
@@ -1472,7 +1485,7 @@ def off_marker(d):
 
 def installed(args):
     d = store(args.root)
-    if not d.is_dir():
+    if not connected(d):
         raise Reject(NOT_CONNECTED.format(root=d.parent) + " 켜거나 끌 대상이 없습니다.")
     return d
 
@@ -1527,10 +1540,10 @@ def cmd_on(args):
 # --- Hook ---
 
 def hook_input(args):
-    """Hook event from stdin → (store dir, (tool, session) or None, event). args.root is set to candidate_root of the
-    event's cwd (2.25.0; an event without cwd keeps --root or the process cwd's candidate), args.root_info to its reasons.
-    Connected = .worklog/ directory exists; otherwise store dir is None: SessionStart says so in one line and the other
-    two hooks stay silent."""
+    """Hook event from stdin → (store dir, (tool, session) or None, event). args.root is an explicit --root as given, else
+    candidate_root of the event's cwd (2.25.0; an event without cwd keeps the process cwd's candidate), args.root_info its
+    reasons. Connected = connected(store) (WL_HOME without index.json is not); otherwise store dir is None: SessionStart
+    says so in one line and the other two hooks stay silent."""
     try:
         event = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1540,10 +1553,14 @@ def hook_input(args):
     cwd = event.get("cwd")
     if not cwd and isinstance(event.get("workspacePaths"), list) and event["workspacePaths"]:  # agy (Antigravity CLI) hooks.json payload (2.24.0)
         cwd = event["workspacePaths"][0]
-    args.root_info = root_info(cwd) if isinstance(cwd, str) and cwd else {"root": Path(args.root).resolve(), "cwd": Path(args.root).resolve(), "git": git_top(Path(args.root).resolve()), "outside": None}
+    if isinstance(cwd, str) and cwd and not getattr(args, "root_explicit", False):
+        args.root_info = root_info(cwd)
+    else:  # an explicit --root is used as given (2.25.0, like the other commands); no cwd: the process cwd's candidate
+        given = Path(args.root).resolve()
+        args.root_info = {"root": given, "cwd": given, "git": git_top(given), "outside": None}
     d = store(args.root_info["root"])
     args.root = str(d.parent)
-    if not d.is_dir():
+    if not connected(d):
         return None, None, event
     sid = event.get("session_id") or event.get("conversationId")  # conversationId: agy
     if isinstance(sid, str) and sid:
@@ -1613,13 +1630,15 @@ def hook_output(tool, text):
 
 def not_connected_line(args, fork):
     """The one NOT_CONNECTED line (2.25.0): root = candidate_root, auto = the user's config, git = whether cwd is in a git
-    work tree, then what to do (auto=on: connect on the first request worth recording; auto=off: the 2.24 text)."""
+    work tree, then what to do (auto=on: connect on the first request worth recording; auto=off: the 2.24 text). A root
+    whose store is WL_HOME (the home folder) gets the auto=off text whatever auto says: it is never connected by itself."""
     info, auto = args.root_info, auto_mode()
+    home = is_wl_home(store(info["root"]))
     head = (f"[Worklog {FORMAT} SessionStart | NOT_CONNECTED | root={info['root']} | auto={auto} | git={'yes' if info['git'] else 'no'}"
             + (" | FORK" if fork else "") + "] ")
-    if auto == "off":
+    if auto == "off" or home:
         body = ("이 폴더는 Worklog에 연결되지 않았다. 사용자가 \"새 작업: <제목>\"이라 하기 전까지 Worklog 절차(작업 지정 질문·save·skip·show)를 "
-                "적용하지 않는다.")
+                "적용하지 않는다." + (" 홈 폴더는 자동 연결하지 않는다." if home else ""))
     else:
         body = (f"이 폴더는 Worklog에 연결되지 않았다. 첫 기록 대상 요청(사용자가 결과를 원하는 요청. 인사·도구 조작·한 줄 확인은 아님)에서 "
                 f"묻지 않고 new-work \"<제목>\" --quote \"<요청 원문>\" --root {shlex.quote(str(info['root']))}로 연결하고 그 턴에 save한다. "
@@ -1784,7 +1803,7 @@ def cmd_skip(args):
         raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
     d = store(args.root)
     tool, sid = identity(args)
-    if not d.is_dir():
+    if not connected(d):
         print(json.dumps({"ok": True, "turn": 0}))
         return
     with locked(d):
@@ -1823,6 +1842,7 @@ def main(argv=None):
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
     ap.add_argument("--force", action="store_true", help="new-work: 같은 턴의 두 번째 new-work 거부를 풀어 하나 더 만든다")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
+    args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
     if args.command == "help":
         print(f"worklog core {VERSION} (format {FORMAT})\n" + SAVE_HELP)

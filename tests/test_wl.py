@@ -23,8 +23,13 @@ TEST_HOME = Path(tempfile.mkdtemp())  # WL_HOME for every run: update mode off, 
 os.environ["WL_HOME"] = str(TEST_HOME)  # also for installer runs without an explicit env and in-process imports: the installer writes the registry there (2.17.0), never into the real ~/.worklog
 
 
+TOOL_ENV_NAMES = {name for _, name in load_wl().TOOL_ENV}  # every session variable the core reads (CODEX_THREAD_ID, ANTIGRAVITY_CONVERSATION_ID, ...)
+
+
 def clean_env():
-    env = {k: v for k, v in os.environ.items() if not k.endswith("SESSION_ID") and k not in ("CODEX_THREAD_ID", "WL_TOOL")}
+    """The test process's environment without any tool's session variables, so a run inside Codex, Claude Code, Antigravity or
+    pi sees no session of its own."""
+    env = {k: v for k, v in os.environ.items() if not k.endswith("SESSION_ID") and k not in TOOL_ENV_NAMES | {"WL_TOOL"}}
     env["WL_HOME"] = str(TEST_HOME)
     return env
 
@@ -1849,6 +1854,32 @@ class UserScopeTest(Base):
     def tree(self, folder):
         return {str(p.relative_to(folder)): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
 
+    def test_user_install_config_failure_leaves_no_manifest(self):
+        """2.25.0: config.json is written before the manifest, so a failed config write leaves no manifest entry (rollback
+        covers the tool files only)."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "WL_HOME": str(self.wl_home)}):
+            spec = importlib.util.spec_from_file_location("install_project_f11", INST)
+            inst = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(inst)
+            real = inst.wl.write_atomic
+            def failing(path, text):
+                if Path(path).name == "config.json":
+                    raise OSError("디스크 가득 참")
+                return real(path, text)
+            out, code = io.StringIO(), 0
+            argv = ["install_project.py", "--tool", "claude", "--user"]
+            with mock.patch.object(inst.wl, "write_atomic", failing), mock.patch.object(sys, "argv", argv), mock.patch("sys.stdout", out):
+                try:
+                    inst.main()
+                except SystemExit as e:
+                    code = e.code
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertIn("rolled_back", json.loads(out.getvalue()))
+        self.assertFalse((self.wl_home / "install.json").exists())                  # 매니페스트가 남지 않는다
+        self.assertEqual(json.loads((self.wl_home / "config.json").read_text()), {"update": "off"})
+        self.assertFalse((self.home / ".claude/CLAUDE.md").exists())                # 도구 파일은 되돌렸다
+        self.assertEqual(json.loads((self.home / ".claude/settings.json").read_text()), self.settings0)
+
     def test_user_install_claude_and_codex(self):
         before = self.tree(self.home)
         code, out = self.install("--tool", "claude", "--user", "--dry-run")
@@ -2524,6 +2555,58 @@ class AutoConnectTest(Base):
     def events_at(self, root, wid):
         return (root / ".worklog/works" / wid / "events.jsonl").read_text().splitlines()
 
+    def test_wl_home_is_never_auto_connected(self):
+        """F01 (2.25.0): ~ whose .worklog is WL_HOME without index.json is not connected, for the hooks and the commands, even
+        with auto=on and even as the git top level of a subfolder. An explicit new-work there still makes ~ a project and
+        leaves WL_HOME/install.json (the user-level manifest) alone."""
+        h = self.mk("home")
+        wlh = h / ".worklog"
+        wlh.mkdir()
+        (wlh / "config.json").write_text('{"update": "off"}')                      # auto 키 없음 = on
+        (wlh / "install.json").write_text('{"codex": {"version": "2.25.0", "rules_src_sha": "x"}}')
+        env = {"HOME": str(h), "WL_HOME": str(wlh)}
+        tree = lambda: {str(p.relative_to(wlh)): p.read_bytes() for p in wlh.rglob("*") if p.is_file()}
+        before = tree()
+        def quiet(cwd):
+            ctx = json.loads(hook(cwd, "hook", env=env)[1])["hookSpecificOutput"]["additionalContext"]
+            self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NOT_CONNECTED | root={h} | auto=on | "), ctx)
+            self.assertIn("홈 폴더는 자동 연결하지 않는다.", ctx)
+            self.assertNotIn("new-work", ctx)
+            for cmd in ("turn-start", "stop-hook"):
+                self.assertEqual(hook(cwd, cmd, env=env), (0, ""))
+        quiet(h)
+        self.assertIn("연결되지 않은 폴더", self.plain(h, "show", env=env)[1])
+        self.assertEqual(self.ok(self.plain(h, "skip", "x", env=env))["turn"], 0)
+        self.refused(self.plain(h, "use", "t", "--quote", "q", env=env), "연결되지 않은")
+        self.assertEqual(self.plain(h, "save", payload={"type": "CHECKPOINT", "summary": "x"}, env=env)[0], 2)
+        (h / ".git").mkdir()                                                       # git 최상위가 ~인 하위 폴더
+        quiet(self.mk("home", "sub"))
+        self.assertEqual(tree(), before)                                           # sessions·.lock·install.json 모두 그대로
+        out = self.ok(self.plain(h, "new-work", "홈 작업", "--quote", "새 작업: 홈 작업", env=env))  # 명시 new-work: 홈을 프로젝트로
+        self.assertTrue(out["connected"])
+        self.assertEqual((wlh / "install.json").read_bytes(), before["install.json"])  # 사용자 매니페스트는 건드리지 않는다
+        self.assertNotIn(str(wlh / "install.json"), out["connected_changed"])
+        for cwd in (h, h / "sub"):                                                 # index가 있으면 기존대로 연결된다
+            ctx = json.loads(hook(cwd, "hook", session="s2", env=env)[1])["hookSpecificOutput"]["additionalContext"]
+            self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NO_CURRENT_WORK | root={h}]"), ctx)
+
+    def test_hook_explicit_root_wins(self):
+        """F02 (2.25.0): a hook run with --root uses that folder, not the event's cwd (the installed hooks carry no --root)."""
+        a, b = self.mk("a"), self.mk("b")
+        self.ok(run(a, "new-work", tool="claude", extra=["A", "--quote", "q"]))
+        self.ok(run(b, "new-work", tool="claude", extra=["B", "--quote", "q"]))
+        ctx = json.loads(hook(b, "hook", session="x1", extra=["--root", str(a)])[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith(f"[Worklog worklog/2 SessionStart | NO_CURRENT_WORK | root={a}]"), ctx)
+        self.assertEqual(hook(b, "turn-start", session="x1", extra=["--root", str(a)]), (0, ""))
+        res = json.loads(hook(b, "stop-hook", session="x1", extra=["--root", str(a)])[1])
+        self.assertEqual(res["decision"], "block")
+        self.assertIn(f"--root {a}", res["reason"])
+        self.assertEqual(json.loads(session_file(a, "claude_x1").read_text())["turn"], 1)
+        self.assertFalse(session_file(b, "claude_x1").exists())
+        hook(b, "hook", session="x2")                                              # --root 없음: 이벤트 cwd
+        self.assertTrue(session_file(b, "claude_x2").exists())
+        self.assertFalse(session_file(a, "claude_x2").exists())
+
     def test_new_work_unwritable_folder(self):
         if os.geteuid() == 0:
             self.skipTest("root ignores permissions")
@@ -2654,6 +2737,20 @@ class AutoConnectTest(Base):
         self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0009", "--quote", "q"]), "작업에 없는 사건")
         self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001"]), "사용자 원문")
         self.refused(run(self.root, "reassign", extra=["a", "a", "--events", "E0001", "--quote", "q"]), "같습니다")
+
+    def test_reassign_refused_after_refiled_elsewhere(self):
+        """An event already refiled a → b is not refiled again a → c (that would leave an empty correction pair)."""
+        self.two_works()
+        self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "B야"]))
+        self.ok(new_work(self.root, "C"))
+        a_before = (self.d / "works/a/events.jsonl").read_bytes()
+        self.refused(run(self.root, "reassign", extra=["a", "c", "--events", "E0002", "--quote", "아니 C야"]), "이미 b로 옮긴 사건입니다: E0002")
+        self.refused(run(self.root, "reassign", extra=["a", "c", "--events", "E0002-E0003", "--quote", "C야"]), "show --work b")
+        self.assertEqual((self.d / "works/a/events.jsonl").read_bytes(), a_before)
+        self.assertFalse((self.d / "works/c/events.jsonl").exists() and (self.d / "works/c/events.jsonl").read_text())
+        out = self.ok(run(self.root, "reassign", extra=["a", "c", "--events", "E0003", "--quote", "그건 C야"]))  # 안 옮긴 사건은 된다
+        self.assertEqual(out["moved"]["constraints"], ["C2"])
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "다시"]), "이미 옮겼습니다")  # 같은 쪽: 기존 동작
 
     def test_reassign_partial_then_retry(self):
         self.two_works()

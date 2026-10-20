@@ -262,7 +262,7 @@ section.units .card .row{line-height:1.6}
   <div class="cols units" style="margin-top:-2px">
     <div class="stack units">
 <pre>project folder/
-└── .worklog/                 one per project (created by the first new work)
+└── .worklog/                 one per project (created by the first record)
     └── works/                one folder per work
         ├── guide/            work 1  paper-notebook habit plan
         │   ├── <b class="f-ev">events.jsonl</b>    history
@@ -292,7 +292,7 @@ section.units .card .row{line-height:1.6}
       <div class="row"><b>Say to the AI</b><span><code>Clone https://github.com/BUGGIEEEEE/worklog and install Worklog on this machine</code> <i class="p">(the AI reads AGENT.md and first asks which tools to install for)</i></span></div>
       <div class="row"><b>The AI runs</b><span><div class="cmd"><pre id="cmd-install">git clone https://github.com/BUGGIEEEEE/worklog.git                                   # once
 python3 -B worklog/tools/install_project.py --tool claude --user                      # once per tool, machine-wide
-python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button type="button" class="copy" data-for="cmd-install">Copy</button></div><i class="p">clone once · install once per tool · a project is connected by its first <code>새 작업:</code> · nothing to do after that</i></span></div>
+python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button type="button" class="copy" data-for="cmd-install">Copy</button></div><i class="p">clone once · install once per tool · a project is connected by its first request worth recording (auto=off: <code>새 작업:</code>) · nothing to do after that</i></span></div>
       <div class="row"><b>Only you can do</b><span><i>Codex: after installing, run <code>/hooks</code> once and trust the three hooks it lists; trust each project when you first open it</i> <i>· Claude Code: accept the folder-trust dialog if the project is a git repository</i> <i>· restart sessions that were already open</i></span></div>
       <div class="row"><b>Check</b><span><i>ask the AI "check the Worklog version"</i> <i class="p">(Worklog 버전 확인해 줘)</i> <i class="a"><code>wl.py version</code> prints it</i></span></div>
     </div>
@@ -396,7 +396,7 @@ python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button ty
       <span class="t">① Rules block — how the model is told to handle the record</span>
       <div class="row"><b>Where</b><span><i><code>~/.claude/CLAUDE.md</code></i> <i class="p">(the user-level instruction file Claude Code reads in every session)</i> <i>· written once per machine by the installer</i></span></div>
       <div class="row"><b>Turn start</b><span><i>if injection ② is present, treat it as the current state</i> <i>· otherwise read the record with <code>show</code></i></span></div>
-      <div class="row"><b>Choosing a work</b><span><i>only when the user says "continue 〈id〉" or "new work: 〈title〉"</i> <i class="p">(〈id〉 이어서 · 새 작업: 〈title〉)</i> <i>· never on its own initiative</i></span></div>
+      <div class="row"><b>Choosing a work</b><span><i>a folder with works: a new session asks once</i> <i class="p">("continue 〈id〉" · 〈id〉 이어서 skips the question)</i> <i>· never picks an existing work itself</i> <i>· an empty folder: the first request starts a new work</i></span></div>
       <div class="row"><b>Saving</b><span><i>run <code>save</code> before the turn ends</i> <i>· for each decision and constraint, quote the line of the artifact that honors it,</i> <i>or state why it does not apply</i></span></div>
       <div class="row"><b>Changes</b><span><i>kept exactly as installed</i> <i>· a new version is applied by reinstalling</i></span></div>
     </div>

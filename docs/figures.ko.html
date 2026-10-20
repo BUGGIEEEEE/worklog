@@ -261,7 +261,7 @@ section.units .card .row{line-height:1.6}
   <div class="cols units" style="margin-top:-2px">
     <div class="stack units">
 <pre>프로젝트 폴더/
-└── .worklog/                 프로젝트마다 하나 (첫 새 작업 때 생성)
+└── .worklog/                 프로젝트마다 하나 (첫 기록 때 생성)
     └── works/                작업마다 폴더 하나
         ├── guide/            작업 1  종이 노트 습관 계획
         │   ├── <b class="f-ev">events.jsonl</b>    이력
@@ -289,7 +289,7 @@ section.units .card .row{line-height:1.6}
     <div class="card">
       <span class="t">설치 — AI에게 시키면 됨</span>
       <div class="row"><b>AI에게</b><span><code>https://github.com/BUGGIEEEEE/worklog 를 clone해서 이 기기에 Worklog 설치해 줘</code></span></div>
-      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone과 설치는 도구마다 한 번(기기 전체)</i> <i>· 프로젝트는 첫 <code>새 작업:</code>이 연결</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
+      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone과 설치는 도구마다 한 번(기기 전체)</i> <i>· 프로젝트는 첫 기록 대상 요청이 자동 연결</i> <i class="p">(auto=off면 <code>새 작업:</code>)</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
       <div class="row"><b>사람이 할 일</b><span><i>Codex: 설치 뒤 <code>/hooks</code>에서 자동 실행 설정 3개를 한 번 신뢰, 프로젝트는 처음 열 때 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i> <i>· 열린 세션은 다시 시작</i></span></div>
       <div class="row"><b>확인</b><span><i>AI에게 <code>Worklog 버전 확인해 줘</code></i> <i class="a">설치된 버전을 알려 줌</i></span></div>
     </div>
@@ -393,7 +393,7 @@ section.units .card .row{line-height:1.6}
       <span class="t">① 규칙 블록 — 모델이 기록을 다루는 절차</span>
       <div class="row"><b>위치</b><span><i><code>~/.claude/CLAUDE.md</code></i> <i class="p">(Claude Code가 모든 세션에서 읽는 사용자 지침 파일)</i> <i>· 설치기가 기기에 한 번 기록</i></span></div>
       <div class="row"><b>턴 시작</b><span><i>② 주입이 있으면 현재 상태로 사용</i> <i>· 없으면 <code>show</code>로 기록 읽기</i></span></div>
-      <div class="row"><b>작업 선택</b><span><i>사용자가 <code>〈id〉 이어서</code> 또는</i> <i><code>새 작업: 〈제목〉</code>이라고 할 때만</i> <i>· 임의 선택 없음</i></span></div>
+      <div class="row"><b>작업 선택</b><span><i>작업이 있는 폴더: 새 세션이 한 번 물음</i> <i class="p">(<code>〈id〉 이어서</code>로 시작하면 묻지 않음)</i> <i>· 기존 작업을 대신 고르지 않음</i> <i>· 빈 폴더: 첫 요청이 새 작업</i></span></div>
       <div class="row"><b>저장</b><span><i>턴 종료 전 <code>save</code></i> <i>· 결정·제약마다 산출물에서 인용하거나</i> <i>"미반영: 사유" 기재</i></span></div>
       <div class="row"><b>변경</b><span><i>설치 때 저장한 그대로 유지</i> <i>· 새 버전은 재설치로 갱신</i></span></div>
     </div>

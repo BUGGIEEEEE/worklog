@@ -364,7 +364,8 @@ def main():
         epilog=".worklog/project.md는 사용자가 편집하는 선택 파일이며 설치기가 만들지 않습니다.")
     ap.add_argument("--tool", choices=list(TOOLS), help="없으면 거부: 사용자에게 어느 도구에 설치할지 먼저 확인")
     where = ap.add_mutually_exclusive_group(required=True)
-    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents, ~/.gemini/config, ~/.pi/agent)에 한 번 설치. 프로젝트는 첫 `새 작업:`이 연결")
+    where.add_argument("--user", action="store_true", help="이 기기의 도구 설정(~/.claude, ~/.codex, ~/.agents, ~/.gemini/config, ~/.pi/agent)에 한 번 설치. "
+                       "프로젝트는 auto=on(기본)이면 첫 기록 대상 요청이, auto=off면 `새 작업:`이 연결")
     where.add_argument("--root", help="한 프로젝트에만 설치(2.x 방식)")
     ap.add_argument("--migrate", action="store_true", help="--user: registry의 프로젝트에서 프로젝트 단위 블록·Hook·스킬을 먼저 제거(기록·세션·.gitignore 줄 유지)")
     ap.add_argument("--dry-run", action="store_true")
@@ -408,10 +409,10 @@ def main():
                 write(path, text, backup)
                 done.append((path, backup, existed))
             if a.user:
-                changes.append(str(manifest(HOME, a.tool)))
-                if config:
+                if config:  # before the manifest: a failed config write leaves no manifest entry behind (rollback covers tool files only)
                     HOME.mkdir(parents=True, exist_ok=True)
                     wl.write_atomic(config[0], config[1])
+                changes.append(str(manifest(HOME, a.tool)))
             else:
                 if worklog:
                     worklog.mkdir(parents=True, exist_ok=True)  # Connection signal; never create a ledger here.
@@ -434,7 +435,11 @@ def main():
             out["config"] = {"path": str(config[0]), "auto": "on"}
         out["next"] = ("다음: " + {"codex": "Codex는 /hooks에서 Hook 3개를 신뢰하고, ", "pi": "pi는 확장(~/.pi/agent/extensions/worklog.ts)을 읽도록 ",
                                   "agy": "agy는 규칙 파일(~/.gemini/config/rules/worklog.md)과 hooks.json의 worklog 훅을 읽도록 "}.get(a.tool, "")
-                       + "열린 세션을 다시 시작한 뒤 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)")
+                       + "열린 세션을 다시 시작하세요. "
+                       + ("auto=off이므로 프로젝트 폴더의 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요(그때 .worklog/가 생깁니다)"
+                          if wl.auto_mode() == "off" else
+                          "프로젝트 폴더의 첫 세션은 자동 연결 대상이 되고, 첫 기록 대상 요청이 새 작업을 만듭니다(그때 .worklog/가 생깁니다). "
+                          "홈 폴더는 자동 연결하지 않습니다"))
     else:
         out["registry"] = registry
         out["next"] = "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
