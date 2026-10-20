@@ -4,6 +4,32 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Automatic connection v2, reassign/rename (2.25.0, 2026-10-20/21, 10 model runs + 4 re-runs)
+
+2.25.0 lets a plain request start the record: a hook in a folder without records reports `NOT_CONNECTED | root= | auto= | git=` and, with `auto` on (the default), the model's first request worth recording runs `new-work` with an `[auto]` title; in a folder that already has works the model asks once which work to use and never picks one itself. Records go to the git top level or the nearest folder with `.worklog/index.json` inside it; `~/.worklog` (`WL_HOME`) is never auto-connected. `reassign` corrects a save that went to the wrong work (two CORRECTION events, the ledger lines stay), `rename` changes a title. The rule block gained one NOT_CONNECTED item, the work-decision rule and four items; the other 14 lines are byte-identical, and the stage-1 dedup of `SAVE_HELP` cut it from 6,206 to 3,100 bytes (installed Claude block 15,132 → 13,297). Runs are isolated (temporary `WL_HOME`, `--isolate-claude`, `--codex-home`), one per cell, models at their defaults.
+
+| Run | claude | codex | what is judged |
+|---|---|---|---|
+| M12 empty git project | PASS 15.2 s | PASS 24.5 s | first request → `new-work` with `[auto]` title (`readme`), E0001, current work set, no question |
+| M13 two works → "memo 이어서" | PASS 20.0 s | PASS 22.4 s | T1 lists both works, asks once, saves nothing; T2 `use memo`, quote carries the T1 request |
+| M13b two works → "새 작업으로" | PASS 16.3 s | PASS 21.1 s | T2 `new-work` "다음 주 회의 안건" with `[auto]` |
+| M14 `auto=off` | PASS 6.2 s | PASS 10.4 s | no `.worklog/`, no event, the request is still answered |
+| M16 reassign recipe → memo | PASS 19.7 s | PASS 19.2 s | one `reassign`, `[misfiled → memo]`/`[refiled ← recipe]`, texts moved, current work memo, `verify --all` ok |
+
+Both M16 cells were first judged FAIL by two judge mistakes (the word "reassign" in a skip reason counted as a call; a turn-end CORRECTION save after reassign counted as a manual correction) and re-judged after the judge was fixed. Two independent reviews of the branch (GPT: 11 findings; Gemini: 4, its code description largely inaccurate) led to six small fixes before merge (`WL_HOME` never auto-connected, explicit `--root` wins in hooks, an already refiled event is not reassigned again, config written before the manifest, test env, stale wording); M12/M14 re-run on the fixed commit: 4/4 PASS (12.9/17.9 s, 11.2/9.4 s). After reinstalling, a `claude -p` turn without Bash was blocked once by the Stop hook (`blocked_turn` 1) and the next Stop passed; an agy plan-mode turn ran `skip` and was not blocked. M15 (fork) is covered by unit tests only; agy and pi were not run. Details: [`docs/verification/m-20261020-v2250.md`](verification/m-20261020-v2250.md).
+
+2.25.0은 일반 요청으로 기록을 시작하게 한다. 기록이 없는 폴더의 훅은 `NOT_CONNECTED | root= | auto= | git=`을 알리고, `auto`가 on(기본)이면 모델은 기록할 가치가 있는 첫 요청에서 `[auto]` 제목으로 `new-work`를 실행한다. 작업이 이미 있는 폴더에서는 어느 작업에 기록할지 한 번 묻고, 모델이 대신 고르지는 않는다. 기록 위치는 git 최상위 또는 그 안에서 `.worklog/index.json`이 있는 가장 가까운 폴더이며 `~/.worklog`(`WL_HOME`)는 자동 연결하지 않는다. `reassign`은 잘못된 작업에 들어간 저장을 정정하고(CORRECTION 사건 둘, 원장 줄은 그대로), `rename`은 제목을 바꾼다. 규칙 블록에는 NOT_CONNECTED 항목·작업 결정 규칙·새 항목 4개가 들어갔고 나머지 14줄은 바이트 동일, `SAVE_HELP` 1단계 중복 제거로 6,206→3,100바이트(설치된 Claude 블록 15,132→13,297). 격리 실행(임시 `WL_HOME`, `--isolate-claude`, `--codex-home`), 셀당 1회, 모델 기본값.
+
+| 회차 | claude | codex | 판정 내용 |
+|---|---|---|---|
+| M12 빈 git 프로젝트 | PASS 15.2초 | PASS 24.5초 | 첫 요청 → `[auto]` 제목으로 `new-work`(`readme`), E0001, 현재 작업 설정, 질문 없음 |
+| M13 두 작업 → "memo 이어서" | PASS 20.0초 | PASS 22.4초 | T1은 두 작업을 보이고 한 번 묻고 저장 없음, T2 `use memo`, quote에 T1 요청 |
+| M13b 두 작업 → "새 작업으로" | PASS 16.3초 | PASS 21.1초 | T2 `new-work` "다음 주 회의 안건", `[auto]` |
+| M14 `auto=off` | PASS 6.2초 | PASS 10.4초 | `.worklog/` 없음, 사건 없음, 요청에는 답함 |
+| M16 reassign recipe → memo | PASS 19.7초 | PASS 19.2초 | `reassign` 1회, `[misfiled → memo]`/`[refiled ← recipe]`, 텍스트 이동, 현재 작업 memo, `verify --all` ok |
+
+M16 두 셀은 판정기 오류 둘(skip 사유의 "reassign" 단어를 호출로 셈, reassign 뒤 턴 끝 CORRECTION save를 수동 정정으로 셈)로 처음 FAIL이었고 판정기를 고친 뒤 재판정했다. 브랜치의 독립 검토 둘(GPT 11건, Gemini 4건 — 코드 서술 상당수 부정확)로 병합 전 작은 수정 6건(`WL_HOME` 비자동연결, Hook에서 명시 `--root` 우선, 이미 옮긴 사건 재이관 거부, config를 manifest보다 먼저, 테스트 환경, 옛 문구)을 넣었고, 고친 커밋으로 M12·M14를 다시 돌려 4/4 PASS(12.9/17.9초, 11.2/9.4초). 재설치 뒤 Bash 없는 `claude -p` 턴은 Stop 훅에 한 번 막히고(`blocked_turn` 1) 다음 Stop이 통과했다. agy plan 모드 턴은 `skip`을 실행해 막히지 않았다. M15(fork)는 단위 테스트만, agy·pi는 돌리지 않았다. 상세: [`docs/verification/m-20261020-v2250.md`](verification/m-20261020-v2250.md).
+
 ## agy and pi support (2.24.0, 2026-10-20, 4 model runs)
 
 2.24.0 installs the same rules, three hook points and skill for **agy** (Antigravity CLI: its own always-on rule file, a named hook in `hooks.json`, `PreInvocation` counted as a turn only at `invocationNum` 0, Stop answered with `{"decision": "continue"}`) and **pi** (an extension that calls the core on `session_start`, `before_agent_start` and `agent_before_settle` and sets `PI_SESSION_ID`). One run each of M2 (new work from an empty `.worklog/`) and M3 (two artifacts with check) per tool, project-level install of that tool only from the release branch, `WL_HOME` isolated. agy ran `agy -p --mode auto` with its default model; pi had no credentials on this machine, so it ran with an isolated agent dir (`PI_CODING_AGENT_DIR`) whose `models.json` points at a local OpenAI-compatible proxy (`gpt-6-astra`), `-a` trusting the project extension. Judged mechanically as in the earlier M layer.
