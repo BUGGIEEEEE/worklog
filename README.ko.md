@@ -58,4 +58,6 @@ python3 -B worklog/tools/uninstall_project.py --user --tool all
 
 8. 구성 — [대화형으로 보기](https://buggieeeee.github.io/worklog/archify/worklog-architecture.ko.html): 상자를 누르면 연결 관계와 근거가 된 소스 줄(GitHub 링크)이 보입니다. 원본과 영어판: [docs/archify/](docs/archify/)
 
+![9. 파일 지도](docs/img/ko-09-files.png)
+
 상세: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · 라이선스 MIT([LICENSE](LICENSE))
