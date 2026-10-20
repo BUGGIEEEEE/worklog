@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install the shared Worklog core for a tool — once per machine (--user, 2.21.0) or for one project (--root).
 
-usage: install_project.py --tool <claude|codex> --user [--migrate] [--dry-run]
-       install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
+usage: install_project.py --tool <claude|codex|agy|pi> --user [--migrate] [--dry-run]
+       install_project.py --tool <claude|codex|agy|pi> --root <project> [--dry-run] [--no-worklog-dir]
 Without --tool nothing is written: the refusal (exit 2) tells the agent to ask the user which tools to install for and
 reports which tools this machine seems to have (~/.claude, ~/.codex), since an agent tends to install only for itself.
 
@@ -22,7 +22,7 @@ reports which tools this machine seems to have (~/.claude, ~/.codex), since an a
 --root  the 2.x per-project install, kept for compatibility. Writes only inside --root plus the registry.
         claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
         codex:  AGENTS.md block + three hooks in .codex/hooks.json + .agents/skills/worklog (user trust required)
-        pi:     AGENTS.md block + .pi/skills/worklog        (Pi extensions need project trust → not installed; instructions path)
+        pi:     AGENTS.md block + .pi/extensions/worklog.ts (loaded after project trust) + .pi/skills/worklog
         In a git repository .gitignore gets `.worklog/` (the whole record stays out of git: it is per-machine state and
         quotes the user; 2.18.0); the 2.11.0–2.17.x lines are dropped as redundant.
 Every target (files, backups, directories to create, .worklog) is checked and every new content prepared before the

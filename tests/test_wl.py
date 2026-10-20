@@ -2945,6 +2945,95 @@ class AutoConnectTest(Base):
         self.assertEqual([c["text"] for c in self.state("a")["constraints"]], [])
         self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
 
+    def test_reassign_corrects_a_2_25_0_predicted_ref(self):
+        """F05 remainder: a 2.25.0 partial run left a's [misfiled → b] naming a predicted b id; another session wrote that id in b.
+        2.26.0 writes the refiled event and one more CORRECTION in a that names the real id (corrected_ref), the ledger lines stay."""
+        self.two_works()
+        wl, d = self.wl, self.d
+        with wl.locked(d):                                                          # 2.25.0이 남긴 partial: a만 기록, 예측 번호 b:E0002
+            index = wl.index_or_new(d)
+            events, prev = wl.read_events(wl.work_dir(d, "a"))
+            refs = [{"kind": "misfiled", "id": "E0001"}, {"kind": "refiled_to", "work": "b", "id": "E0002"}]
+            changes = {"decisions_remove": {"D1": "b로 옮김(reassign)"}, "constraints_remove": {"C1": "b로 옮김(reassign)"}}
+            ev = dict(wl.new_event(events, prev, "CORRECTION", "codex", "s1", "[misfiled → b] E0001", "B야", refs, changes), core="2.25.0")
+            wl.commit(d, index, "a", ev)
+        run(self.root, "show", session="s2", extra=["--work", "b"])
+        self.ok(run(self.root, "save", {"work": "b", "type": "CHECKPOINT", "summary": "다른 세션이 b:E0002를 씀"}, session="s2"))
+        before = (self.d / "works/a/events.jsonl").read_bytes()
+        out = self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0001", "--quote", "B야"]))
+        self.assertEqual((out["refiled"], out["misfiled"], out["corrected_ref"], out["ref_correction"]), ("E0003", "E0004", True, "E0005"))
+        self.assertTrue((self.d / "works/a/events.jsonl").read_bytes().startswith(before))   # 원장 불변, 정정 사건만 추가
+        fix = self.events("a")[-1]
+        self.assertEqual((fix["type"], fix["summary"], fix["changes"]), ("CORRECTION", "[misfiled → b] 대상 정정 E0004", {}))
+        self.assertEqual(fix["refs"], [{"kind": "corrects", "id": "E0004"}, {"kind": "refiled_to", "work": "b", "id": "E0003"}])
+        self.assertIn({"kind": "correction", "work": "a", "id": "E0004"}, self.events("b")[2]["refs"])
+        self.assertEqual([x["text"] for x in self.state("b")["decisions"]], ["b 고유 결정", "3장까지"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001", "--quote", "B야"]), "이미 옮겼습니다")
+
+    def test_reassign_session_step_needs_current_work(self):
+        """F06 remainder: reading b (show --work b) does not finish the session step; current_work must be b. After a finished run,
+        a work the user selects later is kept: the re-run is refused and current_work is not taken back."""
+        sess = lambda: json.loads((self.d / "sessions/codex_s1.json").read_text())
+        self.two_works()                                                            # 재현 A: b 투영 실패 → show --work b → 재실행
+        self.assertEqual(self.reassign(project=self.failing("project", lambda n, a, kw: n == 1))[1]["done"], ["refiled"])
+        run(self.root, "show", extra=["--work", "b"])
+        out = self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0001", "--quote", "B야"]))
+        self.assertEqual((out["current_work"], sess()["current_work"]), ("b", "b"))
+        self.assertNotIn("session", out["resumed"])
+        code, res = self.reassign(events="E0003", update_session=self.failing("update_session", lambda n, a, kw: "current_work" in kw))
+        self.assertEqual(code, 2)                                                   # 재현 B: 마지막 세션 쓰기 실패 → show → 재실행
+        self.used(use(self.root, "a", quote="a 보자"), "a")
+        run(self.root, "show", extra=["--work", "b"])
+        out = self.ok(run(self.root, "reassign", extra=["a", "b", "--events", "E0003", "--quote", "B야"]))
+        self.assertEqual(sess()["current_work"], "b")
+        self.assertIn("misfiled_state", out["resumed"])
+        self.used(use(self.root, "a", quote="이제 a 작업"), "a")                   # 끝난 뒤 사용자가 다른 작업을 고름
+        self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0003", "--quote", "B야"]), "이미 옮겼습니다")
+        self.assertEqual(sess()["current_work"], "a")                              # 되돌리지 않는다
+
+    def test_reassign_selection_user_source_wins(self):
+        """F07 remainder: the moved decisions hold the same text as model and as user (a replaces): b gets it once, as user, in
+        either order."""
+        for first, second in (("D_AGENT", "D_USER"), ("D_USER", "D_AGENT")):
+            root = Path(tempfile.mkdtemp())
+            self.ok(new_work(root, "A"))
+            self.ok(new_work(root, "B"))
+            self.used(use(root, "a"), "a")
+            self.ok(run(root, "save", {"type": first, "summary": "one", "quote": "q", "decisions": [{"text": "same"}, {"text": "different"}]}))
+            self.ok(run(root, "save", {"type": second, "summary": "two", "quote": "q", "decisions": [{"text": "same", "replaces": "D2"}]}))
+            out = self.ok(run(root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "B"]))
+            b = json.loads((root / ".worklog/works/b/state.json").read_text())
+            self.assertEqual([(x["text"], x["source"]) for x in b["decisions"]], [("same", "user")], first)
+            self.assertNotIn("already_there", out)
+            self.assertEqual(json.loads((root / ".worklog/works/a/state.json").read_text())["decisions"], [])
+
+    def test_reassign_refuses_when_another_ledger_is_unreadable(self):
+        """N02: a ledger that cannot be read is not an empty history: the refusal names that work and writes nothing."""
+        self.two_works()
+        self.ok(new_work(self.root, "C"))
+        self.assertEqual(self.reassign(commit=self.failing("commit", lambda n, a, kw: n == 2))[1]["done"], ["refiled", "refiled_state"])
+        with open(self.d / "works/b/events.jsonl", "a") as f:
+            f.write("BROKEN\n")
+        a_before = (self.d / "works/a/events.jsonl").read_bytes()
+        self.refused(run(self.root, "reassign", extra=["a", "c", "--events", "E0001", "--quote", "C"]), "작업 b의 원장을 읽을 수 없어")
+        self.assertEqual((self.d / "works/a/events.jsonl").read_bytes(), a_before)
+        self.assertFalse((self.d / "works/c/events.jsonl").exists())
+
+    def test_not_connected_refusals_and_empty_show(self):
+        """D61: use·rename·reassign·on·off refuse with show's NOT_CONNECTED text; show with no works gives the SessionStart text."""
+        bare = self.mk("bare")
+        for argv, event in ((["use", "t", "--quote", "q"], "use"), (["rename", "t", "x", "--quote", "q"], "rename"),
+                            (["reassign", "a", "b", "--events", "E0001", "--quote", "q"], "reassign"), (["on"], "on"),
+                            (["off", "--quote", "q"], "off")):
+            err = json.loads(self.plain(bare, *argv)[1])["error"]
+            self.assertTrue(err.startswith(f"Worklog에 연결되지 않은 폴더입니다({bare}에 .worklog 없음).\n[Worklog worklog/2 {event} | NOT_CONNECTED | "
+                                           f"root={bare} | auto=on | git=no] "), err)
+            self.assertIn("new-work", err)
+        empty = self.mk("empty", records=True)
+        self.assertIn(self.wl.EMPTY_GUIDE, self.plain(empty, "show")[1])
+        self.assertIn(self.wl.NO_WORK_GUIDE, self.plain(empty, "show", env=self.home(auto="off"))[1])
+
     def test_rename_title_only(self):
         self.ok(new_work(self.root, "Habit"))
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "7분"}]}))
@@ -2981,7 +3070,7 @@ class AutoConnectTest(Base):
         tail = wl.SAVE_HELP.split("\n}\n", 1)[1].split("\n")
         self.assertEqual(len(tail), 4)
         self.assertTrue(tail[-1].startswith("명령: works(JSON 목록) · use <id> --quote · new-work"))  # 명령 목록 한 줄
-        for back in ("id는 제목의 영문·숫자 슬러그, 한글만이면 work·work-2", "show [--work <id>](현재 작업이 없으면 목록)",
+        for back in ("id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2", "show [--work <id>](현재 작업이 없으면 목록)",
                      "archive/reopen <id>(COMPLETED/ACTIVE로)", '"artifacts_moved": {'):           # 2.26.0 (F09): 되살린 안내
             self.assertIn(back, wl.SAVE_HELP)
         r, out = run(self.root, "help")
@@ -3117,6 +3206,46 @@ class FinalPlanTest(unittest.TestCase):
         self.assertIn("docs/note.md", (self.d / "works/t/state.md").read_text())
         self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
         self.assertNotIn("artifacts_missing", self.ok(run(self.root, "skip", extra=["x"])))
+
+    def test_artifacts_moved_whole_mapping(self):
+        """N01: the mapping is applied at once to the list before the move, whatever the key order; two moves to one path, a new
+        path that is an unmoved artifact, and a cycle (swap) are refused before the append."""
+        def setup():
+            root = Path(tempfile.mkdtemp())
+            self.ok(new_work(root, "t"))
+            for name, text in (("a.md", "A"), ("b.md", "B"), ("x.md", "X")):
+                (root / name).write_text(text)
+            self.ok(run(root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": p} for p in ("a.md", "b.md", "x.md")]}))
+            return root
+        h = lambda text: hashlib.sha256(text.encode()).hexdigest()
+        arts = lambda root: [(x["path"], x["sha256"]) for x in json.loads((root / ".worklog/works/t/state.json").read_text())["artifacts"]]
+        for order in (("a.md", "b.md"), ("b.md", "a.md")):
+            root = setup()                                                          # 연쇄: b→c, a→b
+            os.replace(root / "b.md", root / "c.md")
+            os.replace(root / "a.md", root / "b.md")
+            chain = {"a.md": "b.md", "b.md": "c.md"}
+            self.ok(run(root, "save", {"type": "CHECKPOINT", "summary": "chain", "artifacts_moved": {k: chain[k] for k in order}}))
+            self.assertEqual(arts(root), [("b.md", h("A")), ("c.md", h("B")), ("x.md", h("X"))], order)
+            self.assertTrue(self.ok(run(root, "verify", extra=["--all"]))["ok"])
+            root = setup()                                                          # 교환(순환): 거부
+            swap = {"a.md": "b.md", "b.md": "a.md"}
+            r, out = run(root, "save", {"type": "CHECKPOINT", "summary": "swap", "artifacts_moved": {k: swap[k] for k in order}})
+            self.assertEqual(r, 2, out)
+            self.assertIn("순환", json.loads(out)["error"])
+            self.assertEqual(len((root / ".worklog/works/t/events.jsonl").read_text().splitlines()), 1)
+            (root / "d").mkdir()                                                    # 독립 이동 두 개
+            os.replace(root / "a.md", root / "d/a.md")
+            os.replace(root / "x.md", root / "d/x.md")
+            two = {"a.md": "d/a.md", "x.md": "d/x.md"}
+            keys = ("a.md", "x.md") if order[0] == "a.md" else ("x.md", "a.md")
+            self.ok(run(root, "save", {"type": "CHECKPOINT", "summary": "two", "artifacts_moved": {k: two[k] for k in keys}}))
+            self.assertEqual(arts(root), [("d/a.md", h("A")), ("b.md", h("B")), ("d/x.md", h("X"))], order)
+        root = setup()
+        for moved, text in (({"a.md": "x.md"}, "옮기지 않는 기존 산출물"), ({"a.md": "n.md", "b.md": "n.md"}, "겹칩니다")):
+            (root / "n.md").write_text("N")
+            r, out = run(root, "save", {"type": "CHECKPOINT", "summary": "bad", "artifacts_moved": moved})
+            self.assertEqual(r, 2, out)
+            self.assertIn(text, json.loads(out)["error"])
 
     def test_non_text_artifacts_need_no_quote(self):
         self.ok(new_work(self.root, "t"))
