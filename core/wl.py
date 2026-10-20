@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.22.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.23.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -41,7 +41,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 {
   "work": "habit-plan",                    # 선택. 생략하면 이 세션의 현재 작업(use/new-work로 정함)
   "type": "REQUEST",                       # REQUEST APPROVAL D_USER D_AGENT ASSUMPTION RESULT VERIFICATION BLOCKER CORRECTION CHECKPOINT HANDOFF CHANGE Q
-  "summary": "이번 턴에 일어난 일 한두 문장",   # 위임한 턴은 첫머리에 "[위임: 안내문 초안] 서브에이전트가 note-guide.md 초안 작성, 두 문장 확인". 결정·제약 글자에는 쓰지 않는다
+  "summary": "이번 턴에 일어난 일 한두 문장",   # 위임한 턴은 첫머리에 "[delegated: 안내문 초안] 서브에이전트가 note-guide.md 초안 작성, 두 문장 확인". 결정·제약 글자에는 쓰지 않는다
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
   "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},   # 지금 고른 방법·범위. 바뀌면 replaces. 작업량·목표 범위(몇 화까지 등)는 여기에
@@ -708,12 +708,19 @@ def render(s, wid, title):
     by = s["updated_by"] or {}
     out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
            f"최초 목표(원문): {s['goal'] or '(미정)'}"]
-    if s["decisions"]:
-        last = s["decisions"][-1]
+    is_map = lambda d: str(d["text"]).lstrip().startswith("Map:")  # 2.23.0: "무엇을 먼저 보라"는 안내 결정. 범위가 아니므로 현재 범위 줄에서는 뺀다
+    scope = [d for d in s["decisions"] if not is_map(d)]
+    if scope:
+        last = scope[-1]
         out.append(f"현재 범위(최신 결정): {last['id']}: {last['text']}")
     out += ["※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
-            f"상태: {s['status']}", "", "## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
-    out += [f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d) for d in s["decisions"]] or ["- (없음)"]
+            f"상태: {s['status']}", ""]
+    line = lambda d: f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d)
+    maps = [d for d in s["decisions"] if is_map(d)]
+    if maps:  # 2.23.0: Map 결정은 결정 목록 위에도 따로 보인다. 목록에서 빼지 않으며, 없으면 절도 없다(기존 state.md와 바이트 동일)
+        out += ["## 안내 — 먼저 볼 것(Map: 결정)"] + [line(d) for d in maps] + [""]
+    out += ["## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
+    out += [line(d) for d in s["decisions"]] or ["- (없음)"]
     out += ["", "## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
     out += [f"- {c['id']}: {c['text']}{tag(c)}" for c in s["constraints"]] or ["- (없음)"]
     out += ["", "## 대기"] + ([f"- {w}" for w in s["waiting"]] or ["- (없음)"])

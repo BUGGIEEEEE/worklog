@@ -4,6 +4,26 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## 2.23.0 rule bundle — `[behavior]`, `[delegated:]`, project.md suggestion, `Map:` (2026-10-20, 2 model runs)
+
+2.23.0 changes four rule sentences and one projection: a CORRECTION that fixes how the model works starts with `[behavior]` and carries the user's words; the delegation tag is `[delegated: …]`; `project.md` is suggested once (only when a work is set to COMPLETED or the user says "앞으로 이 프로젝트에서는 …") and never written before the user says so; a "look here first" decision is prefixed `Map:` and `state.md` shows such decisions in a `## 안내` section above the decision list. One two-turn run per tool (M11: `claude -p` + `--resume`, `codex exec` + `resume`, default models) in a project installed from the release branch with a seeded work, a sub-session's saved draft and a `docs/tone.md`. Turn 1 asks to review and record the sub-session's file and adds "앞으로 이 프로젝트에서는 … docs/tone.md … 먼저 봐"; turn 2 corrects how the model reports ("결론부터 … 네가 일하는 방식을 바로잡는 거야"). The user-level rules of this machine were kept out (Claude `--setting-sources project,local`, Codex a scratch `CODEX_HOME`). Judged mechanically before the run: a `[delegated:` summary and no `[위임`; a new decision starting with `Map:` and the `## 안내` section in `state.md`; exactly one "넣을까" with `project.md` in the answer and no `.worklog/project.md`; a `[behavior]` CORRECTION whose quote is in the prompt.
+
+| Run | delegated | Map: / section | suggested once / not written | [behavior]+quote | s (T1/T2) | cost |
+|---|---|---|---|---|---|---|
+| Claude | PASS | PASS / PASS | 1 / PASS | PASS | 24.4 / 18.1 | $1.35 |
+| Codex | PASS | PASS / PASS | 1 / PASS | PASS | 33.6 / 22.4 | — |
+
+Both models showed the line they would add (`- [P1] … (worklog:proj/guide#E0003 · 2026-10-20)`) and waited for "넣어". Finding (both models, not a rule breach): the turn-2 correction was also saved as a lasting constraint inside the CORRECTION, which makes its source `[모델]`; both noticed and re-saved it as D_USER in the same turn (two saves). Whether a rule sentence or the core should cover "a behavior correction that is also a lasting constraint" is an open decision. One run per cell; the user-level install files were verified only after the merge. Details: `worklog-control/shared/runs/m-20261017-v2230/RESULTS.md`.
+
+2.23.0은 규칙 네 문장과 투영 하나를 바꾼다: 모델의 일하는 방식을 바로잡는 CORRECTION은 `[behavior]`로 시작하고 사용자 원문을 담는다, 위임 표식은 `[delegated: …]`, `project.md`는 (작업을 COMPLETED로 바꾸는 턴이나 "앞으로 이 프로젝트에서는 …" 발언 턴에만) 한 번 권유하고 "넣어" 전에는 쓰지 않는다, "무엇을 먼저 보라"는 결정은 `Map:` 접두를 붙이며 `state.md`가 그 결정을 결정 목록 위 `## 안내` 절에 보인다. 도구마다 두 턴 1회(M11: `claude -p` + `--resume`, `codex exec` + `resume`, 기본 모델). 시험 폴더는 release 브랜치로 설치, 시드는 작업 하나 + 하위 세션이 저장한 초안 + `docs/tone.md`. 1턴은 하위 세션 파일의 검토·기록 요청에 "앞으로 이 프로젝트에서는 … docs/tone.md … 먼저 봐"를 더했고, 2턴은 보고 방식을 바로잡는다("결론부터 … 네가 일하는 방식을 바로잡는 거야"). 이 기기의 사용자 수준 규칙은 제외했다(Claude `--setting-sources project,local`, Codex 임시 `CODEX_HOME`). 판정은 실행 전 고정: `[delegated:` summary와 `[위임` 없음, `Map:`으로 시작하는 새 결정과 `state.md`의 `## 안내` 절, 답변의 "넣을까" 정확히 1회 + `project.md` 언급 + `.worklog/project.md` 없음, quote가 프롬프트에 있는 `[behavior]` CORRECTION.
+
+| 회차 | delegated | Map: / 절 | 권유 1회 / 미작성 | [behavior]+quote | 초(T1/T2) | 비용 |
+|---|---|---|---|---|---|---|
+| Claude | PASS | PASS / PASS | 1 / PASS | PASS | 24.4 / 18.1 | $1.35 |
+| Codex | PASS | PASS / PASS | 1 / PASS | PASS | 33.6 / 22.4 | — |
+
+두 모델 모두 넣을 줄(`- [P1] … (worklog:proj/guide#E0003 · 2026-10-20)`)을 보여 주고 "넣어"를 기다렸다. 발견(두 모델 동일, 규칙 위반 아님): 2턴의 교정을 CORRECTION 안에서 지속 제약으로도 저장했는데 그러면 출처가 `[모델]`이 되므로, 둘 다 알아채고 같은 턴에 D_USER로 다시 저장했다(save 2회). "지속 제약이 되는 행동 교정"을 규칙 문장으로 다룰지 코어가 다룰지는 미결이다. 셀당 1회이며, 사용자 수준 설치 파일은 병합 뒤에만 확인했다. 상세: `worklog-control/shared/runs/m-20261017-v2230/RESULTS.md`.
+
 ## Tool-level install and connect-on-first-new-work (2.21.0, 2026-10-16, 4 model runs)
 
 Since 2.21.0 the rules and hooks are installed once per machine (`--user`) and a folder is connected by its first `새 작업:`; elsewhere the SessionStart hook injects one `NOT_CONNECTED` line. Three-turn runs (`claude -p` with `--resume`, then a new session; `codex exec` with `resume`, then a new session; default models) in an empty git project that had the 2.21.0 rules and hooks but no `.worklog/` (`--root … --no-worklog-dir`, the same files a `--user` install provides; the user-level files themselves were not touched before the merge, and Codex ran with `--dangerously-bypass-hook-trust`). Judged mechanically before the run: turn 1 (an ordinary question) passes with zero `wl.py` calls, no work question, no `.worklog/` created; turn 2 (`새 작업: 시험 plan` plus a small file) passes with a `new-work` call, `index.json`, the `.worklog/` line in `.gitignore`, the registry entry, `install.json` with scope `user` and at least one saved event; turn 3 (`plan 이어서` in a new session) passes with a `use` call and one more event.

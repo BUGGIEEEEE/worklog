@@ -775,6 +775,35 @@ class CoreTest(unittest.TestCase):
         self.assertIn("상태를 만들 수 없는 입력", str(cm.exception))
         self.assertFalse((self.wd / "events.jsonl").exists())
 
+    def test_state_md_map_section(self):
+        """2.23.0: `Map:`으로 시작하는 유효 결정은 state.md의 `## 안내` 절(유효 결정 앞)에도 보이고 목록에도 남는다. 없으면 절도 없고,
+        `현재 범위`는 Map이 아닌 마지막 결정이며, 대체된 Map 결정은 절에서 사라진다."""
+        self.start()
+        run(self.root, "save", {"type": "REQUEST", "summary": "조건", "quote": "q", "decisions": [{"text": "저녁 11분"}]})
+        md = (self.wd / "state.md").read_text()
+        self.assertNotIn("## 안내", md)  # ② Map 결정이 없으면 절이 없다
+        self.assertIn("현재 범위(최신 결정): D1: 저녁 11분\n", md)
+        r, out = run(self.root, "save", {"type": "D_USER", "summary": "기준 문서", "quote": "spec 먼저 봐",
+                                         "decisions": [{"text": "Map: docs/spec.md §3을 먼저 본다"}]})
+        self.assertEqual(r, 0, out)
+        md = (self.wd / "state.md").read_text()
+        guide, valid = md.index("## 안내 — 먼저 볼 것(Map: 결정)"), md.index("## 유효 결정")
+        self.assertLess(guide, valid)  # ① 절이 생기고 유효 결정보다 앞
+        self.assertEqual(md.count("- D2: Map: docs/spec.md §3을 먼저 본다 [사용자]"), 2)  # ① 안내 절 + 결정 목록
+        self.assertEqual(md.count("- D1: 저녁 11분"), 1)
+        self.assertIn("현재 범위(최신 결정): D1: 저녁 11분\n", md)  # ③ 마지막 결정이 Map이어도 현재 범위는 그 앞의 비Map 결정
+        self.assertEqual(run(self.root, "verify")[0], 0)  # 재계산해도 같은 투영
+        run(self.root, "save", {"type": "D_USER", "summary": "변경", "quote": "spec 말고 readme",
+                                "decisions": [{"text": "Map: README.md를 먼저 본다", "replaces": "D2"}]})
+        md = (self.wd / "state.md").read_text()
+        self.assertIn("- D3: Map: README.md를 먼저 본다 (대체: D2) [사용자]", md.split("## 유효 결정")[0])  # ④ 대체된 D2는 절에서 사라진다
+        self.assertNotIn("docs/spec.md", md)
+        run(self.root, "save", {"type": "D_USER", "summary": "시간 결정 철회", "quote": "11분은 없던 걸로",
+                                "decisions": [{"text": "Map: 시간은 docs/plan.md를 따른다", "replaces": "D1"}]})
+        md = (self.wd / "state.md").read_text()
+        self.assertNotIn("현재 범위", md)  # Map 결정만 남으면 현재 범위 줄을 생략한다
+        self.assertEqual(run(self.root, "verify")[0], 0)
+
     def test_show_rebuilds_state_md(self):
         self.start()
         run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["게시 금지"]})
