@@ -2706,6 +2706,12 @@ class AutoConnectTest(Base):
             self.call(self.wl.cmd_new_work, args, write_index=self.failing("write_index", lambda n, a, kw: n == 1))
         self.assertFalse((other / ".worklog/index.json").exists())
         self.assertEqual(json.loads(session_file(other, "codex_s1").read_text())["new_work_id"], "t")
+        sf = session_file(other, "codex_s1")
+        bad = dict(json.loads(sf.read_text()), new_work_id=7, new_work_turn="x")  # 이상한 값은 없는 것으로 읽고 손상으로 보지 않는다
+        sf.write_text(json.dumps(bad))
+        loaded = self.wl.load_session(other / ".worklog", "codex", "s1")
+        self.assertEqual((loaded["new_work_id"], loaded["new_work_turn"], loaded["current_work"]), (None, None, None))
+        sf.write_text(json.dumps(dict(bad, new_work_id="t", new_work_turn=0)))
         out = self.ok(new_work(other, "T", force=False))                        # 같은 턴 재시도는 통과하고 같은 id
         self.assertEqual((out["id"], sorted(json.loads((other / ".worklog/index.json").read_text())["works"])), ("t", ["t"]))
         self.assertEqual(self.ok(run(other, "verify", extra=["--all"]))["ok"], True)
