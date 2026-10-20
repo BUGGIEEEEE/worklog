@@ -2143,9 +2143,9 @@ class AgyPiTest(Base):
         self.assertNotIn("warning", out)
 
     def test_agy_auto_mode_tool_calls_do_not_advance_turn(self):
-        """2.24.1: in auto mode agy sends PreInvocation (invocationNum 0 again) before every model call, i.e. after every tool call.
-        Only the first one after a Stop or SessionStart counts; save/skip in that turn satisfies the Stop; a blocked turn is
-        blocked once even though the re-entry starts turn+1."""
+        """2.24.1 (premise corrected in 2.24.2: invocationNum does increase across tool calls; repeats come from a doubled hook):
+        PreInvocations after the first one of a turn do not advance it; save/skip in that turn satisfies the Stop; a blocked turn
+        is blocked once even though agy's re-entry starts turn+1."""
         self.d.mkdir()
         self.agy("hook")
         for _ in range(3):  # new-work, save, answer: three model calls, one turn
@@ -2164,6 +2164,31 @@ class AgyPiTest(Base):
         self.agy("turn-start", invocationNum=0)  # re-entry starts turn 4
         self.assertEqual(self.agy("stop-hook", terminationReason="NO_TOOL_CALL")[1], {})  # still nothing saved → passes (blocked once), no loop
         self.assertEqual(self.session()["turn"], 5)
+
+    def test_agy_duplicate_hook_registration_acts_once(self):
+        """2.24.2: with the project .agents/hooks.json and ~/.gemini/config/hooks.json both carrying the worklog hook, agy runs every
+        hook twice. The second delivery of the same event is a no-op: one injection, one turn, one Stop judgement (the 2.24.0
+        loop: the first Stop passed and advanced the turn, the second blocked the new turn)."""
+        self.d.mkdir()
+        run(self.root, "new-work", session="c1", tool="agy", extra=["t", "--quote", "새 작업"])
+        r, out = self.agy("hook")
+        self.assertIn("injectSteps", out)
+        self.assertEqual(self.agy("hook")[1], {})  # duplicate SessionStart before any turn
+        for i in range(2):
+            self.agy("turn-start", invocationNum=0, initialNumSteps=1)  # delivered twice
+        self.assertEqual(self.session()["turn"], 1)
+        run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, session="c1", tool="agy")
+        self.agy("turn-start", invocationNum=1, initialNumSteps=3)
+        self.agy("turn-start", invocationNum=1, initialNumSteps=3)
+        self.assertEqual(self.session()["turn"], 1)
+        self.assertEqual(self.agy("stop-hook", executionNum=0, terminationReason="NO_TOOL_CALL")[1], {})  # saved → pass, turn 2
+        self.assertEqual(self.agy("stop-hook", executionNum=0, terminationReason="NO_TOOL_CALL")[1], {})  # duplicate: no second judgement
+        self.assertEqual((self.session()["turn"], self.session()["blocked_turn"]), (2, 0))
+        self.agy("turn-start", invocationNum=0, initialNumSteps=1)  # next user turn, nothing saved
+        self.agy("turn-start", invocationNum=0, initialNumSteps=1)
+        self.assertEqual(self.agy("stop-hook", executionNum=1, terminationReason="NO_TOOL_CALL")[1]["decision"], "continue")  # blocked once
+        self.assertEqual(self.agy("stop-hook", executionNum=1, terminationReason="NO_TOOL_CALL")[1], {})  # duplicate of the blocked Stop
+        self.assertEqual(self.session()["blocked_turn"], 3)
 
     def test_claude_stop_blocks_once_without_flag(self):
         """2.24.0: a second Stop of the same turn passes even without stop_hook_active (pi's extension sends none)."""
