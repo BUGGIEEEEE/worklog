@@ -1,6 +1,6 @@
 # Worklog 기록 형식 2 (`worklog/2`)
 
-> **English summary.** `worklog/2` is the on-disk format of a project's `.worklog/` folder. One project holds several **works** (separate tasks). `index.json` lists them; each work has its own folder `works/<id>/` with an append-only ledger `events.jsonl` and two projections, `state.json` and `state.md`. A work ID is an ASCII slug made from its title (`habit-plan`; `work`, `work-2`… when nothing ASCII remains). Event lines are unchanged from `worklog/1`: one JSON event per line, numbered `seq`/`id` from 1 per work, each line chained to the previous one by `prev` = sha256 of the previous line's bytes. A change to an earlier line that later events follow is detected on read; the last event has no independent reference point, so a change to it is not detected. This is not a defense against deliberate tampering. Each session has a *current work*, set only when the user names one (`use <id> --quote …` or `new-work "<title>" --quote …`); without one, `save` is refused and the model asks the user. The SessionStart injection lists the works and, if the session has a current work, its full state — also after compaction. The goal is set once; later changes are decisions that `replace` older ones (`D1..`), and constraints (`C1..`) persist until the user removes them. A save that lists artifacts must include a `check` entry for every active decision and constraint: a verbatim quote (4+ characters) from the artifact body, or `미반영: <reason>` ("not reflected"). Saves are serialized with `flock` and rejected if the session has not read the latest record of that work. A `worklog/1` folder is migrated with `tools/migrate_v1_to_v2.py`; the ledger bytes move unchanged into `works/<id>/`. Changing the format means re-migrating existing ledgers. Since 2026-10-09: decisions and constraints carry a `source` (`user` for REQUEST/APPROVAL/D_USER events, `model` otherwise); a model constraint can be removed with a reason alone, a user constraint only with the user's words. A `check` quote that merely repeats the rule's own text is accepted but reported as `self_quoted` (it is not evidence); non-text artifacts (images, archives) are hashed but not searched for quotes. Each hook records its run in the session file (`hooks_seen`), and save/skip/verify report whether the hooks are active. The SessionStart list also names the most recent COMPLETED works, and `state.md` summarizes artifacts by folder once there are more than 15.
+> **English summary.** `worklog/2` is the on-disk format of a project's `.worklog/` folder. One project holds several **works** (separate tasks). `index.json` lists them; each work has its own folder `works/<id>/` with an append-only ledger `events.jsonl` and two projections, `state.json` and `state.md`. A work ID is an ASCII slug made from its title (`habit-plan`; `work`, `work-2`… when nothing ASCII remains). Event lines are unchanged from `worklog/1`: one JSON event per line, numbered `seq`/`id` from 1 per work, each line chained to the previous one by `prev` = sha256 of the previous line's bytes. A change to an earlier line that later events follow is detected on read; the last event has no independent reference point, so a change to it is not detected. This is not a defense against deliberate tampering. Each session has a *current work*, set only when the user names one (`use <id> --quote …` or `new-work "<title>" --quote …`); without one, `save` is refused and the model asks the user. The SessionStart injection lists the works and, if the session has a current work, its full state — also after compaction. The goal is set once; later changes are decisions that `replace` older ones (`D1..`), and constraints (`C1..`) persist until the user removes them. A save that lists artifacts must include a `check` entry for every active decision and constraint: a verbatim quote (4+ characters) from the artifact body, or `미반영: <reason>` ("not reflected"). Saves are serialized with `flock` and rejected if the session has not read the latest record of that work. A `worklog/1` folder is migrated with `tools/migrate_v1_to_v2.py`; the ledger bytes move unchanged into `works/<id>/`. Changing the format means re-migrating existing ledgers. Since 2026-10-09: decisions and constraints carry a `source` (`user` for REQUEST/APPROVAL/D_USER events, `model` otherwise); a model constraint can be removed with a reason alone, a user constraint only with the user's words. A `check` quote that merely repeats the rule's own text is accepted but reported as `self_quoted` (it is not evidence); non-text artifacts (images, archives) are hashed but not searched for quotes. Each hook records its run in the session file (`hooks_seen`), and save/skip/verify report whether the hooks are active. The SessionStart list also names the most recent COMPLETED works, and `state.md` summarizes artifacts by folder once there are more than 15. Since 2.25.0: without `--root`, commands and hooks use a *candidate root* (cwd if connected; inside git the nearest folder with `.worklog/index.json` up to the git top level, else the git top level; outside git, cwd), the NOT_CONNECTED line carries `root=`, `auto=` and `git=`, and with `"auto": "on"` (the default of `~/.worklog/config.json`) the model connects a folder on its first request worth recording; a work is still never picked for the user. `reassign` refiles misfiled events as a pair of linked CORRECTION events (the format number stays: `changes` gains `decisions_remove`, written only by `reassign`), `rename` changes a title only.
 
 확정일 2026-10-06. 구현: `core/wl.py`. 이 문서와 구현이 다르면 구현을 고치지 말고 먼저 보고한다.
 
@@ -29,13 +29,17 @@
 | `works/<id>/state.json` | 해당 원장에서 재계산하는 기계용 현황 | 코어 |
 | `works/<id>/state.md` | 같은 현황의 사람·주입용 본문 | 코어 |
 | `works/<id>/writer.json` | 마지막 작성자 정보 `{tool, session_id, seq}`, 원장·선택·독점권의 근거 아님 | 코어 |
-| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn, blocked_turn, in_turn, agy_pre, agy_stop}`. `agy_pre`·`agy_stop`(2.24.2)은 agy가 마지막으로 보낸 PreInvocation(`invocationNum/initialNumSteps`)·Stop(`executionNum`)으로, 같은 이벤트가 두 번 등록된 훅으로 다시 오면 무동작이다. `in_turn`(2.24.1)은 이 턴의 모델 호출이 시작됐다는 표시로, agy는 Stop 뒤 첫 PreInvocation만 턴으로 세고(도구 호출마다 오는 나머지는 무시) Stop이 내린다. `blocked_turn`(2.24.0)은 Stop이 한 번 막은 턴으로, 같은 턴의 두 번째 Stop은 도구가 `stop_hook_active`를 보내지 않아도 통과한다. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
+| `sessions/<tool>_<session>.json` | `{current_work, last_seen: {"<id>": seq}, hooks_seen: {"SessionStart"\|"UserPromptSubmit"\|"Stop": 시각}, turn, saved_turn, skipped_turn, selected_turn, blocked_turn, in_turn, agy_pre, agy_stop, hook_keys, new_work_turn}`. `hook_keys`(2.25.0)는 claude·codex Hook의 마지막 키 `{"SessionStart": "<source>@<시각>", "UserPromptSubmit": "<turn_id 또는 prompt_id>", "Stop": "<턴>/<stop_hook_active 0·1>@<시각>"}`로, 두 번 등록된 Hook의 두 번째 호출을 무동작으로 만든다(아래 'Hook 중복'). `new_work_turn`(2.25.0)은 이 세션이 마지막으로 new-work를 실행한 턴이다(값이 이상하면 없는 것으로 읽고 세션 파일 손상으로 보지 않는다). `agy_pre`·`agy_stop`(2.24.2)은 agy가 마지막으로 보낸 PreInvocation(`invocationNum/initialNumSteps`)·Stop(`executionNum`)으로, 같은 이벤트가 두 번 등록된 훅으로 다시 오면 무동작이다. `in_turn`(2.24.1)은 이 턴의 모델 호출이 시작됐다는 표시로, agy는 Stop 뒤 첫 PreInvocation만 턴으로 세고(도구 호출마다 오는 나머지는 무시) Stop이 내린다. `blocked_turn`(2.24.0)은 Stop이 한 번 막은 턴으로, 같은 턴의 두 번째 Stop은 도구가 `stop_hook_active`를 보내지 않아도 통과한다. show·use·주입은 `last_seen` 이후의 사건을 "못 본 사건"으로 보여 준 뒤 이 값을 갱신한다(2.23.0) | 코어, 원장·해시 연결 대상 아님 |
 | `.lock` | 프로젝트 내 동시 변경을 flock으로 직렬화 | 코어 |
 | `off` | `{at, reason, by, quote}` JSON(reason·by는 없으면 null). 있으면 이 프로젝트 전체의 Worklog가 꺼짐, 원장 아님 | 코어 off·on, `.lock` 안에서 생성·삭제 |
 
 작업 ID는 제목에서 만든 ASCII 슬러그(소문자·숫자·`-`, 40자 이내)다. 비ASCII만 남거나 숫자만 남으면("던전디펜스 1화" → `1`은 쓰지 않음) `work`이며 중복은 `-2`, `-3`으로 구분한다. 제목 앞의 `새 작업:`은 제거한다. 한글 원제목은 index의 title에 보관한다. 사건 ID와 결정·제약 ID는 작업별이다.
 
-연결 신호는 `.worklog/` 디렉터리 존재다. 설치 직후에는 비어 있다. `new-work`는 index 항목과 빈 작업 폴더를 만들고 원장은 첫 save로 만든다. 현황 두 파일을 직접 고치지 않는다. 불일치하면 원장이 기준이며 `show`로 복구한다. 형식 1의 루트 원장과 `writer.json`을 형식 2 저장 계약으로 사용하지 않는다.
+연결 신호는 `.worklog/` 디렉터리 존재다. 설치 직후에는 비어 있다. 단 `WL_HOME`(기본 `~/.worklog`, 설정·등록·매니페스트를 두는 곳)은 `index.json`이 있을 때만 연결로 본다(2.25.0: 홈 폴더 자체가 프로젝트인 경우만).
+
+**루트 후보(2.25.0).** `--root`가 없으면 명령은 프로세스 cwd에서, Hook은 이벤트의 cwd에서 기록 위치를 정한다. ① cwd가 연결돼 있으면 cwd. ② cwd가 git 작업 트리 안이면(위로 올라가며 `.git` 디렉터리나 파일이 있는 가장 가까운 폴더 = git 최상위) cwd에서 git 최상위까지 올라가며 `.worklog/index.json`이 있는 가장 가까운 폴더(`WL_HOME`은 고르지 않는다), 없으면 git 최상위. 하위 폴더에 새 기록을 만들지 않는다. 중첩 프로젝트는 가장 가까운 기록이 이기고, worktree는 `.git` 파일이 있는 폴더가 최상위다(worktree 경고 유지). ③ git이 아니면 cwd(상위 탐색 없음. `~`나 임시 폴더 위의 기록에 합류하지 않는다). git 최상위 위에 다른 기록이 있으면 합류하지 않고 NOT_CONNECTED 줄에 한 구절로 알린다(합류하려면 사용자가 `--root`로 정한다). `--root`가 있으면 그 폴더를 그대로 쓴다.
+
+**사용자 설정 `WL_HOME/config.json`.** `{"update": "notify"|"off", "auto": "on"|"off"}`. `auto`(2.25.0)는 연결되지 않은 폴더의 동작이다: `on`(키가 없을 때도)이면 모델이 첫 기록 대상 요청에서 `new-work … --root <후보>`로 연결하고, `off`면 2.24 동작(사용자가 `새 작업:`이라 할 때만). 프로젝트의 `.worklog/off`가 항상 우선한다. 설치기 `--user`는 `auto` 키가 없을 때만 `"auto": "on"`을 더하고 다른 키는 유지한다. `new-work`는 index 항목과 빈 작업 폴더를 만들고 원장은 첫 save로 만든다. 현황 두 파일을 직접 고치지 않는다. 불일치하면 원장이 기준이며 `show`로 복구한다. 형식 1의 루트 원장과 `writer.json`을 형식 2 저장 계약으로 사용하지 않는다.
 
 ## 사건 (events.jsonl 한 줄)
 
@@ -50,8 +54,8 @@
 | `tool`, `session_id` | ✓ | 기록한 도구(`codex`/`claude`/`pi`)와 그 세션 ID |
 | `summary` | ✓ | 한두 문장 |
 | `quote` | 조건부 | 사용자 원문 일부. REQUEST·APPROVAL·D_USER, 목표 설정, 제약 해제, 작성권 인수에 필수 |
-| `changes` | ✓ | 상태 변경: `goal`·`decisions`·`constraints`·`constraints_remove`·`waiting`·`next_action`·`status`·`artifacts` |
-| `refs` | | 호환용. 의미가 정해지지 않아 지침·도움말에서 뺐다. 받으면 그대로 저장하고 해석하지 않는다 |
+| `changes` | ✓ | 상태 변경: `goal`·`decisions`·`constraints`·`constraints_remove`·`waiting`·`next_action`·`status`·`artifacts`, 그리고 `reassign`만 쓰는 `decisions_remove`(`{"D2": "사유"}`, 2.25.0). `reassign`이 쓰는 `constraints` 항목은 문자열 대신 `{"text", "source"}`일 수 있다(다른 작업에서 가진 출처를 유지). save 입력은 그대로 문자열만 받는다 |
+| `refs` | | 문자열 값만 가진 객체 목록. save로 받은 것은 그대로 저장하고 해석하지 않는다. `reassign`(2.25.0)이 쓰는 것: 잘못된 작업 쪽 `{"kind": "misfiled", "id": "E0003"}`·`{"kind": "refiled_to", "work": "<맞는 id>", "id": "E…"}`, 맞는 작업 쪽 `{"kind": "refiled_from", "work": "<잘못된 id>", "id": "E0003", "quote": "<원래 quote>"}`·`{"kind": "correction", "work": "<잘못된 id>", "id": "E…"}` |
 | `source` | | 이전된 사건의 출처: `path`·`line`·`sha256`·원래 종류 |
 | `core` | | 사건을 쓴 코어 번호(2.3.0부터). 주·부 번호가 더 큰 코어가 쓴 사건이 있으면 show·save·verify에 `warning_core`가 붙는다(끝 번호만 다르면 경고 없음, 거부 없음). 없으면 옛 사건으로 보고 경고하지 않는다 |
 | `check` | 텍스트 산출물 시 | 유효 결정·제약마다 산출물 **본문**의 인용(공백 정규화 후 실제로 있어야 함) 또는 `미반영: <이유>`. 미반영 ID는 저장 결과의 `unreflected`에 표시. 산출물이 모두 비텍스트(UTF-8이 아니거나 NUL 포함)면 check는 선택이고 미반영만 받는다 |
@@ -64,6 +68,8 @@
 - 이 목록에 없는 기존 종류는 이전할 때 15종 중 하나로 대응하고, 원래 이름은 `source`에 남긴다.
 - **이전 사건:** `tool: "import"`, `session_id`는 이전 실행 ID, `quote`는 null이며 대신 `source`(원본 경로·줄·줄 sha256·원래 종류·원래 ID·원래 기록 시각, 있으면 원래 세션·권위)가 근거다. 원본에 없는 값은 비워 두고 추정하지 않는다. 이전 사건은 상태를 바꾸지 않고, 사용자 확인을 거친 현재 상태 사건 1건만 상태를 정한다. 외부 기록을 가져오는 이전 도구는 이 배포본에 포함하지 않는다(형식 1 → 2 이전 도구만 포함).
 - 작업 경계를 나타내는 별도 사건 종류는 없다. 작업마다 독립 원장과 사건 ID·해시 연결을 유지한다.
+- **잘못 기록한 사건의 정정(2.25.0, `reassign`).** 사건은 옮기지 않는다. 한 `.lock` 안에서 ⒜ 잘못된 작업에 CORRECTION(summary `[misfiled → <맞는 id>] E0003-E0005`, quote = 사용자 원문)을 더해 그 사건들이 넣고 아직 유효한 결정·제약을 `decisions_remove`·`constraints_remove`로 뺀다. ⒝ 맞는 작업에 CORRECTION(`[refiled ← <잘못된 id>] E0003-E0005`)을 더해 같은 글자의 결정·제약을 새 `D`·`C` 번호로 넣고(원래 출처 유지, 맞는 작업에 이미 같은 글자가 있으면 건너뜀), 그 사건들의 산출물은 지금 파일로 해시를 다시 계산해 넣는다. 원래 quote는 ⒝의 `refs`에 남는다. ⒞ 세션의 현재 작업을 맞는 작업으로 바꾼다. 목표·대기·다음 행동·산출물 목록은 잘못된 작업에서 빼지 않는다. ⒝가 실패하면 ⒜만 남고 결과는 `"partial": true`다. 같은 명령을 다시 실행하면 ⒜를 찾아 ⒝만 쓴다(되돌리기 없음, 원장은 추가 전용). 둘 다 있으면 "이미 옮겼습니다"로 거부한다.
+- **제목 변경(2.25.0, `rename`).** index의 `title`만 바꾸고(id 그대로) 그 작업에 CHANGE 사건 한 줄(`제목 변경: <옛> → <새>`, quote 필수, changes 없음)을 더한다. 앞의 원장 줄은 그대로이며 `state.md` 제목 줄이 새 제목으로 다시 만들어진다.
 
 ## 현재 상태 (state.json / state.md)
 
@@ -94,28 +100,35 @@ save·skip·new-work 결과에는 `hooks`(이 세션에서 SessionStart·UserPro
 | 턴 시작 | `[Worklog worklog/2 SessionStart` 주입이 보이면 사용, 없으면 show |
 | 현재 작업이 없고 기존 작업 지정 | `use <id> --quote "<사용자 원문>"` |
 | 새 작업 지정 | `new-work "<제목>" --quote "<사용자 원문>"` |
-| 현재 작업도 지정도 없음 | 목록을 제시하고 "어느 작업으로 진행할까요? [목록] 새 작업이면 제목을 알려 주세요."를 한 번 묻고 skip |
+| 현재 작업도 지정도 없고 기존 작업이 있음 | 요청을 수행하기 전에 "어느 작업에 기록할까요? [목록] / 새 작업"을 한 번 묻고 skip. 모델은 기존 작업을 고르지 않는다 |
+| 기존 작업이 하나도 없음(미연결 폴더 `auto=on`, 빈 목록) | 묻지 않고 첫 기록 대상 요청에서 `new-work`(미연결이면 `--root <후보>`), 그 턴에 save. 제목을 사용자가 주지 않았으면 요청에서 정하고 첫 summary는 `[auto] 제목 자동: <제목>` (2.25.0) |
+| 미연결 폴더 `auto=off` | 사용자가 `새 작업: <제목>`이라 할 때만 연결(2.24 동작) |
 | 작업 하나뿐이고 "이어서" | 그 작업을 use, quote는 사용자 말 |
 | 현재 작업 있음 | 같은 작업을 이어감, 사용자가 다시 지정할 때만 전환 |
-| 잘못 기록함 | 양쪽 작업에 CORRECTION, 잘못 들어간 사건 ID와 작업 표시, 사건 이동 없음 |
+| `| FORK` 세션 | 사용자가 작업을 지정하거나 기록하라고 하기 전에는 skip |
+| 잘못 골랐고 아직 save 전 | `use <맞는 id> --quote` |
+| 잘못 기록함(save 뒤) | `reassign <잘못된 id> <맞는 id> --events E…-E… --quote`, 사건 이동 없음 (2.25.0) |
+| 자동 제목이 틀림 | `rename <id> "<새 제목>" --quote` (2.25.0) |
 
-모델은 작업을 임의로 고르거나 만들지 않는다. use·new-work는 빈 quote를 거부한다. 원문이 실제 사용자 발언인지까지 기계가 검증하지는 못한다. current_work는 세션에 저장하므로 압축 뒤 유지되지만 새 세션에는 다시 지정이 필요하다.
+모델은 기존 작업을 임의로 고르지 않는다. 새 작업을 만드는 것은 사용자 지시가 있거나 기존 작업이 하나도 없을 때뿐이다. 같은 세션이 Hook이 센 같은 턴(turn ≥ 1)에 두 번째 `new-work`를 하면 거부한다(재시도로 `-2` 작업이 생기는 것을 막는다. 의도했으면 `--force`). 턴 0(Hook이 턴을 세지 않는 세션, 또는 폴더를 막 연결한 첫 턴)은 검사하지 않는다. use·new-work는 빈 quote를 거부한다. 원문이 실제 사용자 발언인지까지 기계가 검증하지는 못한다. current_work는 세션에 저장하므로 압축 뒤 유지되지만 새 세션에는 다시 지정이 필요하다.
 
 save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문자열이어야 한다. 생략하면 current_work를 사용한다. 둘 다 없으면 다음 문구로 거부한다: `현재 작업이 없습니다. 사용자가 지정한 작업으로 use <id> --quote 또는 new-work "제목" --quote 후 저장하세요. 작업 목록: …`. 사용자에게 지정을 요청하며 지정 없는 턴은 skip으로 끝낸다.
 
 ## 명령표
 
-`python3 -B core/wl.py <명령> --root <프로젝트> --tool <claude|codex|pi>`를 사용한다. root 생략 시 cwd다. Hook은 stdin 이벤트의 cwd·session_id를 사용한다. 명령 세션은 도구별 환경변수(CODEX_THREAD_ID·CLAUDE_CODE_SESSION_ID·PI_SESSION_ID)로 구분한다. `WL_TOOL`·`WL_SESSION_ID`는 시험에서 세션을 직접 지정할 때 쓴다.
+`python3 -B core/wl.py <명령> --root <프로젝트> --tool <claude|codex|agy|pi>`를 사용한다. root 생략 시 cwd의 루트 후보다(2.25.0, 위 '루트 후보'). Hook은 stdin 이벤트의 cwd·session_id를 사용한다. 명령 세션은 도구별 환경변수(CODEX_THREAD_ID·CLAUDE_CODE_SESSION_ID·PI_SESSION_ID)로 구분한다. `WL_TOOL`·`WL_SESSION_ID`는 시험에서 세션을 직접 지정할 때 쓴다.
 
 | 명령 | 역할 |
 |---|---|
 | `works` | 전체 작업 목록 JSON, 상태별 정렬 |
 | `use <id> --quote "<원문>"` | current_work·selected_turn 지정, show와 같은 상태(못 본 사건 절 포함)를 본문으로 출력·last_seen 갱신, 없는 id·빈 quote 거부 |
-| `new-work "<제목>" --quote "<원문>"` | 작업 생성 후 선택, 결과에 id 반환 |
+| `new-work "<제목>" --quote "<원문>" [--root <후보>] [--force]` | 작업 생성 후 선택, 결과에 id 반환. 폴더를 처음 연결하면 `connected`·`connected_changed`·`connected_notes`. 쓸 수 없는 폴더는 `{"ok": false, "error": …}`·exit 2. 같은 턴 두 번째는 거부(`--force`로 해제) |
 | `show [--work <id>]` | 현재 또는 지정 작업 현황 출력·투영 복구·last_seen 갱신, 현재 작업 없으면 목록·exit 0. 세션이 알려져 있고 `last_seen` 뒤에 사건이 있으면 본문 끝에 `## 이 세션이 아직 못 본 사건 (seq a~b)` 절(한 줄 `- <id> · <tool>:<세션 앞 8자> · <type> · <summary 80자>`, 최신 20건, 초과분은 `…외 n건` 한 줄)을 붙인다(2.23.0). 0건이면 절이 없다 |
 | `save` | stdin JSON으로 현재 또는 입력 work 작업에 사건 추가, index 갱신·saved_turn 기록 |
 | `skip "<이유>"` | 원장에 쓰지 않고 skipped_turn 기록 |
 | `verify [--work <id> \| --all]` | 잠금 안에서 투영 검증, --all은 전체와 index↔폴더 일관성 검증·writer 손상 등의 warnings 출력 |
+| `reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<원문>"` | 위 '잘못 기록한 사건의 정정'. 결과 `{ok, from, to, events, misfiled, refiled, moved: {decisions, constraints, artifacts}, current_work, decisions, constraints}`(맞는 작업의 유효 목록), 실패 시 `partial` |
+| `rename <id> "<새 제목>" --quote "<원문>"` | index title만 변경 + CHANGE 사건. 결과 `{ok, work, title, old_title, saved, seq}` |
 | `archive <id>` / `reopen <id>` | CHECKPOINT("작업 보관/재개", COMPLETED/ACTIVE) 추가와 index 상태 갱신, quote 불필요 |
 | `off --quote "<원문>" [--reason "<이유>"]` | `.worklog/off` 생성, 원장에 쓰지 않음. 사용자 원문 필수·이유 선택. 이미 꺼져 있으면 표식 유지·"이미 꺼짐"(시각·이유) |
 | `on` | `.worklog/off` 삭제·꺼져 있던 기간 출력. 이미 켜져 있으면 "이미 켜짐"(오류 아님). off·on 모두 `.worklog/` 없거나 표식이 링크면 거부 |
@@ -126,10 +139,20 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 
 ## Hook과 주입 형식
 
-세 Hook은 stdin의 cwd·세션 ID를 받는다(agy는 `workspacePaths[0]`·`conversationId`, 2.24.0). `.worklog/`가 없으면 빈 출력·exit 0이다(agy는 `{}`). 디렉터리가 비어 있어도 연결된다. `hook` 출력 계약은 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`다(agy: `{"injectSteps":[{"systemMessage":{"systemMessage":"…"}}]}`; Stop 차단은 agy에서 `{"decision":"continue","reason":…}`, 통과는 `{}`).
+세 Hook은 stdin의 cwd·세션 ID를 받는다(agy는 `workspacePaths[0]`·`conversationId`, 2.24.0). 기록 위치는 그 cwd의 루트 후보다(2.25.0). 후보에 `.worklog/`가 없으면 SessionStart는 아래 NOT_CONNECTED 한 줄, turn-start·stop-hook은 빈 출력·exit 0이다(agy는 `{}`). 디렉터리가 비어 있어도 연결된다. `hook` 출력 계약은 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`다(agy: `{"injectSteps":[{"systemMessage":{"systemMessage":"…"}}]}`; Stop 차단은 agy에서 `{"decision":"continue","reason":…}`, 통과는 `{}`).
+
+미연결(2.25.0, 한 줄, 세션 파일·갱신 검사 없음):
 
 ```text
-[Worklog worklog/2 SessionStart | <PROVIDED|NO_CURRENT_WORK|EMPTY|UNAVAILABLE|OFF> | root=…]
+[Worklog worklog/2 SessionStart | NOT_CONNECTED | root=<후보> | auto=<on|off> | git=<yes|no>( | FORK)] <안내>
+```
+
+`auto=on`의 안내는 "첫 기록 대상 요청에서 묻지 않고 `new-work "<제목>" --quote "<요청 원문>" --root <후보>`로 연결하고 그 턴에 save한다"이고, `auto=off`의 안내는 2.24의 "사용자가 "새 작업: <제목>"이라 하기 전까지 Worklog 절차를 적용하지 않는다"이다. 후보가 세션 폴더와 다르면 "root는 세션 폴더 <cwd>가 아니라 git 최상위 폴더다(또는 가장 가까운 상위 Worklog 기록 폴더다)", git 최상위 위에 기록이 있으면 "상위 폴더 <경로>의 Worklog 기록은 git 경계 밖이라 쓰지 않는다"가 붙는다. 이벤트의 `source`가 `fork`(Claude `/branch`·`--fork-session`, Codex `/fork`)면 연결된 폴더의 헤더 끝에도 `| FORK`가 붙는다. fork는 자기 세션 ID를 가지므로 세션 파일이 따로이고 현재 작업이 없다(본 세션 파일은 그대로).
+
+연결됨:
+
+```text
+[Worklog worklog/2 SessionStart | <PROVIDED|NO_CURRENT_WORK|EMPTY|UNAVAILABLE|OFF> | root=…( | FORK)]
 이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.
 ## 프로젝트 공통 (project.md)
 … 선택 파일이 있을 때만, 최대 4,000자 …
@@ -148,6 +171,10 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 ## 현재 작업 없음
 사용자에게 작업을 지정받을 때까지 저장하지 않는다. 지정이 없으면 한 번 묻고 skip으로 마친다. 작업이 하나뿐이고 "이어서"면 그 작업을 use한다.
 ```
+
+EMPTY(작업 0개)이고 `auto=on`이면 둘째 줄 대신 `기존 작업이 없다. 첫 기록 대상 요청에서 묻지 않고 new-work로 새 작업을 만들고 그 턴에 save한다(제목은 사용자가 주면 그대로, 없으면 요청에서 정한다).`(2.25.0).
+
+**Hook 중복(2.25.0, claude·codex).** 사용자 수준과 프로젝트 수준에 Hook이 둘 다 등록되면 같은 이벤트가 두 번 온다. 같은 세션의 두 번째 호출은 무동작이다. 키: SessionStart = `source` + 시각(같은 source가 5초 안에 다시 오면 중복, `source`가 없는 이벤트는 키 없음), UserPromptSubmit = 이벤트의 `turn_id`(Codex, 2026-10-20 실측) 또는 `prompt_id`(그런 필드를 보내는 도구) — 둘 다 없으면 지금처럼 매번 센다, Stop = 앞 Stop이 남긴 턴 번호와 `stop_hook_active` + "앞 Stop이 끝나기 전에 시작한 프로세스"(두 등록은 병렬로 돈다. 차례로 온 다음 Stop은 중복이 아니므로 2.16.0의 `!` 셸 입력 턴 판정이 그대로다). agy는 2.24.2의 `agy_pre`·`agy_stop`을 그대로 쓴다. 미연결 폴더는 세션 파일이 없어 중복을 구분하지 않는다(한 줄 주입이 두 번 갈 수 있다).
 
 세 Hook은 돌 때마다 세션 파일의 `hooks_seen`에 시각을 남긴다(꺼져 있을 때는 남기지 않는다). save·skip·verify가 이것으로 Hook 작동 여부를 보고하므로, 신뢰되지 않았거나 꺼진 Hook은 첫 턴의 결과에서 드러난다. stop-hook은 saved_turn·skipped_turn·selected_turn 중 하나가 turn과 같으면 통과한다. 셋 다 없으면 `{"decision":"block","reason":…}`로 종료를 막는다. stop_hook_active가 참이면 무한 반복 방지를 위해 통과한다. 선택만 해도 Hook은 통과할 수 있으나 지침의 턴 끝 save·읽기 전용 skip 규칙은 유지한다. Pi는 Hook이 없어 지침만 적용하며 강제되지 않는다. Codex Hook 정의가 바뀌면 사용자가 다시 신뢰해야 한다.
 
