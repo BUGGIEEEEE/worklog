@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md) · AI agent? Read [AGENT.md](AGENT.md)
 
-**Keeps Claude Code and Codex from forgetting what was decided, even after a compaction or a new session.** Ask the AI to install it; after that you only name the work you want to continue.
+**Keeps Claude Code, Codex, agy (Antigravity CLI) and pi from forgetting what was decided, even after a compaction or a new session.** Ask the AI to install it; after that you only name the work you want to continue.
 
 ![1. What gets recorded, and where](docs/img/en-01-units.png)
 
