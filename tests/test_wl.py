@@ -3595,3 +3595,92 @@ class Release2270Test(Base):
                      "산출물 목록에 없는 경로입니다: note.md")
         self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": "c.md"}], "check": {"C1": "미반영: x"}}))
         self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["note.md(E0003)"])  # 다시 기록한 경로는 gone에서 빠진다
+
+    # --- U15 ---
+    def call(self, fn, args, **patches):
+        """An in-process command with module attributes patched (failure injection); (exit code, parsed JSON or None)."""
+        buf, code = io.StringIO(), 0
+        with mock.patch("sys.stdout", buf), contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(self.wl, name, value))
+            try:
+                fn(Namespace(**args))
+            except SystemExit as e:
+                code = e.code
+        return code, (json.loads(buf.getvalue()) if buf.getvalue().strip() else None)
+
+    def recipe(self):
+        """recipe (E0001 decision+constraint, E0002 checkpoint) and memo (one constraint); session s1 (codex) on recipe, next turn."""
+        self.ok(new_work(self.root, "memo"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "m", "quote": "메모", "constraints": ["메모는 한 줄"]}))
+        self.ok(new_work(self.root, "recipe"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "가이드 형식", "quote": "표는 3열로",
+                                        "decisions": [{"text": "표는 3열(읽기 쉬움)"}], "constraints": ["외부 게시 금지"]}))
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "진행"}))
+        hook(self.root, "turn-start", session="s1", tool="codex")
+
+    def test_reassign_new_creates_and_moves(self):
+        self.recipe()
+        argv = ["reassign", "recipe", "--new", "새 작업: Guide", "--events", "E0001", "--quote", "그건 새 작업 guide야"]
+        out = self.ok(run(self.root, argv[0], extra=argv[1:]))
+        self.assertEqual((out["from"], out["to"], out["created"], out["current_work"], out["refiled"], out["misfiled"]),
+                         ("recipe", "guide", "guide", "guide", "E0001", "E0003"))
+        self.assertEqual(out["decisions"], ["D1: 표는 3열(읽기 쉬움) [사용자]"])
+        self.assertIn("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: memo 1개", out["notice"])
+        w = self.index()["works"]["guide"]
+        self.assertEqual((w["title"], w["status"], w["last_seq"]), ("Guide", "ACTIVE", 1))
+        ev = self.events("guide")
+        self.assertEqual((len(ev), ev[0]["type"], ev[0]["summary"], ev[0]["changes"]["goal"]), (1, "CORRECTION", "[refiled ← recipe] E0001", "Guide"))
+        self.assertEqual(self.state("guide")["goal"], "Guide")
+        self.assertEqual((self.state("recipe")["decisions"], self.state("recipe")["constraints"]), ([], []))
+        self.assertEqual(self.events("recipe")[-1]["summary"], "[misfiled → guide] E0001")
+        s = json.loads(session_file(self.root, "codex_s1").read_text())
+        self.assertEqual((s["current_work"], s["new_work_id"], s["new_work_turn"], s["selected_turn"]), ("guide", "guide", 1, 1))
+        self.assertTrue(self.ok(run(self.root, "verify", extra=["--all"]))["ok"])
+        self.assertEqual(self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "이어감"}))["work"], "guide")  # 현재 작업 = guide
+        self.refused(run(self.root, argv[0], extra=argv[1:]), "--new 제목의 작업 id guide가 이미 있습니다")   # 저장이 더 생긴 뒤: 이어 갈 대상 아님
+        self.refused(run(self.root, "new-work", extra=["X", "--quote", "q"]), "이미 new-work로 작업 guide를")  # --new도 같은 턴 표식을 남긴다
+
+    def test_reassign_new_refusals(self):
+        self.recipe()
+        self.refused(run(self.root, "reassign", extra=["recipe", "memo", "--new", "guide", "--events", "E0001", "--quote", "q"]),
+                     "<맞는 id>(memo)와 --new를 함께 쓸 수 없습니다")
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", " 새 작업: ", "--events", "E0001", "--quote", "q"]), "--new의 제목이 비어")
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", "Memo", "--events", "E0001", "--quote", "q"]),
+                     'reassign recipe memo --events E0001 --quote "<원문>"')                     # id 충돌: 그 작업으로 옮기라고 안내
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0009", "--quote", "q"]), "작업에 없는 사건")
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001"]), "사용자 원문")
+        self.assertEqual(sorted(self.index()["works"]), ["memo", "recipe"])                       # 거부는 아무것도 만들지 않는다
+        self.ok(run(self.root, "new-work", extra=["Other", "--quote", "q"]))                       # 이번 턴에 이미 새 작업
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "q"]), "--force")
+        self.assertNotIn("guide", self.index()["works"])
+        out = self.ok(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "q", "--force"]))
+        self.assertEqual(out["created"], "guide")
+        self.ok(new_work(self.root, "던전디펜스"))                                                # 한글만: work
+        hook(self.root, "turn-start", session="s1", tool="codex")
+        out = self.ok(run(self.root, "reassign", extra=["recipe", "--new", "던전 2화", "--events", "E0002", "--quote", "q"]))
+        self.assertEqual(out["created"], "work-2")                                               # new-work와 같은 규칙(충돌이 아님)
+
+    def test_reassign_new_partial_then_retry(self):
+        """A failure after the new work exists: partial names it (created); the same command again finds it by its title and does
+        the missing steps without making "<id>-2"."""
+        self.recipe()
+        self.wl = load_wl()
+        args = dict(arg="recipe", arg2=None, new="guide", events="E0001", quote="새 작업 guide야", root=str(self.root), tool="codex",
+                    session="s1", force=False)
+        real, n = self.wl.commit, [0]
+        def commit(*a, **kw):
+            n[0] += 1
+            if n[0] == 1:
+                raise OSError("commit 실패(시험)")
+            return real(*a, **kw)
+        code, res = self.call(self.wl.cmd_reassign, args, commit=commit)
+        self.assertEqual((code, res["partial"], res["done"], res["created"]), (2, True, [], "guide"))
+        self.assertEqual((self.index()["works"]["guide"]["last_seq"], (self.d / "works/guide").is_dir()), (0, True))
+        out = self.ok(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "새 작업 guide야"]))
+        self.assertEqual((out["to"], out["refiled"], out["misfiled"], out["current_work"]), ("guide", "E0001", "E0003", "guide"))
+        self.assertNotIn("created", out)
+        self.assertEqual(sorted(self.index()["works"]), ["guide", "memo", "recipe"])
+        self.assertEqual(self.state("guide")["goal"], "guide")
+        self.assertTrue(self.ok(run(self.root, "verify", extra=["--all"]))["ok"])
+        self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "q"]), "이미 옮겼습니다")

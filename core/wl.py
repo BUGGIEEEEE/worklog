@@ -94,7 +94,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
 결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·이동·삭제). 같은 세션에는 한 번만 보인다.
-명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
+명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> (<맞는 id> | --new "<제목>") --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -710,10 +710,15 @@ def work_dir(d, wid):
     return contained(works_root(d) / wid, d / "works")
 
 
+def title_slug(title):
+    """Title → ASCII slug (a-z, 0-9, '-', ≤40), '' when nothing ASCII is left (make_id's base before the 'work' fallback)."""
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-")
+
+
 def make_id(title, taken):
     """Title → ASCII slug (a-z, 0-9, '-', ≤40); 'work' when nothing ASCII or only digits is left ("던전디펜스 1화" → "1" is
     not a usable id); '-2', '-3' on collision."""
-    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-")
+    base = title_slug(title)
     if not base or base.replace("-", "").isdigit():
         base = "work"
     wid, n = base, 1
@@ -1320,6 +1325,42 @@ def other_constraints(d, index, wid):
     return parts
 
 
+def new_work_refusal(sess, index, force):
+    """Inside locked(d): refuse a second new work of one session in one turn (new-work, and reassign --new since 2.27.0).
+    It is usually a retry after an unclear result, and would make "<id>-2" (2.25.0). 2.26.0: turn 0 too (the first connection
+    turn is the one that matters most), and the marker new_work_turn/new_work_id is written before index.json: a retry after a
+    failed index write is let through (the id is not in the index), a retry after a failed session write is refused (the work exists)."""
+    made = sess["new_work_id"]
+    if sess["new_work_turn"] == sess["turn"] and (made is None or made in index["works"]) and not force:
+        made = made or sess["current_work"]
+        raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {made}를 만들었습니다. 재시도라면 works로 확인하고 그 작업을 그대로 쓰세요"
+                     f"(현재 작업이 {made}가 아니면 use {made} --quote). 정말 하나 더 만들려면 --force를 붙이세요.")
+
+
+def create_work(d, index, who, sess, title, **session_changes):
+    """Inside locked(d): a new index entry and an empty work folder (no event: the first save or reassign writes the ledger).
+    The session's retry marker (new_work_turn, new_work_id, plus session_changes) is written before index.json. Returns the id.
+    Shared by new-work and reassign --new (2.27.0)."""
+    made = sess["new_work_id"]
+    works = works_root(d)
+    taken = set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set())
+    if made and made not in index["works"] and (works / made).is_dir() and not any((works / made).iterdir()):
+        taken.discard(made)  # the empty folder an earlier attempt of this turn made before its index write failed: reuse the id
+    wid = make_id(title, taken)
+    update_session(d, *who, new_work_turn=sess["turn"], new_work_id=wid, **session_changes)
+    at = now()
+    index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
+    work_dir(d, wid).mkdir(parents=True, exist_ok=True)
+    write_index(d, index)
+    return wid
+
+
+def others_notice(others):
+    """new-work's (and reassign --new's) notice part: the other works' constraints do not apply to the new one."""
+    return ("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
+            + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+
+
 def cmd_new_work(args):
     title = NEW_WORK_PREFIX.sub("", str(args.arg or "")).strip()  # "새 작업: 제목"을 그대로 넣어도 제목만 남긴다
     if not title:
@@ -1332,27 +1373,10 @@ def cmd_new_work(args):
     with locked(d):
         sess = session_or_new(d, tool, sid)
         index = index_or_new(d)
-        # A second new-work of one session in one turn is usually a retry after an unclear result, and would make "<id>-2"
-        # (2.25.0). 2.26.0: turn 0 too (the first connection turn is the one that matters most), and the marker
-        # new_work_turn/new_work_id is written before index.json: a retry after a failed index write is let through (the id is
-        # not in the index), a retry after a failed session write is refused (the work exists).
-        made = sess["new_work_id"]
-        if sess["new_work_turn"] == sess["turn"] and (made is None or made in index["works"]) and not getattr(args, "force", False):
-            made = made or sess["current_work"]
-            raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {made}를 만들었습니다. 재시도라면 works로 확인하고 그 작업을 그대로 쓰세요"
-                         f"(현재 작업이 {made}가 아니면 use {made} --quote). 정말 하나 더 만들려면 --force를 붙이세요.")
-        works = works_root(d)
-        taken = set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set())
-        if made and made not in index["works"] and (works / made).is_dir() and not any((works / made).iterdir()):
-            taken.discard(made)  # the empty folder an earlier attempt of this turn made before its index write failed: reuse the id
-        wid = make_id(title, taken)
+        new_work_refusal(sess, index, getattr(args, "force", False))
         # fresh: the hooks of this session ran while the folder was not connected and could not leave a record, so the
         # "Hook 미작동 의심" warning would be wrong here; "connect" in hooks_seen stands for them until a hook records itself.
-        update_session(d, tool, sid, new_work_turn=sess["turn"], new_work_id=wid, **({"hooks_seen": {"connect": now()}} if fresh else {}))
-        at = now()
-        index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
-        work_dir(d, wid).mkdir(parents=True, exist_ok=True)
-        write_index(d, index)
+        wid = create_work(d, index, (tool, sid), sess, title, **({"hooks_seen": {"connect": now()}} if fresh else {}))
         update_session(d, tool, sid, current_work=wid, selected_turn=sess["turn"])
         others = other_constraints(d, index, wid)
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
@@ -1361,8 +1385,7 @@ def cmd_new_work(args):
         result.update(connected=True, connected_changed=changed, connected_notes=notes)
     notices = []
     if others:
-        notices.append("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
-                       + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+        notices.append(others_notice(others))
     above = next((p for p in d.parent.parents if (p / ".worklog" / "index.json").is_file()), None)  # works there, not ~/.worklog (WL_HOME) or an empty connection
     if above:  # 상위 폴더에 이미 기록이 있으면 하위에 따로 기록하는 것이 맞는지 확인한다(기록이 갈라진다)
         notices.append(f"상위 폴더 {above}에 Worklog가 있습니다. 이 하위 폴더에 따로 기록하려는 것이 맞는지 사용자에게 확인하세요.")
@@ -1507,15 +1530,33 @@ def refile_changes(rstate, decs, cons):
     return changes, already, upgraded
 
 
+def new_target_resume(d, index, title, wrong, ids):
+    """reassign --new re-run (2.27.0): the work an earlier run of the same command created — an index work other than `wrong`
+    with this title whose ledger is empty or holds only CORRECTIONs refiled from `wrong` with exactly these events. None if none."""
+    for wid, w in sorted(index["works"].items()):
+        if wid != wrong and w["title"] == title and all(
+                e.get("type") == "CORRECTION" and sorted(ref_ids(e, "refiled_from", wrong)) == ids for e in read_events(work_dir(d, wid))[0]):
+            return wid
+    return None
+
+
 def cmd_reassign(args):
     """reassign <wrong> <right> --events E0003-E0005 --quote (2.26.0 order): ⒜ CORRECTION in the right work that records the
     decisions and constraints those events added (new D/C ids, their source kept or upgraded, artifacts rehashed, original quotes
     in refs, refs point only at the wrong work's existing events), ⒝ CORRECTION in the wrong work that removes them, its refiled_to
     naming the id ⒜ really got, ⒞ the right work becomes this session's current work. One .lock. A failure anywhere is reported as
-    partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones."""
+    partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones.
+    2.27.0 (U15): `--new "<title>"` in place of <right> first creates the right work like new-work (same id rule, same same-turn
+    refusal and marker, same notice; ⒜ carries goal = title) inside the same lock; a re-run finds that work by its title."""
     wrong, right = args.arg, getattr(args, "arg2", None)
-    usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"'
-    if not (wrong and right and getattr(args, "events", None)):
+    new = getattr(args, "new", None)
+    title = NEW_WORK_PREFIX.sub("", str(new or "")).strip() if new is not None else None
+    usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"(맞는 작업이 아직 없으면 <맞는 id> 대신 --new "<제목>")'
+    if new is not None and right:
+        raise Reject(f"<맞는 id>({right})와 --new를 함께 쓸 수 없습니다. {usage}")
+    if new is not None and not title:
+        raise Reject(f"--new의 제목이 비어 있습니다. {usage}")
+    if not (wrong and (right or title) and getattr(args, "events", None)):
         raise Reject(f"{usage} 형식입니다.")
     if wrong == right:
         raise Reject("잘못된 작업과 맞는 작업이 같습니다.")
@@ -1524,12 +1565,23 @@ def cmd_reassign(args):
     d = store(args.root)
     if not connected(d):
         raise Reject(not_connected_text(args, d, "reassign"))
-    who, result, failed, after = (tool, sid), None, None, None
+    who, result, failed, after, created = (tool, sid), None, None, None, None
     with locked(d):
         index = index_or_new(d)
-        entry(index, wrong), entry(index, right)
+        entry(index, wrong)
         wevents, _ = read_events(work_dir(d, wrong))
         ids = event_ids(args.events, wevents)
+        if title:  # --new (2.27.0): an earlier run's work, else checks now and creation after the double-refile checks below
+            right = new_target_resume(d, index, title, wrong, ids)
+            if not right:
+                slug = title_slug(title)
+                if slug and not slug.replace("-", "").isdigit() and slug in index["works"]:
+                    raise Reject(f"--new 제목의 작업 id {slug}가 이미 있습니다(제목: {index['works'][slug]['title']}). 그 작업으로 옮기려면 "
+                                 f"reassign {wrong} {slug} --events {args.events} --quote \"<원문>\", 새 작업이 맞으면 다른 제목을 쓰세요.")
+                sess = session_or_new(d, tool, sid)
+                new_work_refusal(sess, index, getattr(args, "force", False))
+        else:
+            entry(index, right)
         span = ids[0] if len(ids) == 1 else (f"{ids[0]}-{ids[-1]}" if len(ids) == int(ids[-1][1:]) - int(ids[0][1:]) + 1 else ", ".join(ids))
         sel = set(ids)
         # An event already refiled to another work is not refiled again (its rules left this work then). 2.26.0: judged from
@@ -1550,6 +1602,8 @@ def cmd_reassign(args):
                           and r.get("work") != right), None)
             if hit and other:
                 raise Reject(f"이미 {other}로 옮긴 사건입니다: {', '.join(sorted(hit))}({wrong} {e['id']}). show --work {other}로 확인하세요.")
+        if title and not right:
+            right = created = create_work(d, index, who, sess, title)
         pr = reassign_progress(d, wrong, right, ids, who)
         steps, index, ev_b, ev_a = pr["steps"], pr["index"], pr["refiled"], pr["misfiled"]
         (wevents, wprev), (revents, rprev) = pr["wrong"], pr["right"]
@@ -1563,6 +1617,8 @@ def cmd_reassign(args):
         try:
             if not ev_b:  # ⒜ the right work first
                 changes = refile_changes(fold(revents)[0], decs, cons)[0]
+                if title and not revents:  # --new: the new work's first event sets its goal like a first save would
+                    changes["goal"] = title
                 new_a = [{"path": a["path"], "sha256": sha((d.parent / a["path"]).read_bytes())} for a in arts if (d.parent / a["path"]).is_file()]
                 if new_a:
                     changes["artifacts"] = new_a
@@ -1615,14 +1671,19 @@ def cmd_reassign(args):
                       **({"upgraded": upgraded} if upgraded else {}),     # 2.26.0: a model item there became the user item moved here
                       **({"resumed": resumed} if resumed else {}),        # 2.26.0: steps an earlier run had done (this run did the rest)
                       **({"corrected_ref": True, "ref_correction": corrected["id"]} if corrected else {}),  # 2.26.0 (F05)
+                      **({"created": created} if created else {}),  # 2.27.0: --new made this work in this run
                       "current_work": right,
                       "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]]}
+            others = other_constraints(d, index, right) if title else []
+            if others:  # 2.27.0: the same notice as new-work
+                result["notice"] = others_notice(others)
     if failed:
         done = [k for k in REASSIGN_STEPS if after["steps"][k]] if after else None
         b_id = (after["refiled"] or {}).get("id") if after else None
         a_id = (after["misfiled"] or {}).get("id") if after else None
         print(json.dumps({"ok": False, "partial": True, "done": done, "refiled": b_id, "misfiled": a_id, "error": failed,
+                          **({"created": created} if created else {}),
                           "next": "원인을 고친 뒤 같은 reassign 명령을 다시 실행한다(끝난 단계는 건너뛰고 빠진 단계만 한다).",
                           "message": f"reassign이 중간에 멈췄습니다(끝난 단계: {', '.join(done) if done else ('없음' if done is not None else '확인 못함')}). "
                                      "원인을 고친 뒤 같은 reassign 명령을 다시 실행하면 빠진 단계만 합니다."}, ensure_ascii=False))
@@ -2189,7 +2250,8 @@ def main(argv=None):
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
-    ap.add_argument("--force", action="store_true", help="new-work: 같은 턴의 두 번째 new-work 거부를 풀어 하나 더 만든다")
+    ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
+    ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
