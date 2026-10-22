@@ -2,7 +2,7 @@
 
 [English](README.md) · AI 에이전트라면 [AGENT.md](AGENT.md)
 
-**Claude Code와 Codex가 대화 압축이나 새 세션 뒤에도 정한 것을 잊지 않게 합니다.** 설치는 AI에게 시키면 되고, 그 뒤에는 이어서 할 작업의 이름만 말하면 됩니다.
+**Claude Code·Codex·agy(Antigravity CLI)·pi가 대화 압축이나 새 세션 뒤에도 정한 것을 잊지 않게 합니다.** 설치는 AI에게 시키면 되고, 그 뒤에는 이어서 할 작업의 이름만 말하면 됩니다.
 
 ![1. 기록의 단위](docs/img/ko-01-units.png)
 
