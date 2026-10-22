@@ -57,7 +57,7 @@ python3 -B tools/uninstall_project.py --all-projects (--keep-records | --delete-
 
 ## Hook 동작
 
-- 세 Hook은 stdin 이벤트의 `cwd`와 세션 ID를 씁니다. `--tool`은 그 도구의 세션 환경변수만 고르는 데 씁니다.
+- 세 Hook은 stdin 이벤트의 `cwd`와 세션 ID를 씁니다. `--tool`은 그 도구의 세션 환경변수만 고르는 데 씁니다. 모델이 실행하는 명령에서 `--tool`을 빠뜨렸는데 도구 세션 변수가 둘 이상이면(Claude Code 안의 pi 등) 코어는 도구를 추정하지 않고 거부합니다(2.27.0).
 - 기록 위치는 이벤트 cwd의 루트 후보입니다(2.25.0): cwd가 연결돼 있으면 cwd, git 안이면 git 최상위까지 올라가며 `.worklog/index.json`이 있는 가장 가까운 폴더, 없으면 git 최상위, git이 아니면 cwd. 그래서 하위 폴더에서 연 세션도 상위 프로젝트의 기록을 읽고 저장합니다. 자세한 경우표: [FORMAT.md](FORMAT.md)의 '루트 후보'.
 - 후보에 `.worklog` 폴더가 없으면 SessionStart는 `| NOT_CONNECTED | root=<후보> | auto=on|off | git=yes|no` 한 줄만 주입하고(2.21.0, 세션 파일·갱신 검사 없음) turn-start·stop-hook은 빈 출력으로 통과합니다. 폴더만 있어도(작업이 아직 없어도) 세 Hook이 연결됩니다. 사용자 수준 Hook(`--user`)은 모든 폴더에서 돌지만 이 규칙 때문에 연결 안 한 폴더에서는 아무 일도 하지 않습니다.
 - SessionStart 주입이 있으면 턴 시작 `show`를 생략할 수 있고, 없으면 지침대로 `show`를 한 번 실행합니다. 두 경로 모두 같은 작업별 `works/<id>/state.md` 내용입니다.

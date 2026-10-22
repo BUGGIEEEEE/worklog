@@ -3459,3 +3459,58 @@ class CleanupTest(Base):
         self.assertEqual(cq({"D1": "미반영: 그림", "X9": "'아무거나 넣음'"}, b=[]), (["D1"], ["D1"], []))  # 비텍스트만: 있는 id만
         with self.assertRaisesRegex(wl.Reject, "^check D1: 산출물이 모두 비텍스트"):
             cq({"D1": "'저녁 7분 동안'"}, b=[])
+
+
+class Release2270Test(Base):
+    """2.27.0: U16 tool guess guard, U12 once-per-session missing notes and artifacts_gone, U15 reassign --new."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+
+    def bare(self, *argv, env=None, payload=None):
+        """A command without WL_TOOL/WL_SESSION_ID: the tool comes from --tool or the tool session variables in env."""
+        p = subprocess.run([sys.executable, "-B", str(WL), *argv, "--root", str(self.root)], input=json.dumps(payload) if payload else "",
+                           capture_output=True, text=True, env=dict(clean_env(), **(env or {})))
+        return p.returncode, p.stdout
+
+    def events(self, wid):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    def state(self, wid):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    # --- U16 ---
+    def test_tool_guess_refused_with_two_session_variables(self):
+        self.ok(new_work(self.root, "t", tool="claude"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="claude"))
+        both = {"CLAUDE_CODE_SESSION_ID": "c1", "PI_SESSION_ID": "p1"}
+        r, out = self.bare("use", "t", "--quote", "q", env=both)                       # 둘 다 있고 --tool 없음: 추정하지 않는다
+        self.assertEqual(r, 2, out)
+        err = json.loads(out)["error"]
+        self.assertTrue(err.startswith("도구를 확정할 수 없습니다: CLAUDE_CODE_SESSION_ID(claude), PI_SESSION_ID(pi)가 함께 있습니다."), err)
+        self.assertIn("--tool <codex|claude|agy|pi>", err)
+        self.assertFalse((self.d / "sessions/claude_c1.json").exists())
+        self.assertTrue(self.bare("use", "t", "--quote", "q", env={"PI_SESSION_ID": "p1"})[1].startswith("[use] 현재 작업: t"))  # 하나면 추정
+        self.assertTrue((self.d / "sessions/pi_p1.json").exists())
+        self.assertTrue(self.bare("use", "t", "--quote", "q", "--tool", "pi", env=dict(both, PI_SESSION_ID="p2"))[1].startswith("[use]"))
+        self.assertTrue((self.d / "sessions/pi_p2.json").exists())                     # --tool pi: pi 변수의 세션
+        self.assertFalse((self.d / "sessions/claude_c1.json").exists())
+        save = {"work": "t", "type": "CHECKPOINT", "summary": "y"}
+        r, out = self.bare("save", "--tool", "pi", env={"CLAUDE_CODE_SESSION_ID": "c1", "PI_SESSION_ID": "p3"}, payload=save)
+        self.assertEqual(r, 2, out)
+        self.assertTrue(json.loads(out)["error"].endswith("(이 호출: tool=pi session=p3, --tool 지정)"), out)
+        r, out = self.bare("save", env={"PI_SESSION_ID": "p4"}, payload=save)
+        self.assertIn("(이 호출: tool=pi session=p4, 환경변수 PI_SESSION_ID에서 추정)", json.loads(out)["error"])
+        self.refused(run(self.root, "save", save, session="w1", tool="codex"), "show 먼저 실행하세요(작업 t).")
+        self.refused(run(self.root, "save", save, session="w1", tool="codex"), "(이 호출: tool=codex session=w1, WL_TOOL)")
+        self.ok(self.bare("save", "--tool", "pi", env={"PI_SESSION_ID": "p1"}, payload=save))
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "z"}, tool="claude"),
+                     "기록이 바뀌었습니다(seq 1→2). show 후 다시 저장하세요. (이 호출: tool=claude session=s1, WL_TOOL)")
+        # Hook 명령은 설치기가 늘 --tool을 넣는다: 변수가 둘이어도 그 도구의 세션으로 돈다
+        r, out = hook(self.root, "hook", session="c9", tool="claude", env=both)
+        self.assertIn("SessionStart | NO_CURRENT_WORK", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(hook(self.root, "turn-start", session="c9", tool="claude", env=both), (0, ""))
+        self.assertEqual(json.loads(hook(self.root, "stop-hook", session="c9", tool="claude", env=both)[1])["decision"], "block")
+        s = json.loads(session_file(self.root, "claude_c9").read_text())
+        self.assertEqual((s["turn"], s["blocked_turn"], sorted(s["hooks_seen"])), (1, 1, ["SessionStart", "Stop", "UserPromptSubmit"]))

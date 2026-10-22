@@ -169,20 +169,36 @@ def candidate_root(cwd):
     return root_info(cwd)["root"]
 
 
-def identity(args):
+def identity_how(args):
+    """(tool, session id, how the tool was decided: "--tool 지정", "WL_TOOL" or "환경변수 <NAME>에서 추정"). 2.27.0 (U16): without
+    --tool and WL_TOOL, two or more tool session variables at once (pi run inside Claude Code inherits CLAUDE_CODE_SESSION_ID)
+    are refused instead of guessed — the first in TOOL_ENV order would read and write another tool's session file."""
     tool, sid = os.environ.get("WL_TOOL"), os.environ.get("WL_SESSION_ID")
+    how = "WL_TOOL" if tool else None
     if getattr(args, "tool", None):
-        tool = args.tool
+        tool, how = args.tool, "--tool 지정"
     if getattr(args, "session", None):
         sid = args.session
     if not (tool and sid):
-        for name, env in TOOL_ENV:
-            if os.environ.get(env) and (not tool or tool == name):
-                tool, sid = name, sid or os.environ[env]
-                break
+        found = [(name, env) for name, env in TOOL_ENV if os.environ.get(env) and (not tool or tool == name)]
+        if not tool and len(found) > 1:
+            raise Reject(f"도구를 확정할 수 없습니다: {', '.join(f'{env}({name})' for name, env in found)}가 함께 있습니다. "
+                         "--tool <codex|claude|agy|pi>를 지정하세요.")
+        if found:
+            name, env = found[0]
+            tool, sid, how = name, sid or os.environ[env], how or f"환경변수 {env}에서 추정"
     if not (tool and sid):
         raise Reject("세션을 확인할 수 없습니다. --tool <codex|claude|agy|pi> --session <ID>를 지정하세요.")
-    return tool, sid
+    return tool, sid, how
+
+
+def identity(args):
+    return identity_how(args)[:2]
+
+
+def call_note(tool, sid, how):
+    """2.27.0 (U16): the end of a refusal that depends on this session's file — which session this call was judged to be."""
+    return f" (이 호출: tool={tool} session={sid}, {how})"
 
 
 def hook_tool(tool):
@@ -1077,7 +1093,7 @@ def check_quotes(p, arts, bodies, state):
 
 def cmd_save(args):
     root = Path(args.root).resolve()
-    tool, sid = identity(args)
+    tool, sid, how = identity_how(args)
     raw = sys.stdin.read()
     try:
         p = json.loads(raw)
@@ -1106,9 +1122,9 @@ def cmd_save(args):
         # 신선도: 이 세션이 이 작업에서 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
         seen = (sess or {}).get("last_seen", {}).get(wid)
         if seen is None and events:
-            raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다.")
+            raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다." + call_note(tool, sid, how))
         if seen is not None and seen < len(events):
-            raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요.")
+            raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요." + call_note(tool, sid, how))
         # 같은 세션이 직전 사건과 같은 내용을 다시 저장하면 거부: 되감기(rewind) 뒤 기억만 되돌아간 경우(신선도 검사는 통과한다)
         last = events[-1] if events else None
         if last and (last.get("tool"), last.get("session_id"), last.get("type")) == (tool, sid, p["type"]) \

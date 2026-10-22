@@ -122,7 +122,7 @@ save 입력의 `work`는 명시 작업 ID다. 있으면 비어 있지 않은 문
 
 ## 명령표
 
-`python3 -B core/wl.py <명령> --root <프로젝트> --tool <claude|codex|agy|pi>`를 사용한다. root 생략 시 cwd의 루트 후보다(2.25.0, 위 '루트 후보'). Hook은 stdin 이벤트의 cwd·session_id를 사용한다. 명령 세션은 도구별 환경변수(CODEX_THREAD_ID·CLAUDE_CODE_SESSION_ID·PI_SESSION_ID)로 구분한다. `WL_TOOL`·`WL_SESSION_ID`는 시험에서 세션을 직접 지정할 때 쓴다.
+`python3 -B core/wl.py <명령> --root <프로젝트> --tool <claude|codex|agy|pi>`를 사용한다. root 생략 시 cwd의 루트 후보다(2.25.0, 위 '루트 후보'). Hook은 stdin 이벤트의 cwd·session_id를 사용한다. 명령 세션은 도구별 환경변수(CODEX_THREAD_ID·CLAUDE_CODE_SESSION_ID·ANTIGRAVITY_CONVERSATION_ID·PI_SESSION_ID)로 구분한다. `WL_TOOL`·`WL_SESSION_ID`는 시험에서 세션을 직접 지정할 때 쓴다. `--tool`도 `WL_TOOL`도 없는데 도구 세션 변수가 둘 이상 있으면(예: Claude Code 안에서 실행한 pi는 부모의 CLAUDE_CODE_SESSION_ID를 물려받는다) 도구를 추정하지 않고 `도구를 확정할 수 없습니다: <변수>(<도구>), …가 함께 있습니다. --tool <codex|claude|agy|pi>를 지정하세요.`로 거부한다(2.27.0). 변수가 하나면 그 도구로 추정한다. save의 신선도 거부(`show 먼저 실행하세요`·`기록이 바뀌었습니다`) 끝에는 이번 호출의 판정 `(이 호출: tool=<도구> session=<id>, <--tool 지정|WL_TOOL|환경변수 <이름>에서 추정>)`이 붙는다(2.27.0). Hook 명령은 설치기가 늘 `--tool`을 넣으므로 영향이 없다.
 
 | 명령 | 역할 |
 |---|---|
