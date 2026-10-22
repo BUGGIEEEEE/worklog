@@ -6,7 +6,7 @@
 
 ![1. 기록의 단위](docs/img/ko-01-units.png)
 
-기기에 생기는 것(도구마다 한 번): 사용자 지침 파일(`~/.claude/CLAUDE.md` 또는 `~/.codex/AGENTS.md`)의 규칙 블록 하나(기존 내용은 그대로), Hook 3개(`~/.claude/settings.json` 또는 `~/.codex/hooks.json`), `skills/worklog/`(Claude: `~/.claude/`, Codex: `~/.agents/`). 프로젝트에 생기는 것: 기록할 첫 요청 때(2.25.0) `.worklog/`와, git 프로젝트면 `.gitignore`의 `.worklog/` 줄(기록은 기기별 상태이고 사용자 발언을 인용하므로 git 밖에 둡니다). 세션을 열기만 해서는 아무것도 생기지 않습니다.
+기기에 생기는 것(도구마다 한 번): 사용자 지침 파일(`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` 또는 `~/.pi/agent/AGENTS.md`)의 규칙 블록 하나(기존 내용은 그대로. agy는 전용 규칙 파일 `~/.gemini/config/rules/worklog.md`), Hook 3개(`~/.claude/settings.json`, `~/.codex/hooks.json` 또는 `~/.gemini/config/hooks.json`의 이름 붙은 훅 `worklog`. pi는 확장 `~/.pi/agent/extensions/worklog.ts`), `skills/worklog/`(Claude: `~/.claude/`, Codex: `~/.agents/`, agy: `~/.gemini/config/`, pi: `~/.pi/agent/`). 프로젝트에 생기는 것: 기록할 첫 요청 때(2.25.0) `.worklog/`와, git 프로젝트면 `.gitignore`의 `.worklog/` 줄(기록은 기기별 상태이고 사용자 발언을 인용하므로 git 밖에 둡니다). 세션을 열기만 해서는 아무것도 생기지 않습니다.
 
 **일반 요청으로 시작(2.25.0).** 이제 `새 작업:`을 먼저 말하지 않아도 됩니다. 기록이 없는 폴더에서는 결과를 원하는 첫 요청(수정·분석·질문 모두. 인사는 아님)이 새 작업을 시작합니다. 제목을 주지 않으면 요청에서 정하고, 에이전트가 답변 끝에 한 줄로 알립니다. 이미 작업이 있는 폴더의 새 세션은 요청을 처리하기 전에 어느 작업에 기록할지(또는 새 작업인지) 한 번 묻습니다. 첫 말을 `<id> 이어서`로 시작하면 묻지 않습니다. 에이전트가 기존 작업을 대신 고르지는 않습니다. 기록 위치는 git 최상위 폴더, 또는 그 안에서 이미 기록이 있는 가장 가까운 폴더이고, git이 아니면 연 폴더입니다. 작업을 잘못 골랐으면 그렇게 말하면(`그거 <id> 작업이야`) 에이전트가 `reassign`을 실행합니다. 저장한 사건은 원래 작업에 그대로 남고, 그 사건이 넣은 결정·제약은 잘못된 작업에서 빠지며, 그 결정·제약·산출물을 맞는 작업에 다시 기록합니다(목표·대기·다음 행동은 옮기지 않습니다). 제목이 틀렸으면 `rename`으로 고칩니다. 예전처럼 `새 작업: <제목>`을 말할 때만 시작하려면 `~/.worklog/config.json`에 `"auto": "off"`를 넣으세요. 한 프로젝트를 끄는 `워크로그 꺼`는 그대로입니다.
 
