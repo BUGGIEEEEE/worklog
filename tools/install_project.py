@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install the shared Worklog core for a tool — once per machine (--user, 2.21.0) or for one project (--root).
 
-usage: install_project.py --tool <claude|codex> --user [--migrate] [--dry-run]
-       install_project.py --tool <claude|codex|pi> --root <project> [--dry-run] [--no-worklog-dir]
+usage: install_project.py --tool <claude|codex|agy|pi> --user [--migrate] [--dry-run]
+       install_project.py --tool <claude|codex|agy|pi> --root <project> [--dry-run] [--no-worklog-dir]
 Without --tool nothing is written: the refusal (exit 2) tells the agent to ask the user which tools to install for and
 reports which tools this machine seems to have (~/.claude, ~/.codex), since an agent tends to install only for itself.
 
@@ -22,7 +22,7 @@ reports which tools this machine seems to have (~/.claude, ~/.codex), since an a
 --root  the 2.x per-project install, kept for compatibility. Writes only inside --root plus the registry.
         claude: CLAUDE.md block + three hooks in .claude/settings.local.json + .claude/skills/worklog
         codex:  AGENTS.md block + three hooks in .codex/hooks.json + .agents/skills/worklog (user trust required)
-        pi:     AGENTS.md block + .pi/skills/worklog        (Pi extensions need project trust → not installed; instructions path)
+        pi:     AGENTS.md block + .pi/extensions/worklog.ts (loaded after project trust) + .pi/skills/worklog
         In a git repository .gitignore gets `.worklog/` (the whole record stays out of git: it is per-machine state and
         quotes the user; 2.18.0); the 2.11.0–2.17.x lines are dropped as redundant.
 Every target (files, backups, directories to create, .worklog) is checked and every new content prepared before the
@@ -442,7 +442,14 @@ def main():
                           "홈 폴더는 자동 연결하지 않습니다"))
     else:
         out["registry"] = registry
-        out["next"] = "다음: 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
+        if wl.auto_mode() == "off":
+            out["next"] = "다음: auto=off이므로 첫 세션에서 `새 작업: <제목>`으로 작업을 만드세요"
+        elif a.no_worklog_dir:  # 2.26.0: no .worklog here, so a session folder (its git top level) is connected on its first request
+            out["next"] = ("다음: 이 폴더에는 .worklog/를 만들지 않았습니다. 세션을 연 폴더의 첫 기록 대상 요청이 그 폴더(git이면 최상위)를 "
+                           "연결하고 새 작업을 만듭니다(auto=on)")
+        else:  # 2.26.0: the connected, empty project gets EMPTY + "create without asking" (auto=on), not "say 새 작업:"
+            out["next"] = ("다음: 첫 세션의 첫 기록 대상 요청(결과를 원하는 요청)이 묻지 않고 새 작업을 만듭니다(auto=on). "
+                           "제목을 정하려면 `새 작업: <제목>`이라 하세요")
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
