@@ -260,19 +260,27 @@ class CoreTest(unittest.TestCase):
         self.assertIn("warning_worktree", run(self.root, "skip", session="b", tool="pi", extra=["읽기 전용"])[1])
 
     def test_artifacts_missing_same_session_only(self):
-        """이 세션이 기록한 산출물의 파일이 없으면 show·use·주입·save·skip에 표시. 다른 세션에는 없음. state.md에는 안 들어감."""
+        """이 세션이 기록한 산출물의 파일이 없으면 show·use·주입·save·skip에 표시. 다른 세션에는 없음. state.md에는 안 들어감.
+        2.27.0 (U12 A): 같은 path(Eid)는 세션당 한 번만 보인다 — 경로마다 처음 보는 출력 하나에만 나온다."""
         self.start(session="a")
-        (self.root / "a.md").write_text("본문 한 줄")
-        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "a.md"}]}, session="a")
+        names = ("a.md", "k.md", "v.md", "h.md")
+        for n in names:
+            (self.root / n).write_text("본문 한 줄 " + n)
+        r, out = run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": n} for n in names]}, session="a")
         self.assertEqual(r, 0, out)
         self.assertNotIn("artifacts_missing", out)
         (self.root / "a.md").unlink()
         self.assertIn("[Worklog 산출물 없음] 이 세션이 기록한 산출물이 실제 파일에 없다: a.md(E0001)", run(self.root, "show", session="a")[1])
-        self.assertEqual(json.loads(run(self.root, "skip", session="a", extra=["읽기 전용"])[1])["artifacts_missing"], ["a.md(E0001)"])
+        (self.root / "k.md").unlink()
+        self.assertEqual(json.loads(run(self.root, "skip", session="a", extra=["읽기 전용"])[1])["artifacts_missing"], ["k.md(E0001)"])
+        (self.root / "v.md").unlink()
         out = json.loads(run(self.root, "save", {"type": "CHECKPOINT", "summary": "c"}, session="a")[1])
-        self.assertEqual(out["artifacts_missing"], ["a.md(E0001)"])
+        self.assertEqual(out["artifacts_missing"], ["v.md(E0001)"])
+        (self.root / "h.md").unlink()
         ctx = json.loads(hook(self.root, "hook", session="a", tool="codex")[1])["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("[Worklog 산출물 없음]", ctx)
+        self.assertIn("[Worklog 산출물 없음] 이 세션이 기록한 산출물이 실제 파일에 없다: h.md(E0001).", ctx)
+        self.assertNotIn("산출물 없음", run(self.root, "show", session="a")[1])          # 이미 알린 것은 다시 보이지 않는다
+        self.assertNotIn("artifacts_missing", run(self.root, "skip", session="a", extra=["읽기 전용"])[1])
         self.assertNotIn("산출물 없음", (self.wd / "state.md").read_text())  # 출력에만 붙고 투영에는 없다
         self.assertTrue(json.loads(run(self.root, "verify", extra=["--all"], session="a")[1])["ok"])
         r, out = use(self.root, session="b", tool="claude")
@@ -2449,7 +2457,7 @@ class AutoConnectTest(Base):
                     7: "22fc65f3ab7e8b9e", 8: "2308274279d90633", 9: "eeab50635b48198f", 10: "3385bef279bf3858", 11: "dcc8129b563ce938",
                     12: "a5865adb6b96621d", 13: "9f29b4a6c8ecf04e", 14: "6838a8a38ec8acf4", 15: "eff8a02e99ac056d", 16: "7486ca233ae3ffa5",
                     17: "349c6f0508465c04"}
-    REPLACED = {3, 6}
+    REPLACED = {3, 6, 13}  # 13: 2.27.0 (U12 C) 산출물 문장 끝에 누락 처리 한 문장
 
     def setUp(self):
         super().setUp()
@@ -3514,3 +3522,76 @@ class Release2270Test(Base):
         self.assertEqual(json.loads(hook(self.root, "stop-hook", session="c9", tool="claude", env=both)[1])["decision"], "block")
         s = json.loads(session_file(self.root, "claude_c9").read_text())
         self.assertEqual((s["turn"], s["blocked_turn"], sorted(s["hooks_seen"])), (1, 1, ["SessionStart", "Stop", "UserPromptSubmit"]))
+
+    # --- U12 ---
+    def test_missing_noted_once_per_session(self):
+        """U12 A: each session sees a missing path(Eid) once; another session's own missing file is not hidden by it; a file that
+        comes back and goes again stays quiet in that session; verify still lists it."""
+        self.ok(new_work(self.root, "t", session="a"))
+        (self.root / "a.md").write_text("A 본문")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "a", "artifacts": [{"path": "a.md"}]}, session="a"))
+        self.used(use(self.root, session="b"), "t")
+        (self.root / "b.md").write_text("B 본문")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "b", "artifacts": [{"path": "b.md"}]}, session="b"))
+        run(self.root, "show", session="a")
+        (self.root / "a.md").unlink()
+        (self.root / "b.md").unlink()
+        first = run(self.root, "show", session="a")[1]
+        self.assertIn("a.md(E0001)", first)
+        self.assertNotIn("b.md", first.split("\n")[0])                               # 알림 줄: 다른 세션이 기록한 것은 없다
+        self.assertNotIn("산출물 없음", run(self.root, "show", session="a")[1])
+        self.assertIn("b.md(E0002)", run(self.root, "show", session="b")[1])           # 다른 세션: 자기 것은 보인다
+        self.assertNotIn("산출물 없음", run(self.root, "show", session="b")[1])
+        self.assertEqual(json.loads(session_file(self.root, "codex_a").read_text())["missing_noted"], ["a.md(E0001)"])
+        self.assertEqual(json.loads(session_file(self.root, "codex_b").read_text())["missing_noted"], ["b.md(E0002)"])
+        (self.root / "a.md").write_text("A 본문")
+        run(self.root, "show", session="a")
+        (self.root / "a.md").unlink()
+        self.assertNotIn("artifacts_missing", self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "c"}, session="a")))
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["works"][0]["artifacts"]["missing"], ["a.md(E0001)", "b.md(E0002)"])
+        bad = json.loads(session_file(self.root, "codex_a").read_text())
+        session_file(self.root, "codex_a").write_text(json.dumps(dict(bad, missing_noted="x")))  # 잘못된 값: 손상이 아니라 빈 목록
+        self.assertIn("a.md(E0001)", run(self.root, "show", session="a")[1])
+
+    def test_artifacts_gone(self):
+        """U12 B′: save artifacts_gone [{path, reason}] drops recorded paths the user confirmed deleted from the list (no more
+        artifacts_missing, not in verify missing, shown as verify gone) and keeps changes.artifacts_gone in the ledger."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["게시 금지"]}))
+        for n in ("note.md", "b.md", "c.md"):
+            (self.root / n).write_text("본문 " + n)
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": n} for n in ("note.md", "b.md", "c.md")],
+                                        "check": {"C1": "미반영: 게시는 하지 않음"}}))
+        (self.root / "note.md").unlink()
+        (self.root / "c2.md").write_text("옮긴 b")
+        self.assertEqual(self.ok(run(self.root, "skip", extra=["x"]))["artifacts_missing"], ["note.md(E0002)"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["works"][0]["artifacts"],
+                         {"missing": ["note.md(E0002)"], "changed": 0, "checked": 3})          # gone이 없으면 키도 없다
+        for gone, extra, text in (([{"path": "x.md", "reason": "r"}], {}, "산출물 목록에 없는 경로입니다: x.md"),
+                                  ([{"path": "note.md"}], {}, "reason이 비어 있습니다"),
+                                  ([{"path": "note.md", "reason": "  "}], {}, "reason이 비어 있습니다"),
+                                  ("note.md", {}, "artifacts_gone은"),
+                                  ([{"path": "note.md", "reason": "r", "to": "y"}], {}, "artifacts_gone은"),
+                                  ([{"path": "note.md", "reason": "r"}, {"path": "note.md", "reason": "r"}], {}, "두 번"),
+                                  ([{"path": "b.md", "reason": "r"}], {"artifacts_moved": {"b.md": "c2.md"}}, "같은 save의")):
+            r, out = run(self.root, "save", dict({"type": "CHECKPOINT", "summary": "지움", "artifacts_gone": gone}, **extra))
+            self.assertEqual(r, 2, out)
+            self.assertIn(text, json.loads(out)["error"])
+        self.assertEqual(len((self.d / "works/t/events.jsonl").read_text().splitlines()), 2)
+        out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "지움", "artifacts_gone": [
+            {"path": "note.md", "reason": "사용자가 지웠다고 확인"}, {"path": "c.md", "reason": " 사용자가 필요 없다고 함 "}]}))
+        self.assertNotIn("artifacts_missing", out)                                       # 파일이 남아 있는 c.md도 받는다
+        ev = json.loads((self.d / "works/t/events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(ev["changes"]["artifacts_gone"], [{"path": "note.md", "reason": "사용자가 지웠다고 확인"},
+                                                           {"path": "c.md", "reason": "사용자가 필요 없다고 함"}])
+        st = self.state("t")
+        self.assertEqual([a["path"] for a in st["artifacts"]], ["b.md"])
+        self.assertNotIn("artifacts_gone", st)                                           # state.json에 새 키 없음
+        self.assertNotIn("note.md", (self.d / "works/t/state.md").read_text())
+        v = self.ok(run(self.root, "verify", extra=["--all"]))
+        self.assertTrue(v["ok"])
+        self.assertEqual(v["works"][0]["artifacts"], {"missing": [], "changed": 0, "checked": 1, "gone": ["note.md(E0003)", "c.md(E0003)"]})
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "또", "artifacts_gone": [{"path": "note.md", "reason": "r"}]}),
+                     "산출물 목록에 없는 경로입니다: note.md")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": "c.md"}], "check": {"C1": "미반영: x"}}))
+        self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["note.md(E0003)"])  # 다시 기록한 경로는 gone에서 빠진다

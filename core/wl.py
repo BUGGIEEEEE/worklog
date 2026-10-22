@@ -85,6 +85,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
   "artifacts": [{"path": "note-guide.md"}],
   "artifacts_moved": {"note-guide.md": "docs/note-guide.md"},  # 기록한 산출물 파일을 옮겼을 때 옛 경로 → 새 경로(새 경로 파일이 있어야 한다)
+  "artifacts_gone": [{"path": "draft.md", "reason": "사용자가 지웠다고 확인"}],  # 기록한 산출물을 영구히 지웠을 때(사용자 확인 뒤). 누락 보고·verify missing에서 빠진다
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
                                            # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
@@ -92,7 +93,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 }
 필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
-결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·삭제). 사용자에게 알린다.
+결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·이동·삭제). 같은 세션에는 한 번만 보인다.
 명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
@@ -246,13 +247,13 @@ class SessionCorrupt(Exception):
 
 def new_session():
     return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, "agy_pre": None, "agy_stop": None,
-            "hook_keys": {}, "new_work_turn": None, "new_work_id": None, "reassigned": [],
+            "hook_keys": {}, "new_work_turn": None, "new_work_id": None, "reassigned": [], "missing_noted": [],
             **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model call of this turn has started. agy_pre/agy_stop (2.24.2): last PreInvocation/Stop event seen, so a hook registered twice (project + user hooks.json) acts once
     # hook_keys (2.25.0): the last SessionStart / UserPromptSubmit / Stop key of claude·codex hooks (a second identical call is a
     # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work.
     # new_work_id (2.26.0): the id that new-work was creating, written with new_work_turn before index.json (retry marker).
     # reassigned (2.26.0): ["<right id>:<refiled event id>@<turn>", …] (last REASSIGNED_MAX) written with current_work by
-    # reassign's session step
+    # reassign's session step. missing_noted (2.27.0): ["path(Eid)", …] missing artifacts already reported to this session
 
 
 def load_session(d, tool, sid):
@@ -276,6 +277,8 @@ def load_session(d, tool, sid):
         s["new_work_id"] = None
     if not (isinstance(s["reassigned"], list) and all(isinstance(x, str) for x in s["reassigned"])):
         s["reassigned"] = []  # a bad value only loses the "user moved on" judgement of a reassign re-run
+    if not (isinstance(s["missing_noted"], list) and all(isinstance(x, str) for x in s["missing_noted"])):
+        s["missing_noted"] = []  # a bad value only reports a missing artifact once more
     if (any(type(s[k]) is not int for k in SESSION_TURNS)
             or not (s["current_work"] is None or isinstance(s["current_work"], str))
             or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())
@@ -539,10 +542,23 @@ def own_missing_artifacts(d, events, state, who):
     return out
 
 
+def note_once(d, who, missing):
+    """Inside locked(d), 2.27.0 (U12 A): the entries of `missing` ("path(Eid)") not yet reported to this session, recorded in its
+    missing_noted so show·use·SessionStart·save·skip report each one once per session. A file that comes back and goes again is
+    not reported again in that session (simple rule); verify still checks every artifact."""
+    if not (who and missing):
+        return []
+    s = session_or_new(d, *who)
+    new = [m for m in missing if m not in s["missing_noted"]]
+    if new:
+        update_session(d, *who, missing_noted=s["missing_noted"] + new)
+    return new
+
+
 def artifacts_note(missing):
     """Text line for show·use·SessionStart (output only, never in state.md)."""
-    return (f"[Worklog 산출물 없음] {ARTIFACTS_MISSING}: {', '.join(missing)}. 되감기(rewind) 코드 복원이나 삭제가 원인일 수 있다. "
-            "사용자에게 알린다.\n") if missing else ""
+    return (f"[Worklog 산출물 없음] {ARTIFACTS_MISSING}: {', '.join(missing)}. 되감기(rewind) 코드 복원이나 이동·삭제가 원인일 수 있다. "
+            "사용자에게 한 번 알린다(이 세션에는 다시 보이지 않는다). 옮겼거나 지웠다고 확인하면 save의 artifacts_moved·artifacts_gone으로 적는다.\n") if missing else ""
 
 
 def artifacts_check(d, state):
@@ -805,6 +821,12 @@ def apply(state, ev):
     if moved:  # 2.26.0: {"<old path>": {"path", "sha256"}}, the whole mapping at once on the list before the move (order-free)
         moves_problem({old: new["path"] for old, new in moved.items()}, [x["path"] for x in s["artifacts"]])
         s["artifacts"] = [dict(moved[x["path"]], event=eid) if x["path"] in moved else x for x in s["artifacts"]]
+    gone = {g["path"] for g in c.get("artifacts_gone") or []}
+    if gone:  # 2.27.0 (U12 B′): files the user confirmed deleted leave the list, so missing checks and verify skip them
+        absent = sorted(gone - {x["path"] for x in s["artifacts"]})
+        if absent:
+            raise Reject(f"artifacts_gone: 산출물 목록에 없는 경로입니다: {absent}")
+        s["artifacts"] = [x for x in s["artifacts"] if x["path"] not in gone]
     for a in c.get("artifacts", []):
         s["artifacts"] = [x for x in s["artifacts"] if x["path"] != a["path"]] + [dict(a, event=eid)]
     s["seq"], s["updated_at"], s["updated_by"] = ev["seq"], ev["at"], {"tool": ev["tool"], "session_id": ev["session_id"]}
@@ -919,7 +941,7 @@ def validate(p, root, state):
     if not isinstance(p, dict):
         raise Reject("입력은 JSON 객체여야 합니다. `wl.py help` 참고.")
     unknown = set(p) - {"work", "type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
-                        "waiting", "next_action", "status", "artifacts", "artifacts_moved", "check", "refs", "takeover",
+                        "waiting", "next_action", "status", "artifacts", "artifacts_moved", "artifacts_gone", "check", "refs", "takeover",
                         "occurred_at", "source"}
     if unknown:
         raise Reject(f"알 수 없는 필드: {sorted(unknown)}. `wl.py help` 참고.")
@@ -968,6 +990,14 @@ def validate(p, root, state):
     if moved_in is not None and (not isinstance(moved_in, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v
                                                                            for k, v in moved_in.items())):
         raise Reject('artifacts_moved는 {"옛 경로": "새 경로"}처럼 문자열 값을 가진 객체여야 합니다.')
+    gone_in = p.get("artifacts_gone")
+    if gone_in is not None and (not isinstance(gone_in, list) or any(not isinstance(g, dict) or set(g) - {"path", "reason"}
+                                                                    or not isinstance(g.get("path"), str) or not g["path"]
+                                                                    or not isinstance(g.get("reason", ""), str) for g in gone_in)):
+        raise Reject('artifacts_gone은 [{"path": "기록된 경로", "reason": "지운 이유 한 구절"}] 형식이어야 합니다.')
+    empty = [g["path"] for g in gone_in or [] if not str(g.get("reason") or "").strip()]
+    if empty:
+        raise Reject(f"artifacts_gone: reason이 비어 있습니다: {empty}. 사용자가 지웠다고 확인한 내용을 한 구절로 적으세요.")
     arts, bodies = [], []
     for a in arts_in:
         path = (Path(root) / a.get("path", "")).resolve()
@@ -1020,6 +1050,36 @@ def moved_artifacts(p, root, state):
             raise Reject(f"artifacts_moved: 새 경로의 파일이 없습니다: {new}")
         out[old] = {"path": new, "sha256": sha(path.read_bytes())}
     return out
+
+
+def gone_artifacts(p, state):
+    """save input artifacts_gone [{"path", "reason"}] → changes.artifacts_gone (2.27.0, U12 B′): recorded files the user confirmed
+    deleted for good. The path must be a recorded artifact and appear once; a path this save also records or moves is refused.
+    The file may still be on disk (the user's word is the evidence)."""
+    gone = [{"path": g["path"], "reason": g["reason"].strip()} for g in p.get("artifacts_gone") or []]
+    have = [x["path"] for x in state["artifacts"]]
+    for g in gone:
+        if g["path"] not in have:
+            raise Reject(f"artifacts_gone: 산출물 목록에 없는 경로입니다: {g['path']}. 현재: {sorted(have)}")
+    paths = [g["path"] for g in gone]
+    dup = sorted({x for x in paths if paths.count(x) > 1})
+    if dup:
+        raise Reject(f"artifacts_gone: 같은 경로가 두 번 있습니다: {dup}")
+    moved = p.get("artifacts_moved") or {}
+    both = sorted(set(paths) & (set(moved) | set(moved.values()) | {a["path"] for a in p.get("artifacts", [])}))
+    if both:
+        raise Reject(f"artifacts_gone: 같은 save의 artifacts·artifacts_moved에도 있는 경로입니다: {both}")
+    return gone
+
+
+def gone_list(events, state):
+    """verify (2.27.0): ["path(Eid)"] of artifacts recorded as gone (Eid = the event that recorded it), except a path recorded
+    again afterwards."""
+    live, out = {a["path"] for a in state["artifacts"]}, {}
+    for ev in events:
+        for g in (ev.get("changes") or {}).get("artifacts_gone") or []:
+            out[g["path"]] = f"{g['path']}({ev['id']})"
+    return [v for path, v in out.items() if path not in live]
 
 
 def drop_repeats(changes, state):
@@ -1147,6 +1207,9 @@ def cmd_save(args):
         moved = moved_artifacts(p, root, state)
         if moved:
             changes["artifacts_moved"] = moved
+        gone = gone_artifacts(p, state)
+        if gone:
+            changes["artifacts_gone"] = gone
         ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
         for k in ("occurred_at", "source"):
             if k in p:
@@ -1167,7 +1230,7 @@ def cmd_save(args):
         rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
         update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
-        missing = own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid))
+        missing = note_once(d, (tool, sid), own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid)))
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
                       "self_quoted": self_quoted, **({"artifacts_missing": missing} if missing else {}),
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
@@ -1194,7 +1257,7 @@ def cmd_skip(args):
         if cur and work_dir(d, cur).is_dir():
             try:
                 evs, _ = read_events(work_dir(d, cur))
-                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
+                missing = note_once(d, (tool, sid), own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid)))
             except (Reject, OSError, ValueError):
                 pass
     print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
@@ -1675,7 +1738,7 @@ def read_work(d, wid, title, who, **session_changes):
     newer = core_report(events)
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
-    note += artifacts_note(own_missing_artifacts(d, events, state, who))
+    note += artifacts_note(note_once(d, who, own_missing_artifacts(d, events, state, who)))
     unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
@@ -1687,8 +1750,11 @@ def check_work(d, wid, title):
     events, _ = read_events(wd)
     state, _ = fold(events)
     ok_json, ok_md = projection_ok(wd, state, wid, title, events)
+    arts, gone = artifacts_check(d, state), gone_list(events, state)
+    if gone:  # 2.27.0: shown apart from missing, only when there is one (older results unchanged)
+        arts["gone"] = gone
     return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
-            "state_json": ok_json, "state_md": ok_md, "artifacts": artifacts_check(d, state), **core_report(events)}
+            "state_json": ok_json, "state_md": ok_md, "artifacts": arts, **core_report(events)}
 
 
 def cmd_verify(args):
@@ -1885,13 +1951,14 @@ def injection(d, who):
     if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
         out.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
                                                               for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
-    cur, unseen = None, ""
+    cur, unseen, missing = None, "", []
     if who:
         with locked(d):
             cur = current_work(d, who, index)
             if cur:
                 events, _ = read_events(work_dir(d, cur))
                 unseen = unseen_section(d, who, cur, events)
+                missing = note_once(d, who, own_missing_artifacts(d, events, fold(events)[0], who))  # 2.27.0: inside the lock
                 update_session(d, *who, seen=(cur, len(events)))
             mark_hook(d, who, "SessionStart")
     if cur:
@@ -1899,7 +1966,7 @@ def injection(d, who):
         out.append(f"## 현재 작업: {cur} · {title}")
         if events:
             st = fold(events)[0]
-            out += [x for x in (artifacts_note(own_missing_artifacts(d, events, st, who)).rstrip("\n"),) if x]
+            out += [x for x in (artifacts_note(missing).rstrip("\n"),) if x]
             out.append(render(st, cur, title).rstrip("\n"))
             if unseen:
                 out.append(unseen.rstrip("\n"))
