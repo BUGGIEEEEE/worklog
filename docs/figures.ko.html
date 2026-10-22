@@ -146,7 +146,6 @@ ul.dots li>span{min-width:0}
 .cm small{display:block;color:var(--muted);font-size:.8rem;line-height:1.4}
 .irow.head .blank{display:grid;align-items:end;padding:0 12px 6px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
 /* 제목 옆 배지(예정 등): 사용자 메시지 색 계열 */
-.badge{display:inline-block;font-size:.74rem;font-weight:600;color:var(--user-fg);background:var(--user);border:1px solid var(--user-line);border-radius:999px;padding:1px 9px;margin-left:8px;vertical-align:middle}
 /* 0절: 파일 강조 블록 (이력 = 보라, 현재 상태 = 청록) */
 pre b.f-ev{color:var(--tool-fg);font-weight:600}
 pre b.f-st{color:var(--wl-fg);font-weight:600}
@@ -237,6 +236,28 @@ section.units .card .row{line-height:1.6}
   .inj{grid-template-columns:1fr}.cms{padding-top:0}.cm{border-left:none;padding:0 0 4px 24px;min-height:0}
   .tl{grid-template-columns:1fr}.tl .mid b{transform:rotate(90deg)}
 }
+/* 5절 상태값 카드: 긴 상태 이름 칸 */
+.chips.wide .chip{grid-template-columns:150px 1fr}
+/* 5절: 있을 때만 나오는 줄은 점선 */
+.irow .layer.opt{border-style:dashed}
+/* 9절 파일 지도: 카드 안에 [트리 | 덧붙임], 표는 칸 안에서 줄바꿈 */
+.fmap{display:grid;gap:12px}
+.fmap .card pre{font-size:.8rem}
+/* 한글이 섞인 트리 칸: 글자 폭과 무관하게 설명 시작선을 맞춤 */
+.fmap pre .tc{display:inline-block;width:25ch}
+.fmap .split2{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:16px;align-items:start}
+.fmap .fn{font-size:.84rem}
+.fmap .fnotes{display:grid;gap:8px;min-width:0}
+.fmap details{font-size:.84rem}
+.fmap details summary{cursor:pointer;color:var(--muted)}
+.fmap details pre{margin-top:6px;max-height:420px;overflow:auto}
+table.mini.wide{width:100%;border-collapse:collapse}
+table.mini.wide th{text-align:left}
+table.mini.wide td{vertical-align:top}
+table.mini.wide code{white-space:normal;overflow-wrap:anywhere}
+table.mini.tools td:first-child{white-space:nowrap}
+table.mini td.wl{color:var(--wl-fg);border-left:4px solid var(--wl-line);padding-left:8px}
+@media (max-width:720px){.fmap .split2{grid-template-columns:minmax(0,1fr)}table.mini code{white-space:normal;overflow-wrap:anywhere}}
 </style>
 
 <main>
@@ -244,7 +265,7 @@ section.units .card .row{line-height:1.6}
   <div class="eyebrow">README 보강 자료 · 최종안 · 2026-10-15 실측 기준</div>
   <div class="intro">
     <span class="name">Worklog</span>
-    <span class="desc"><i>Claude Code·Codex가 대화 압축이나 새 세션 뒤에도</i> <i>정한 것을 잊지 않게 하는 기록 도구</i><br><i>이 페이지는 설치와 사용법부터</i> <i>그 기록이 모델의 입력에 들어가는 방식까지</i> <i>순서대로 보여 줍니다</i></span>
+    <span class="desc"><i>Claude Code·Codex·agy(Antigravity CLI)·pi가</i> <i>대화 압축이나 새 세션 뒤에도</i> <i>정한 것을 잊지 않게 하는 기록 도구</i><br><i>이 페이지는 설치와 사용법부터</i> <i>그 기록이 모델의 입력에 들어가는 방식까지</i> <i>순서대로 보여 줍니다</i></span>
   </div>
   <div class="legend">
     <span><i class="sw" style="background:var(--sys)"></i>시스템·도구</span>
@@ -271,7 +292,7 @@ section.units .card .row{line-height:1.6}
         └── …/                작업 n</pre>
       <div class="files">
         <div class="fbox ev"><span class="q">events.jsonl · 이력</span><span><i>모든 결정·결과를 순서대로</i> <i>· 덧붙이기만, 지우지 않음</i></span></div>
-        <div class="fbox st"><span class="q">state.md · 현재 상태</span><span><i>지금 유효한 목표·결정·제약·다음 할 일</i> <i>· ② 주입이 보여 주는 내용 (5절)</i></span></div>
+        <div class="fbox st"><span class="q">state.md · 현재 상태</span><span><i>지금 유효한 목표·결정·제약·다음 할 일</i> <i>· events.jsonl에서 계산해 저장한 사본</i> <i>· ② 주입의 현재 작업 부분과 같은 내용 (5절)</i></span></div>
       </div>
     </div>
     <div class="card">
@@ -289,19 +310,19 @@ section.units .card .row{line-height:1.6}
     <div class="card">
       <span class="t">설치 — AI에게 시키면 됨</span>
       <div class="row"><b>AI에게</b><span><code>https://github.com/BUGGIEEEEE/worklog 를 clone해서 이 기기에 Worklog 설치해 줘</code></span></div>
-      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · 둘 다)</i> <i>· clone과 설치는 도구마다 한 번(기기 전체)</i> <i>· 프로젝트는 첫 기록 대상 요청이 자동 연결</i> <i class="p">(auto=off면 <code>새 작업:</code>)</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
-      <div class="row"><b>사람이 할 일</b><span><i>Codex: 설치 뒤 <code>/hooks</code>에서 자동 실행 설정 3개를 한 번 신뢰, 프로젝트는 처음 열 때 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i> <i>· 열린 세션은 다시 시작</i></span></div>
+      <div class="row"><b>AI가 하는 일</b><span><i>어느 도구에 설치할지 물음</i> <i class="p">(Claude Code · Codex · agy · pi 중에서)</i> <i>· clone은 처음 한 번, 설치는 선택한 도구마다 한 번(기기 전체)</i> <i>· 프로젝트는 첫 기록 대상 요청이 자동 연결</i> <i class="p">(auto=off면 <code>새 작업:</code>)</i> <i>· 명령과 순서는 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a>에 있음</i></span></div>
+      <div class="row"><b>사람이 할 일</b><span><i>Codex: 설치 뒤 <code>/hooks</code>에서 자동 실행 설정 3개를 한 번 신뢰, 프로젝트는 처음 열 때 신뢰</i> <i>· Claude Code: git 저장소면 폴더 신뢰 대화상자 수락</i> <i>· 네 도구 모두: 열린 세션은 다시 시작</i> <i class="p">(agy는 규칙 파일과 worklog 훅, pi는 확장을 새로 읽음)</i></span></div>
       <div class="row"><b>확인</b><span><i>AI에게 <code>Worklog 버전 확인해 줘</code></i> <i class="a">설치된 버전을 알려 줌</i></span></div>
     </div>
   </div>
   <div class="cards two">
       <div class="card">
         <span class="t">작업할 때 하는 말</span>
-        <div class="row"><b>첫 세션</b><span><code>새 작업: 종이 노트 습관 계획 guide</code> <i class="a">작업 guide 생성</i> <i class="p">(id는 제목의 영문·숫자로 만듦 · 없으면 work)</i></span></div>
+        <div class="row"><b>첫 세션</b><span><code>새 작업: 종이 노트 습관 계획 guide</code> <i class="a">작업 guide 생성</i> <i class="p">(id는 제목의 영문·숫자로 만듦 · 없으면 work)</i> <i>· 2.25.0부터 생략 가능: 빈 폴더에서는 기록할 첫 요청이 새 작업을 만듦</i> <i class="p">(기본 auto=on · 홈 폴더 제외)</i></span></div>
         <div class="row"><b>다음 세션</b><span><code>guide 이어서. plan.md 써 줘.</code> <i class="a">기록을 받아 이어서 진행</i></span></div>
         <div class="row"><b>다른 작업 참조</b><span><code>guide에서 정한 시간 배분을 참고해 줘</code><br><i class="a">모델이 guide의 기록을 읽어 참고</i> <i>· 가져오는 것은 요청한 내용만</i></span></div>
         <div class="row"><b>위임</b><span><i>AI에게 맡기라고 말하면 됨</i> <i>· 별도 세션을 직접 열면 첫 프롬프트를 <code>guide 이어서. 하위 작업: 〈이름〉</code>으로</i></span></div>
-        <div class="row"><b>목록 확인</b><span><i>작업이 여러 개면 세션 시작 때 모델이 목록을 보여 주고 물음</i></span></div>
+        <div class="row"><b>목록 확인</b><span><i>작업이 있는 폴더의 새 세션은 요청 전에 어느 작업에 기록할지 한 번 물음</i> <i class="p">(<code>guide 이어서</code>로 시작하면 묻지 않음)</i></span></div>
         <div class="row"><b>저장</b><span><i>사용자가 할 일 없음</i> <i>· 턴마다 모델이 저장</i></span></div>
       </div>
       <div class="card">
@@ -393,15 +414,15 @@ section.units .card .row{line-height:1.6}
       <span class="t">① 규칙 블록 — 모델이 기록을 다루는 절차</span>
       <div class="row"><b>위치</b><span><i><code>~/.claude/CLAUDE.md</code></i> <i class="p">(Claude Code가 모든 세션에서 읽는 사용자 지침 파일)</i> <i>· 설치기가 기기에 한 번 기록</i></span></div>
       <div class="row"><b>턴 시작</b><span><i>② 주입이 있으면 현재 상태로 사용</i> <i>· 없으면 <code>show</code>로 기록 읽기</i></span></div>
-      <div class="row"><b>작업 선택</b><span><i>작업이 있는 폴더: 새 세션이 한 번 물음</i> <i class="p">(<code>〈id〉 이어서</code>로 시작하면 묻지 않음)</i> <i>· 기존 작업을 대신 고르지 않음</i> <i>· 빈 폴더: 첫 요청이 새 작업</i></span></div>
+      <div class="row"><b>작업 선택</b><span><i>작업이 있는 폴더: 새 세션이 한 번 물음</i> <i class="p">(<code>〈id〉 이어서</code>로 시작하면 묻지 않음)</i> <i>· 기존 작업을 대신 고르지 않음</i> <i>· 빈 폴더: 첫 요청이 새 작업</i> <i class="p">(기본 auto=on · 홈 폴더 제외)</i></span></div>
       <div class="row"><b>저장</b><span><i>턴 종료 전 <code>save</code></i> <i>· 결정·제약마다 산출물에서 인용하거나</i> <i>"미반영: 사유" 기재</i></span></div>
       <div class="row"><b>변경</b><span><i>설치 때 저장한 그대로 유지</i> <i>· 새 버전은 재설치로 갱신</i></span></div>
     </div>
     <div class="col">
     <div class="card wl">
       <span class="t">② 주입 — 기록 요약</span>
-      <div class="row"><b>시점</b><span><i>세션 시작 · 재개 · 대화 압축 뒤 · 분기(세션 복제) 때,</i> <i>세션당 한 번</i></span></div>
-      <div class="row"><b>내용</b><span><i>작업 목록</i> <i>+ 현재 작업의 목표·결정·제약·대기·다음 할 일</i> <i class="p">(5절)</i></span></div>
+      <div class="row"><b>시점</b><span><i>SessionStart 이벤트마다:</i> <i>세션 시작 · 재개 · 대화 지우기 · 압축 뒤 · 분기(세션 복제)</i> <i>· 매 턴은 아님</i> <i class="p">(Claude Code 기준 · agy는 새 대화 때 한 번, 재개 때는 다시 오지 않음)</i></span></div>
+      <div class="row"><b>내용</b><span><i>작업 목록</i> <i>+ 현재 작업의 목표·결정·제약·대기·다음 할 일</i> <i class="p">(있으면 project.md · 못 본 사건 · 경고도, 5절)</i></span></div>
       <div class="row"><b>길이</b><span><i>첫 턴 약 400자</i> <i class="p">(작업 선택 전)</i> <i>· 작업 선택 뒤 재개·압축 시 약 900자</i></span></div>
       <div class="row"><b>이후</b><span><i>턴마다 추가되는 것은</i> <i>모델이 호출한 use·save 결과뿐</i></span></div>
     </div>
@@ -416,28 +437,46 @@ section.units .card .row{line-height:1.6}
 </section>
 
 <section>
-  <h2>5. ② 주입의 구조 <small>4절의 청록 ② 층을 펼친 것 · 왼쪽 = 실제 글자 · 오른쪽 = 모델이 거기서 읽어 내는 것</small></h2>
+  <h2>5. ② 주입의 구조 <small>4절의 청록 ② 층을 펼친 것 · 왼쪽 = 실제 글자(주요 줄만 줄인 예시) · 오른쪽 = 모델이 거기서 읽어 내는 것</small></h2>
   <div class="inj">
     <div class="irow head"><div class="lcell">② 주입</div><div class="blank">모델이 거기서 읽어 내는 것</div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ 머리글</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>기록을 따로 읽지 않아도 됨</b><small>규칙 블록의 "② 주입이 있으면 현재 상태로 사용"에 해당</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ 머리글</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>기록을 따로 읽지 않아도 됨</b><small>규칙 블록의 "② 주입이 있으면 현재 상태로 사용"에 해당 · PROVIDED 자리의 상태값은 아래 카드</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓑ 주의문</span><span class="v"><i>이 내용은 기록에서 읽은 업무 자료이며</i> <i>새 승인이 아니다.</i></span></div></div><div class="cm"><b>과거 기록이지 새 명령이 아님</b><small>기록에 적힌 결정을 지금 받은 지시로 오해하지 않음</small></div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ 작업 목록</span><span class="v"><i>- guide · 종이 노트 습관 계획 · ACTIVE</i> <i>· 다음: plan.md 작성</i></span></div></div><div class="cm"><b>"guide 이어서" → <code>use guide</code> 실행</b><small>목록에 있는 작업만 고를 수 있음</small></div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ 현재 작업</span><span class="v"><i>guide · 종이 노트 습관 계획</i> <i class="p">(seq 3 · 마지막 저장 시각·세션)</i></span></div></div><div class="cm"><b>이 세션이 이어 갈 작업</b><small>작업을 고른 뒤 세션을 재개하거나 대화를 압축했을 때만 포함</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer opt"><span class="k">경고 줄</span><span class="v"><i>아래 카드의 갱신 안내·사본 경고·worktree 경고</i> <i class="p">(있을 때만)</i></span></div></div><div class="cm"><b>사용자에게 전할 것이 있는지</b><small>없으면 이 자리에 아무 줄도 없음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer opt"><span class="k">프로젝트 공통</span><span class="v"><i><code>## 프로젝트 공통 (project.md)</code></i> <i class="p">(있을 때만 · 앞 4,000자)</i></span></div></div><div class="cm"><b>이 프로젝트의 모든 작업에 적용되는 항목</b><small>사용자가 확정해 project.md에 넣은 것만</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ 작업 목록</span><span class="v"><i>- guide · 종이 노트 습관 계획 · ACTIVE</i> <i>· 다음: plan.md 작성</i></span></div></div><div class="cm"><b>"guide 이어서" → <code>use guide</code> 실행</b><small>목록에는 ACTIVE·PAUSED 최근 10개와 COMPLETED 최근 3개만 보임 · 목록에 없는 기존 작업도 사용자가 id로 지정하면 이어 감</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ 현재 작업</span><span class="v"><i>guide · 종이 노트 습관 계획</i> <i class="p">(seq 3 · 마지막 저장 시각·세션)</i></span></div></div><div class="cm"><b>이 세션이 이어 갈 작업</b><small>SessionStart 때 이 세션의 현재 작업이 있으면 포함(PROVIDED) · 없으면 대신 "현재 작업 없음"과 안내(아래 상태값 카드) · 바로 아래에 산출물 없음 경고가 올 수 있음</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">목표</span><span class="v"><i>최초 목표(원문): 종이 노트 습관 계획을 세워 줘</i> <i>· 현재 범위: D1</i></span></div></div><div class="cm"><b>무엇을 위한 작업인지</b><small>목표의 값이 나중에 바뀌었으면 아래 결정이 우선</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub opt"><span class="k">안내(Map)</span><span class="v"><i><code>## 안내 — 먼저 볼 것(Map: 결정)</code></i> <i class="p">(<code>Map:</code> 결정이 있을 때만)</i></span></div></div><div class="cm"><b>먼저 읽을 문서·시작점</b><small>결정 목록에도 그대로 남음</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">유효 결정</span><span class="v"><i>D1: 수요일 저녁 식사 후 7분 <code>[사용자]</code></i></span></div></div><div class="cm"><b>사용자가 정한 값 → 임의로 바꾸지 않음</b><small><code>[모델]</code> 표시면 모델 판단이라 사유를 적고 바꿀 수 있음</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">유지 제약</span><span class="v"><i>C1: 알림 등록 금지 <code>[사용자]</code></i></span></div></div><div class="cm"><b>알림을 등록하지 않음</b><small>저장할 때 지켰다는 인용 또는 미반영 사유를 붙여야 함</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">대기</span><span class="v"><i>(없음)</i></span></div></div><div class="cm"><b>사용자 답변을 기다리는 항목 없음</b><small>있으면 먼저 확인하고 진행</small></div></div>
-    <div class="irow last"><div class="lcell"><div class="layer sub"><span class="k">다음 할 일</span><span class="v"><i>주간 계획 plan.md 작성</i></span></div></div><div class="cm"><b>이번 요청과 일치 → 이어서 진행</b><small>어디서부터 할지 다시 묻지 않음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">다음 할 일</span><span class="v"><i>주간 계획 plan.md 작성</i></span></div></div><div class="cm"><b>이번 요청과 일치 → 이어서 진행</b><small>어디서부터 할지 다시 묻지 않음</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub opt"><span class="k">산출물</span><span class="v"><i><code>## 산출물</code></i> <i class="p">(있을 때만 · 15개를 넘으면 폴더별 요약)</i></span></div></div><div class="cm"><b>이 작업이 만든 파일</b><small>저장 때 기록한 경로와 해시 · 파일이 사라지면 ⓓ 아래에 경고</small></div></div>
+    <div class="irow last"><div class="lcell"><div class="layer sub opt"><span class="k">못 본 사건</span><span class="v"><i><code>## 이 세션이 아직 못 본 사건</code></i> <i class="p">(있을 때만 · 최대 20개)</i></span></div></div><div class="cm"><b>다른 세션이 그 사이 저장한 것</b><small>맡긴 하위 세션의 결과를 원장 파일을 읽지 않고 확인</small></div></div>
   </div>
   <div class="cards">
     <div class="card">
-      <span class="t">ⓐ 뒤에 붙을 수 있는 경고</span>
+      <span class="t">붙을 수 있는 경고</span>
       <div class="chips">
-        <div class="chip"><b>갱신 안내</b><span>새 버전 있음</span></div>
-        <div class="chip"><b>worktree 경고</b><span><i>기록이 본 저장소와 갈라짐</i></span></div>
-        <div class="chip"><b>산출물 없음</b><span><i>이 세션이 기록한 파일이 사라짐</i></span></div>
+        <div class="chip"><b>갱신 안내</b><span><i>새 버전 있음 · 갱신 결과·실패</i> <i class="p">(ⓑ 뒤 · 알림 off면 없음)</i></span></div>
+        <div class="chip"><b>사본 경고</b><span><i>설치 때 기록한 규칙 원본(<code>rules.md</code>) 해시가 지금 코어의 원본과 다름 → 설치기를 다시 실행하라는 명령</i> <i class="p">(ⓑ 뒤)</i></span></div>
+        <div class="chip"><b>worktree 경고</b><span><i>기록이 본 저장소와 갈라짐</i> <i class="p">(ⓑ 뒤)</i></span></div>
+        <div class="chip"><b>산출물 없음</b><span><i>이 세션이 기록한 파일이 사라짐</i> <i class="p">(ⓓ 제목 바로 아래)</i></span></div>
       </div>
-      <span class="note"><small><i>셋 다 "사용자에게 알린다"가 포함</i> <i class="a">모델이 전달</i></small></span>
+      <span class="note"><small><i>worktree 경고·산출물 없음은 문구에 "사용자에게 알린다"가 있음</i> <i class="a">모델이 전달</i> <i>· 갱신 안내·사본 경고는 실행할 명령을 알려 줌 <i class="p">(새 주 버전 안내는 제외)</i></i></small></span>
+    </div>
+    <div class="card">
+      <span class="t">ⓐ 머리글의 상태값</span>
+      <div class="chips wide">
+        <div class="chip"><b>PROVIDED</b><span><i>이 세션의 현재 작업이 있음</i> <i class="a">ⓓ 포함</i></span></div>
+        <div class="chip"><b>NO_CURRENT_WORK</b><span><i>작업은 있지만 이 세션의 현재 작업이 없음</i> <i class="a">"현재 작업 없음" + 한 번 묻고 skip</i></span></div>
+        <div class="chip"><b>EMPTY</b><span><i>작업 0개</i> <i class="a">auto=on이면 묻지 않고 새 작업, off면 한 번 묻기</i></span></div>
+        <div class="chip"><b>NOT_CONNECTED</b><span><i>연결 안 된 폴더: 이 한 줄만</i> <i class="p">(root·auto·git)</i> <i class="a">auto=on이면 기록할 첫 요청에서 new-work로 연결 · auto=off·홈 폴더면 <code>새 작업:</code>을 기다림</i></span></div>
+        <div class="chip"><b>OFF</b><span><i>꺼진 프로젝트: 이 한 줄만</i> <i class="a">켜 달라고 할 때까지 Worklog 절차 없음</i></span></div>
+        <div class="chip"><b>UNAVAILABLE</b><span><i>기록을 읽지 못함</i> <i class="a">파일을 바꾸기 전에 show로 확인</i></span></div>
+        <div class="chip"><b>| FORK</b><span><i>Claude Code·Codex의 분기 세션(source=fork)이면 머리글 끝에 붙음</i> <i class="p">(NOT_CONNECTED 줄 포함 · OFF 줄에는 없음 · pi <code>--fork</code>는 안 붙음)</i> <i class="a">사용자가 작업을 지정하거나 기록을 요청하기 전까지 save하지 않고 skip</i></span></div>
+      </div>
     </div>
   </div>
 </section>
@@ -471,22 +510,171 @@ section.units .card .row{line-height:1.6}
 <section>
   <h2>7. 참고 사항</h2>
   <div class="cards one">
-    <div class="card"><span class="t">Claude Code와 Codex가 동일하게 작동 <span class="badge">Pi 지원 예정</span></span>
-      <ul class="dots"><li><span><i>두 도구 모두 모델 입력에</i> <i>① 규칙 블록과 ② 주입이 같은 방식으로 들어감</i></span></li><li><span><i>두 도구가 한 프로젝트의 같은 <code>.worklog/</code> 기록을</i> <i>읽고 씀</i></span></li><li><span><i>다른 점은 설정 파일의 이름뿐</i>
+    <div class="card"><span class="t">네 도구가 같은 기록으로 작동 <small>Claude Code · Codex · agy · pi (2.24.0부터)</small></span>
+      <ul class="dots"><li><span><i>네 도구 모두 모델 입력에</i> <i>① 규칙 블록과 ② 주입이 같은 내용으로 들어감</i></span></li><li><span><i>네 도구가 한 프로젝트의 같은 <code>.worklog/</code> 기록을</i> <i>읽고 씀</i></span></li><li><span><i>다른 점은 설정 파일의 이름과 자동 실행 방식</i> <i class="p">(agy는 가운데 이벤트가 UserPromptSubmit 대신 PreInvocation · pi는 Hook 대신 확장)</i>
   <table class="mini"><tr><th></th><th>규칙 블록이 있는 파일</th><th>자동 실행 설정</th></tr>
   <tr><td>Claude Code</td><td><code>~/.claude/CLAUDE.md</code></td><td><code>~/.claude/settings.json</code></td></tr>
-  <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code></td></tr></table></span></li></ul></div>
+  <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code></td></tr>
+  <tr><td>agy</td><td><code>~/.gemini/config/rules/worklog.md</code></td><td><code>~/.gemini/config/hooks.json</code></td></tr>
+  <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td><td><code>~/.pi/agent/extensions/worklog.ts</code> <i class="p">(확장)</i></td></tr></table></span></li></ul></div>
   </div>
   <div class="cards two">
     <div class="card"><span class="t">다른 창에서 같은 작업을 고쳤다면?</span>
-      <ul class="dots"><li><span><i>② 주입은 세션 시작 때 한 번만 들어옴</i> <i>· 그 사이 다른 세션이 같은 작업을 저장할 수 있음</i></span></li><li><span><i>이 세션이 저장할 때 도구가 "기록이 바뀌었습니다"로 거부</i><br><i class="a">모델이 기록을 다시 읽고 반영해서 저장</i></span></li><li><span>사용자가 할 일 없음</span></li></ul></div>
+      <ul class="dots"><li><span><i>② 주입은 매 턴이 아니라 세션 시작·압축 같은 이벤트 때만 들어옴</i> <i>· 그 사이 다른 세션이 같은 작업을 저장할 수 있음</i></span></li><li><span><i>이 세션이 저장할 때 도구가 "기록이 바뀌었습니다"로 거부</i><br><i class="a">모델이 기록을 다시 읽고 반영해서 저장</i></span></li><li><span>사용자가 할 일 없음</span></li></ul></div>
     <div class="card"><span class="t">제거(uninstall)</span>
       <div class="row"><b>AI에게</b><span><code>이 기기에서 Worklog 제거해 줘</code></span></div>
-      <div class="row"><b>AI가 묻는 것</b><span><i>어느 도구에서 뺄지</i> <i class="p">(Claude Code · Codex · 전부)</i> <i>· 프로젝트의 기록 <code>.worklog/</code>는 그대로 남음</i></span></div>
-      <div class="row"><b>되돌리는 것</b><span><i>기기의 규칙 블록 · 자동 실행 설정 3개 · 스킬 파일</i> <i>· 바꾼 파일은 백업</i></span></div>
+      <div class="row"><b>AI가 묻는 것</b><span><i>어느 도구에서 뺄지</i> <i class="p">(Claude Code · Codex · agy · pi · 전부)</i> <i>· 프로젝트의 기록 <code>.worklog/</code>는 그대로 남음</i></span></div>
+      <div class="row"><b>되돌리는 것</b><span><i>선택한 도구의 규칙 블록 · 자동 실행 설정 3개(pi는 확장) · 스킬 · <code>~/.worklog/install.json</code>의 그 도구 항목</i> <i>· 고친 규칙·설정 파일은 백업, pi 확장·<code>SKILL.md</code>처럼 Worklog만 쓰는 파일은 백업 없이 삭제</i> <i class="p">(프로젝트 기록과 공용 설정 <code>config.json</code>은 남음)</i></span></div>
       <div class="row"><b>기록</b><span><i>남아 있어 다시 설치하면 그대로 이어짐</i> <i>· 한 프로젝트의 기록만 지우려면 <code>이 프로젝트의 Worklog 기록 지워 줘</code></i> <i class="p">(--root … --tool all --delete-records)</i></span></div>
       <div class="row"><b>AI가 실행</b><span><div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --user --tool all</pre><button type="button" class="copy" data-for="cmd-uninstall">복사</button></div><i class="p">예시 · 한 도구만은 <code>--tool codex</code> · 완전 제거와 옵션은 <a href="https://github.com/BUGGIEEEEE/worklog/blob/master/AGENT.md">AGENT.md</a></i></span></div>
     </div>
+  </div>
+</section>
+<section>
+  <h2>9. 파일 지도 <small>설치하고 쓰는 동안 기기에 생기는 파일 · 2.26.0 기준</small></h2>
+  <span><small>8. 구성은 README의 구조도(<a href="https://buggieeeee.github.io/worklog/archify/worklog-architecture.ko.html">대화형으로 보기</a>)</small></span>
+  <div class="fmap">
+    <div class="card"><span class="t">전체 지도</span>
+<pre>기기
+├── <span class="tc">&lt;받은 위치&gt;/worklog/</span>① 받아 온 저장소: 코어와 설치 도구
+├── <span class="tc">각 AI 도구 설정 폴더</span>② 설치기가 쓰는 규칙·Hook·스킬
+├── <span class="tc">~/.worklog/</span>③ 기기 공용 상태: 설치·연결·업데이트 정보
+└── <span class="tc">&lt;프로젝트&gt;/</span>④ 프로젝트 기록: .worklog/ 와 .gitignore 한 줄</pre>
+    </div>
+    <div class="card"><span class="t">① 받아 온 저장소 <small>61개 파일 + .git/</small></span>
+    <div class="split2">
+<pre>worklog/
+├── core/wl.py           코어 전부: 저장·읽기·Hook 응답·주입 생성
+├── adapters/            rules.md(규칙 원본) · pi/worklog.ts(pi 확장 원본)
+├── tools/               install · uninstall · update · migrate_v1_to_v2
+├── docs/ (37)           형식·설치 문서, 그림 PNG 20장, 설명 HTML, 검증 기록
+├── tests/ (11)          test_wl.py와 예시 기록
+├── README ×2 · AGENT.md 사람용 안내 · AI가 설치할 때 읽는 절차서
+├── CHANGELOG · LICENSE · .gitignore
+└── .git/                새 버전 확인: 알림이 켜져 있으면 연결된 폴더(OFF 아님)의
+                         SessionStart 때 최대 하루 한 번 백그라운드 fetch 시도
+                         업데이트 = merge --ff-only, 되돌리기 = checkout</pre>
+      <div class="fn fnotes"><span><i>Hook·확장·스킬이 <code>core/wl.py</code>를 절대 경로로 부름</i> <i class="a">옮기면 다시 설치</i></span>
+      <details><summary>전체 파일 61개 <i class="p">(git ls-tree -r --name-only HEAD)</i></summary><pre>.gitignore
+AGENT.md
+CHANGELOG.md
+LICENSE
+README.ko.md
+README.md
+adapters/pi/worklog.ts
+adapters/rules.md
+core/wl.py
+docs/.nojekyll
+docs/ADAPTERS.md
+docs/FORMAT.md
+docs/VERIFICATION.md
+docs/archify/worklog-architecture.en.html
+docs/archify/worklog-architecture.en.json
+docs/archify/worklog-architecture.ko.html
+docs/archify/worklog-architecture.ko.json
+docs/figures.en.html
+docs/figures.ko.html
+docs/img/en-01-units.png
+docs/img/en-02-usage.png
+docs/img/en-03-example.png
+docs/img/en-04-context.png
+docs/img/en-05-injection.png
+docs/img/en-06-flow.png
+docs/img/en-07-notes.png
+docs/img/en-08-architecture-dark.png
+docs/img/en-08-architecture-light.png
+docs/img/en-09-files.png
+docs/img/ko-01-units.png
+docs/img/ko-02-usage.png
+docs/img/ko-03-example.png
+docs/img/ko-04-context.png
+docs/img/ko-05-injection.png
+docs/img/ko-06-flow.png
+docs/img/ko-07-notes.png
+docs/img/ko-08-architecture-dark.png
+docs/img/ko-08-architecture-light.png
+docs/img/ko-09-files.png
+docs/verification/checks-20261014.md
+docs/verification/m-20261013-delegation2.md
+docs/verification/m-20261013-v290.md
+docs/verification/m-20261014-v2150.md
+docs/verification/m-20261017-v2230.md
+docs/verification/m-20261020-v2240.md
+docs/verification/m-20261020-v2250.md
+tests/fixtures/sample-events.jsonl
+tests/fixtures/sample-v2/.worklog/index.json
+tests/fixtures/sample-v2/.worklog/works/garden-plan/events.jsonl
+tests/fixtures/sample-v2/.worklog/works/garden-plan/state.json
+tests/fixtures/sample-v2/.worklog/works/garden-plan/state.md
+tests/fixtures/sample-v2/.worklog/works/garden-plan/writer.json
+tests/fixtures/sample-v2/.worklog/works/reading-log/events.jsonl
+tests/fixtures/sample-v2/.worklog/works/reading-log/state.json
+tests/fixtures/sample-v2/.worklog/works/reading-log/state.md
+tests/fixtures/sample-v2/.worklog/works/reading-log/writer.json
+tests/test_wl.py
+tools/install_project.py
+tools/migrate_v1_to_v2.py
+tools/uninstall_project.py
+tools/update.py</pre></details></div>
+    </div>
+    </div>
+  <div class="card"><span class="t">② 설치기가 쓰는 파일 <small>기본 --user · 기기에 한 번</small></span>
+    <table class="mini wide tools"><tr><th>도구</th><th>규칙 블록</th><th>자동 실행</th><th>스킬</th></tr>
+    <tr><td>Claude Code</td><td><code>~/.claude/CLAUDE.md</code></td><td><code>~/.claude/settings.json</code> <i class="p">(SessionStart·UserPromptSubmit·Stop)</i></td><td><code>~/.claude/skills/worklog/</code></td></tr>
+    <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code> <i class="p">(같은 3개)</i></td><td><code>~/.agents/skills/worklog/</code></td></tr>
+    <tr><td>agy</td><td><code>~/.gemini/config/rules/worklog.md</code></td><td><code>~/.gemini/config/hooks.json</code> <i class="p">(hook 이름 worklog, 가운데 PreInvocation)</i></td><td><code>~/.gemini/config/skills/worklog/</code></td></tr>
+    <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td><td><code>~/.pi/agent/extensions/worklog.ts</code> <i class="p">(확장 이벤트 3개)</i></td><td><code>~/.pi/agent/skills/worklog/</code></td></tr></table>
+    <ul class="dots fn"><li><span><i>설치기가 바꾸는 기존 규칙·Hook·스킬 파일은 옆에 <code>.bak-worklog-&lt;시각&gt;</code> 백업</i> <i class="p">(업데이트 재설치도 같음)</i> <i>· 공용 <code>~/.worklog/install.json</code>(그 도구 항목만)·<code>config.json</code>은 백업 없이 갱신</i></span></li>
+    <li><span><i>제거기는 규칙 블록·Hook 설정을 고칠 때 기본으로 백업</i> <i>· pi 확장·<code>SKILL.md</code>처럼 Worklog만 쓰는 파일은 백업 없이 삭제</i> <i class="p">(<code>--migrate</code>가 프로젝트 단위 설치를 걷어낼 때도 같음)</i></span></li>
+    <li><span><i><code>--user</code>는 ③의 <code>install.json</code>(설치 기록)도 쓰고,</i> <i><code>config.json</code>에 <code>auto</code> 키가 없으면 <code>"on"</code>을 더함</i> <i class="p">(다른 키 유지)</i></span></li>
+    <li><span><i>프로젝트 단위 설치 <code>--root</code>는 같은 파일을 프로젝트 안에</i> <i class="p">(예: Claude <code>CLAUDE.md</code>, <code>.claude/settings.local.json</code> · agy는 프로젝트 스킬 없음)</i></span></li></ul>
+  </div>
+  <div class="card"><span class="t">③ ~/.worklog/ <small><code>WL_HOME</code>이 있으면 그 경로</small></span>
+    <div class="split2">
+<pre>~/.worklog/
+├── install.json    도구별 설치 버전·규칙 원본 해시
+│                   (백업 없이 덮어씀)
+├── installs.json   연결된 프로젝트 목록 (제거할 때 대상 목록)
+├── update.json     새 버전 확인 결과·되돌리기 기준 커밋
+└── config.json     auto: 자동 연결 on/off (키 없으면 on)
+                    update: 업데이트 알림 notify/off</pre>
+      <ul class="dots fn"><li><span><i><code>config.json</code>은 설치기 <code>--user</code>가 <code>auto</code> 키를 더할 때 생김</i> <i class="p">(<code>update</code> 키는 <code>update --mode</code>로 바꿀 때)</i></span></li>
+      <li><span><i>이 폴더는 <code>index.json</code>이 없으면 연결된 프로젝트로 보지 않음</i> <i class="p">(홈 폴더는 자동 연결하지 않음)</i></span></li>
+      <li><span><i>저장 중 임시 파일이 잠깐 생겼다가 사라짐:</i> <i>코어는 <code>&lt;파일&gt;.&lt;pid&gt;.&lt;8자&gt;.tmp</code>,</i> <i><code>update.py</code>는 <code>&lt;파일&gt;.&lt;pid&gt;.tmp</code></i></span></li></ul>
+    </div>
+  </div>
+  <div class="card"><span class="t">④ 프로젝트 <small>생기는 시점과 함께</small></span>
+    <div class="split2">
+<pre>&lt;프로젝트&gt;/
+├── .gitignore               연결 때 `.worklog/` 한 줄 (루트에 .git이 있을 때만)
+└── .worklog/
+    ├── install.json         연결 때: 연결 시각·방식
+    ├── index.json           연결 때: 작업 목록
+    ├── sessions/…json       세션마다: 현재 작업·읽은 위치·턴·Hook 기록·중복 판정
+    ├── works/&lt;id&gt;/          새 작업 때 폴더, 첫 save 때 그 안에:
+    │                        <b class="f-ev">events.jsonl</b>(이력) · state.json ·
+    │                        <b class="f-st">state.md</b>(현재 상태) · writer.json(마지막 작성자)
+    ├── .lock                저장 차례 정하기
+    ├── project.md           선택. 여러 작업 공통 항목 (사용자 확정 뒤)
+    ├── project-archive.md   선택. project.md에서 은퇴한 항목 (주입 안 됨)
+    └── off                  `워크로그 꺼` 했을 때만</pre>
+      <ul class="dots fn"><li><span><i>저장 중 코어의 임시 파일 <code>&lt;파일&gt;.&lt;pid&gt;.&lt;8자&gt;.tmp</code>가</i> <i>잠깐 생겼다가 사라짐</i></span></li>
+      <li><span><i>연결 = 이 폴더의 첫 <code>new-work</code>:</i> <i>auto=on(기본)이면 기록할 첫 요청에서 모델이 실행,</i> <i>auto=off면 사용자의 <code>새 작업:</code></i></span></li>
+      <li><span><i>위치: 연 폴더가 연결돼 있으면 그 폴더 · git 안이면 최상위까지 올라가며 기록이 있는 가장 가까운 폴더, 없으면 git 최상위 · git 밖이면 연 폴더</i> <i class="a">하위 폴더 세션도 프로젝트 기록에 합류</i></span></li>
+      <li><span><i>시점은 기본 <code>--user</code> 설치 기준</i> <i class="p">(<code>--root</code> 설치는 설치 때 <code>.worklog/</code>·<code>install.json</code>·<code>.gitignore</code> 줄을 만들 수 있음)</i></span></li>
+      <li><span><i>형식 1 기록은 <code>migrate_v1_to_v2.py</code>가</i> <i><code>works/&lt;id&gt;/</code>로 옮김</i></span></li>
+      <li><span><i>보라 = 이력, 청록 = 현재 상태</i> <i class="p">(1절과 같은 색)</i></span></li></ul>
+    </div>
+  </div>
+  <div class="card"><span class="t">모델 입력과의 관계 <small>4·5절의 ①·② 층과 이어짐 · 청록 = Worklog가 모델 입력에 더한 층</small></span>
+    <table class="mini wide"><tr><th>구분</th><th>파일</th></tr>
+    <tr><td class="wl">① 지침으로 들어감</td><td>규칙 블록 파일 <i class="p">(도구가 지침을 읽는 조건을 따름)</i></td></tr>
+    <tr><td>스킬 목록</td><td><code>SKILL.md</code>의 이름·설명 <i class="p">(Claude Code·Codex 기준: 부르면 본문 · agy·pi는 그 도구의 스킬 로드 방식을 따름)</i></td></tr>
+    <tr><td class="wl">② 주입 본문의 원본</td><td><code>events.jsonl</code><i class="p">(현재 상태·다음 할 일·못 본 사건 최대 20개)</i> · <code>index.json</code><i class="p">(작업 목록 · 0개면 EMPTY 안내)</i> · <code>project.md</code><i class="p">(앞 4,000자)</i> · sessions 파일<i class="p">(현재 작업·못 본 사건 범위)</i></td></tr>
+    <tr><td class="wl">② 주입에 경고·분기를 더함</td><td><code>update.json</code>·<code>config.json</code><i class="p">(update: 새 버전 안내, off면 숨김 · auto: NOT_CONNECTED 줄의 할 일)</i> · <code>install.json</code>·<code>rules.md</code><i class="p">(사본 경고: 기록한 원본 해시와 지금 rules.md 비교)</i> · 프로젝트 <code>.git</code>이 파일이면 worktree 경고 · 산출물 파일이 사라지면 산출물 없음 경고 · <code>off</code><i class="p">(OFF 한 줄)</i> · <code>.worklog/</code> 없음 또는 <code>index.json</code> 없는 <code>~/.worklog</code><i class="p">(NOT_CONNECTED 한 줄: root·auto·git과 할 일)</i></td></tr>
+    <tr><td>원장에서 계산한 저장 사본</td><td><code>state.md</code><i class="p">(사람용)</i> · <code>state.json</code> <i>· SessionStart 주입은 이 사본을 읽지 않음</i> <i>· show·use는 원장과 다르면 다시 만들고 알림</i> <i>· verify는 일치 여부 검사</i></td></tr>
+    <tr><td>운영용</td><td><code>writer.json</code> · <code>.lock</code> · <code>installs.json</code> · <code>project-archive.md</code> · 백업 · 임시 파일 · <code>docs/</code> · <code>tests/</code></td></tr></table>
+  </div>
   </div>
 </section>
 </main>

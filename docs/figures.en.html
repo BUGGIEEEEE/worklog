@@ -146,7 +146,6 @@ ul.dots li>span{min-width:0}
 .cm small{display:block;color:var(--muted);font-size:.8rem;line-height:1.4}
 .irow.head .blank{display:grid;align-items:end;padding:0 12px 6px;font-weight:600;color:var(--wl-fg);font-size:.88rem}
 /* 제목 옆 배지(예정 등): 사용자 메시지 색 계열 */
-.badge{display:inline-block;font-size:.74rem;font-weight:600;color:var(--user-fg);background:var(--user);border:1px solid var(--user-line);border-radius:999px;padding:1px 9px;margin-left:8px;vertical-align:middle}
 /* 0절: 파일 강조 블록 (이력 = 보라, 현재 상태 = 청록) */
 pre b.f-ev{color:var(--tool-fg);font-weight:600}
 pre b.f-st{color:var(--wl-fg);font-weight:600}
@@ -237,6 +236,28 @@ section.units .card .row{line-height:1.6}
   .inj{grid-template-columns:1fr}.cms{padding-top:0}.cm{border-left:none;padding:0 0 4px 24px;min-height:0}
   .tl{grid-template-columns:1fr}.tl .mid b{transform:rotate(90deg)}
 }
+/* 5절 상태값 카드: 긴 상태 이름 칸 */
+.chips.wide .chip{grid-template-columns:150px 1fr}
+/* 5절: 있을 때만 나오는 줄은 점선 */
+.irow .layer.opt{border-style:dashed}
+/* 9절 파일 지도: 카드 안에 [트리 | 덧붙임], 표는 칸 안에서 줄바꿈 */
+.fmap{display:grid;gap:12px}
+.fmap .card pre{font-size:.8rem}
+/* 한글이 섞인 트리 칸: 글자 폭과 무관하게 설명 시작선을 맞춤 */
+.fmap pre .tc{display:inline-block;width:25ch}
+.fmap .split2{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:16px;align-items:start}
+.fmap .fn{font-size:.84rem}
+.fmap .fnotes{display:grid;gap:8px;min-width:0}
+.fmap details{font-size:.84rem}
+.fmap details summary{cursor:pointer;color:var(--muted)}
+.fmap details pre{margin-top:6px;max-height:420px;overflow:auto}
+table.mini.wide{width:100%;border-collapse:collapse}
+table.mini.wide th{text-align:left}
+table.mini.wide td{vertical-align:top}
+table.mini.wide code{white-space:normal;overflow-wrap:anywhere}
+table.mini.tools td:first-child{white-space:nowrap}
+table.mini td.wl{color:var(--wl-fg);border-left:4px solid var(--wl-line);padding-left:8px}
+@media (max-width:720px){.fmap .split2{grid-template-columns:minmax(0,1fr)}table.mini code{white-space:normal;overflow-wrap:anywhere}}
 </style>
 
 <main>
@@ -244,7 +265,7 @@ section.units .card .row{line-height:1.6}
   <div class="eyebrow">README companion · final · measured 2026-10-15</div>
   <div class="intro">
     <span class="name">Worklog</span>
-    <span class="desc"><i>Keeps Claude Code and Codex from forgetting</i> <i>what was decided,</i> <i>even after the conversation is compacted or a new session starts.</i><br><i>This page goes from install and everyday use</i> <i>to how the record reaches the model.</i></span>
+    <span class="desc"><i>Keeps Claude Code, Codex, agy (Antigravity CLI) and pi from forgetting</i> <i>what was decided,</i> <i>even after the conversation is compacted or a new session starts.</i><br><i>This page goes from install and everyday use</i> <i>to how the record reaches the model.</i></span>
   </div>
   <div class="legend">
     <span><i class="sw" style="background:var(--sys)"></i>system · tools</span>
@@ -262,7 +283,8 @@ section.units .card .row{line-height:1.6}
   <div class="cols units" style="margin-top:-2px">
     <div class="stack units">
 <pre>project folder/
-└── .worklog/                 one per project (created by the first record)
+└── .worklog/                 one per project
+    │                         (created by the first record)
     └── works/                one folder per work
         ├── guide/            work 1  paper-notebook habit plan
         │   ├── <b class="f-ev">events.jsonl</b>    history
@@ -272,7 +294,7 @@ section.units .card .row{line-height:1.6}
         └── …/                work n</pre>
       <div class="files">
         <div class="fbox ev"><span class="q">events.jsonl · history</span><span><i>every decision and result, in order</i> <i>· only ever appended to, never erased</i></span></div>
-        <div class="fbox st"><span class="q">state.md · current state</span><span><i>the goal, decisions, constraints and next step that apply right now</i> <i>· this is what injection ② shows the model (§5)</i></span></div>
+        <div class="fbox st"><span class="q">state.md · current state</span><span><i>the goal, decisions, constraints and next step that apply right now</i> <i>· a saved copy computed from events.jsonl</i> <i>· the same content as the current-work part of injection ② (§5)</i></span></div>
       </div>
     </div>
     <div class="card">
@@ -292,19 +314,21 @@ section.units .card .row{line-height:1.6}
       <div class="row"><b>Say to the AI</b><span><code>Clone https://github.com/BUGGIEEEEE/worklog and install Worklog on this machine</code> <i class="p">(the AI reads AGENT.md and first asks which tools to install for)</i></span></div>
       <div class="row"><b>The AI runs</b><span><div class="cmd"><pre id="cmd-install">git clone https://github.com/BUGGIEEEEE/worklog.git                                   # once
 python3 -B worklog/tools/install_project.py --tool claude --user                      # once per tool, machine-wide
-python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button type="button" class="copy" data-for="cmd-install">Copy</button></div><i class="p">clone once · install once per tool · a project is connected by its first request worth recording (auto=off: <code>새 작업:</code>) · nothing to do after that</i></span></div>
-      <div class="row"><b>Only you can do</b><span><i>Codex: after installing, run <code>/hooks</code> once and trust the three hooks it lists; trust each project when you first open it</i> <i>· Claude Code: accept the folder-trust dialog if the project is a git repository</i> <i>· restart sessions that were already open</i></span></div>
+python3 -B worklog/tools/install_project.py --tool codex  --user
+python3 -B worklog/tools/install_project.py --tool agy    --user                      # Antigravity CLI
+python3 -B worklog/tools/install_project.py --tool pi     --user</pre><button type="button" class="copy" data-for="cmd-install">Copy</button></div><i class="p">clone once · install once per tool · a project is connected by its first request worth recording (auto=off: <code>새 작업:</code>) · nothing to do after that</i></span></div>
+      <div class="row"><b>Only you can do</b><span><i>Codex: after installing, run <code>/hooks</code> once and trust the three hooks it lists; trust each project when you first open it</i> <i>· Claude Code: accept the folder-trust dialog if the project is a git repository</i> <i>· all four tools: restart sessions that were already open</i> <i class="p">(agy then reads the rule file and the worklog hook, pi the extension)</i></span></div>
       <div class="row"><b>Check</b><span><i>ask the AI "check the Worklog version"</i> <i class="p">(Worklog 버전 확인해 줘)</i> <i class="a"><code>wl.py version</code> prints it</i></span></div>
     </div>
   </div>
   <div class="cards two">
       <div class="card">
         <span class="t">What you say while working</span>
-        <div class="row"><b>First session</b><span>"New work: paper-notebook habit plan guide" <i class="p">(새 작업: 종이 노트 습관 계획 guide)</i> <i class="a">creates the work <code>guide</code></i> <i class="p">(the id is built from the Latin letters and digits in the title; none → work)</i></span></div>
+        <div class="row"><b>First session</b><span>"New work: paper-notebook habit plan guide" <i class="p">(새 작업: 종이 노트 습관 계획 guide)</i> <i class="a">creates the work <code>guide</code></i> <i class="p">(the id is built from the Latin letters and digits in the title; none → work)</i> <i>· optional since 2.25.0: in an empty folder the first request worth recording starts a new work</i> <i class="p">(default auto=on · not in the home folder)</i></span></div>
         <div class="row"><b>Next session</b><span>"Continue guide. Write plan.md." <i class="p">(guide 이어서. plan.md 써 줘.)</i> <i class="a">the record is loaded and the work picks up where it left off</i></span></div>
         <div class="row"><b>Refer to another work</b><span>"Use the time split decided in guide" <i class="p">(guide에서 정한 시간 배분을 참고해 줘)</i><br><i class="a">the model reads guide's record</i> <i>· only what you asked for is brought over</i></span></div>
         <div class="row"><b>Delegating</b><span><i>just tell the AI to delegate</i> <i>· if you open a separate session yourself, start it with "continue guide. subtask: 〈name〉"</i> <i class="p">(guide 이어서. 하위 작업: 〈name〉)</i></span></div>
-        <div class="row"><b>Several works</b><span><i>the model lists them at session start and asks which one to continue</i></span></div>
+        <div class="row"><b>Several works</b><span><i>in a folder with works, a new session asks once, before the request, which work to record to</i> <i class="p">(not when you start with "continue guide")</i></span></div>
         <div class="row"><b>Saving</b><span><i>nothing for you to do</i> <i>· the model saves, or records a skip, at the end of every turn</i></span></div>
       </div>
       <div class="card">
@@ -396,15 +420,15 @@ python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button ty
       <span class="t">① Rules block — how the model is told to handle the record</span>
       <div class="row"><b>Where</b><span><i><code>~/.claude/CLAUDE.md</code></i> <i class="p">(the user-level instruction file Claude Code reads in every session)</i> <i>· written once per machine by the installer</i></span></div>
       <div class="row"><b>Turn start</b><span><i>if injection ② is present, treat it as the current state</i> <i>· otherwise read the record with <code>show</code></i></span></div>
-      <div class="row"><b>Choosing a work</b><span><i>a folder with works: a new session asks once</i> <i class="p">("continue 〈id〉" · 〈id〉 이어서 skips the question)</i> <i>· never picks an existing work itself</i> <i>· an empty folder: the first request starts a new work</i></span></div>
+      <div class="row"><b>Choosing a work</b><span><i>a folder with works: a new session asks once</i> <i class="p">("continue 〈id〉" · 〈id〉 이어서 skips the question)</i> <i>· never picks an existing work itself</i> <i>· an empty folder: the first request starts a new work</i> <i class="p">(default auto=on · not in the home folder)</i></span></div>
       <div class="row"><b>Saving</b><span><i>run <code>save</code> before the turn ends</i> <i>· for each decision and constraint, quote the line of the artifact that honors it,</i> <i>or state why it does not apply</i></span></div>
       <div class="row"><b>Changes</b><span><i>kept exactly as installed</i> <i>· a new version is applied by reinstalling</i></span></div>
     </div>
     <div class="col">
     <div class="card wl">
       <span class="t">② Injection — the record summary</span>
-      <div class="row"><b>When</b><span><i>at session start, on resume, after compaction and on fork (session copy)</i> <i>· once at each of these events, not every turn</i></span></div>
-      <div class="row"><b>What</b><span><i>the list of works</i> <i>+ the current work's goal, decisions, constraints, waiting items and next step</i> <i class="p">(§5)</i></span></div>
+      <div class="row"><b>When</b><span><i>at every SessionStart event:</i> <i>session start, resume, clear, after compaction, fork (session copy)</i> <i>· not every turn</i> <i class="p">(as in Claude Code · agy fires once per new conversation, not again on resume)</i></span></div>
+      <div class="row"><b>What</b><span><i>the list of works</i> <i>+ the current work's goal, decisions, constraints, waiting items and next step</i> <i class="p">(and, when present, project.md, unseen events and warnings; §5)</i></span></div>
       <div class="row"><b>Size</b><span><i>about 400 characters on the first turn</i> <i class="p">(before a work is chosen)</i> <i>· about 900 on resume or after compaction, once a work is chosen</i></span></div>
       <div class="row"><b>Afterwards</b><span><i>the only additions per turn are</i> <i>the use·save results the model asked for</i></span></div>
     </div>
@@ -419,28 +443,46 @@ python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button ty
 </section>
 
 <section>
-  <h2>5. Inside injection ② <small>the teal ② layer of §4, unfolded · left = the actual text · right = what the model takes from it</small></h2>
+  <h2>5. Inside injection ② <small>the teal ② layer of §4, unfolded · left = the actual text (main lines only, abbreviated; translated here: the real output is Korean, and tags such as [user] stand for [사용자]) · right = what the model takes from it</small></h2>
   <div class="inj">
     <div class="irow head"><div class="lcell">② Injection</div><div class="blank">What the model takes from it</div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ Header</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>No need to read the record separately</b><small>this is the case the rules block calls "injection ② is present"</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓐ Header</span><span class="v"><code>[Worklog worklog/2 SessionStart | PROVIDED | root=…]</code></span></div></div><div class="cm"><b>No need to read the record separately</b><small>this is the case the rules block calls "injection ② is present" · the status in place of PROVIDED: card below</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓑ Notice</span><span class="v"><i>"This is working material read from the record,</i> <i>not a new approval."</i></span></div></div><div class="cm"><b>A past record, not a new command</b><small>decisions in the record are not mistaken for instructions just given</small></div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ Work list</span><span class="v"><i>- guide · paper-notebook habit plan · ACTIVE</i> <i>· next: write plan.md</i></span></div></div><div class="cm"><b>"Continue guide" → run <code>use guide</code></b><small>only a work from this list can be chosen</small></div></div>
-    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ Current work</span><span class="v"><i>guide · paper-notebook habit plan</i> <i class="p">(seq 3 · last save time · session)</i></span></div></div><div class="cm"><b>The work this session continues</b><small>included only after a work is chosen: on resume or after compaction</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer opt"><span class="k">Warning lines</span><span class="v"><i>update notice, rules-copy warning, worktree warning from the card below</i> <i class="p">(only when present)</i></span></div></div><div class="cm"><b>Is there something to tell the user?</b><small>if not, there is no line here at all</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer opt"><span class="k">Project-wide</span><span class="v"><i><code>## 프로젝트 공통 (project.md)</code></i> <i class="p">(only when present · first 4,000 characters)</i></span></div></div><div class="cm"><b>Items that apply to every work in this project</b><small>only what the user confirmed into project.md</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓒ Work list</span><span class="v"><i>- guide · paper-notebook habit plan · ACTIVE</i> <i>· next: write plan.md</i></span></div></div><div class="cm"><b>"Continue guide" → run <code>use guide</code></b><small>the list shows only the 10 most recent ACTIVE·PAUSED works and the 3 most recent COMPLETED ones · an existing work that is not listed is still continued when the user names its id</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer"><span class="k">ⓓ Current work</span><span class="v"><i>guide · paper-notebook habit plan</i> <i class="p">(seq 3 · last save time · session)</i></span></div></div><div class="cm"><b>The work this session continues</b><small>included at SessionStart whenever this session has a current work (PROVIDED) · otherwise "no current work" and a guide take its place (status card below) · a missing-artifact warning can follow right below</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Goal</span><span class="v"><i>original goal (verbatim): make a paper-notebook habit plan</i> <i>· current scope: D1</i></span></div></div><div class="cm"><b>What the work is for</b><small>if a value in the goal was changed later, the decisions below win</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub opt"><span class="k">Map</span><span class="v"><i><code>## 안내 — 먼저 볼 것(Map: 결정)</code></i> <i class="p">(only when a <code>Map:</code> decision exists)</i></span></div></div><div class="cm"><b>Documents or starting points to read first</b><small>they also stay in the list of decisions</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Decisions in force</span><span class="v"><i>D1: Wednesdays after dinner, 7 minutes <code>[user]</code></i></span></div></div><div class="cm"><b>Set by the user → never changed on the model's own initiative</b><small>a <code>[model]</code> tag means it was the model's judgment: it may change it, stating a reason</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Constraints in force</span><span class="v"><i>C1: no reminders or alarms <code>[user]</code></i></span></div></div><div class="cm"><b>No reminders are set up</b><small>when saving, attach a quote showing it was honored, or a reason it does not apply</small></div></div>
     <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Waiting</span><span class="v"><i>(none)</i></span></div></div><div class="cm"><b>Nothing is waiting on the user</b><small>if something were, confirm it first</small></div></div>
-    <div class="irow last"><div class="lcell"><div class="layer sub"><span class="k">Next step</span><span class="v"><i>write the weekly plan, plan.md</i></span></div></div><div class="cm"><b>Matches this request → carry on</b><small>no need to ask where to start</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub"><span class="k">Next step</span><span class="v"><i>write the weekly plan, plan.md</i></span></div></div><div class="cm"><b>Matches this request → carry on</b><small>no need to ask where to start</small></div></div>
+    <div class="irow"><div class="lcell"><div class="layer sub opt"><span class="k">Artifacts</span><span class="v"><i><code>## 산출물</code></i> <i class="p">(only when present · grouped by folder past 15)</i></span></div></div><div class="cm"><b>Files this work produced</b><small>paths and hashes recorded at save time · a missing file triggers the warning below ⓓ</small></div></div>
+    <div class="irow last"><div class="lcell"><div class="layer sub opt"><span class="k">Unseen events</span><span class="v"><i><code>## 이 세션이 아직 못 본 사건</code></i> <i class="p">(only when present · up to 20)</i></span></div></div><div class="cm"><b>What other sessions saved in the meantime</b><small>the results of a delegated sub-session, without reading the ledger file</small></div></div>
   </div>
   <div class="cards">
     <div class="card">
-      <span class="t">Warnings that can follow ⓐ</span>
+      <span class="t">Warnings that can appear</span>
       <div class="chips">
-        <div class="chip"><b>Update notice</b><span>a new version is available</span></div>
-        <div class="chip"><b>Worktree warning</b><span><i>the record here diverges from the main checkout</i></span></div>
-        <div class="chip"><b>Missing artifact</b><span><i>a file this session recorded has disappeared</i></span></div>
+        <div class="chip"><b>Update notice</b><span><i>a new version is available · update applied or failed</i> <i class="p">(after ⓑ · none when the notice is off)</i></span></div>
+        <div class="chip"><b>Rules copy</b><span><i>the rules-source (<code>rules.md</code>) hash recorded at install differs from the core's current source → the command to rerun the installer</i> <i class="p">(after ⓑ)</i></span></div>
+        <div class="chip"><b>Worktree warning</b><span><i>the record here diverges from the main checkout</i> <i class="p">(after ⓑ)</i></span></div>
+        <div class="chip"><b>Missing artifact</b><span><i>a file this session recorded has disappeared</i> <i class="p">(right below the ⓓ heading)</i></span></div>
       </div>
-      <span class="note"><small><i>all three say "tell the user"</i> <i class="a">the model passes them on</i></small></span>
+      <span class="note"><small><i>the worktree and missing-artifact texts say "tell the user"</i> <i class="a">the model passes them on</i> <i>· the update notice and the rules-copy warning give the command to run <i class="p">(except the new-major-version notice)</i></i></small></span>
+    </div>
+    <div class="card">
+      <span class="t">Status values in header ⓐ</span>
+      <div class="chips wide">
+        <div class="chip"><b>PROVIDED</b><span><i>this session has a current work</i> <i class="a">ⓓ included</i></span></div>
+        <div class="chip"><b>NO_CURRENT_WORK</b><span><i>works exist, but this session has no current work</i> <i class="a">"no current work" + ask once and skip</i></span></div>
+        <div class="chip"><b>EMPTY</b><span><i>no works yet</i> <i class="a">auto=on: create a work without asking · off: ask once</i></span></div>
+        <div class="chip"><b>NOT_CONNECTED</b><span><i>a folder that is not connected: only this line</i> <i class="p">(root · auto · git)</i> <i class="a">auto=on: connect with new-work on the first request worth recording · auto=off or the home folder: wait for <code>새 작업:</code></i></span></div>
+        <div class="chip"><b>OFF</b><span><i>a project that is switched off: only this line</i> <i class="a">no Worklog steps until the user turns it on</i></span></div>
+        <div class="chip"><b>UNAVAILABLE</b><span><i>the record could not be read</i> <i class="a">check with show before changing files</i></span></div>
+        <div class="chip"><b>| FORK</b><span><i>added to the header when a Claude Code or Codex session is a fork (source=fork)</i> <i class="p">(the NOT_CONNECTED line too · never the OFF line · not for pi <code>--fork</code>)</i> <i class="a">skip, no save, until the user names a work or asks to record</i></span></div>
+      </div>
     </div>
   </div>
 </section>
@@ -474,19 +516,171 @@ python3 -B worklog/tools/install_project.py --tool codex  --user</pre><button ty
 <section>
   <h2>7. Good to know</h2>
   <div class="cards one">
-    <div class="card"><span class="t">Claude Code and Codex work the same way <span class="badge">Pi support planned</span></span>
-      <ul class="dots"><li><span><i>in both tools the model input gets</i> <i>① the rules block and ② the injection in the same way</i></span></li><li><span><i>both tools read and write the same <code>.worklog/</code></i> <i>of a project</i></span></li><li><span><i>only the settings file names differ</i>
+    <div class="card"><span class="t">Four tools on the same record <small>Claude Code · Codex · agy · pi (since 2.24.0)</small></span>
+      <ul class="dots"><li><span><i>in all four tools the model input gets</i> <i>① the rules block and ② the injection with the same content</i></span></li><li><span><i>all four tools read and write the same <code>.worklog/</code></i> <i>of a project</i></span></li><li><span><i>only the settings file names and the way hooks run differ</i> <i class="p">(agy: the middle event is PreInvocation instead of UserPromptSubmit · pi: an extension instead of hooks)</i>
   <table class="mini"><tr><th></th><th>file that holds the rules block</th><th>hook settings</th></tr>
   <tr><td>Claude Code</td><td><code>~/.claude/CLAUDE.md</code></td><td><code>~/.claude/settings.json</code></td></tr>
-  <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code></td></tr></table></span></li></ul></div>
+  <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code></td></tr>
+  <tr><td>agy</td><td><code>~/.gemini/config/rules/worklog.md</code></td><td><code>~/.gemini/config/hooks.json</code></td></tr>
+  <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td><td><code>~/.pi/agent/extensions/worklog.ts</code> <i class="p">(extension)</i></td></tr></table></span></li></ul></div>
   </div>
   <div class="cards two">
     <div class="card"><span class="t">What if another window changed the same work?</span>
-      <ul class="dots"><li><span><i>injection ② is not re-sent on every turn: it arrives at session start (and after compaction)</i> <i>· another session may save the same work in the meantime</i></span></li><li><span><i>when this session saves, the tool refuses with "the record has changed"</i><br><i class="a">the model re-reads the record, merges, and saves again</i></span></li><li><span>nothing for you to do</span></li></ul></div>
+      <ul class="dots"><li><span><i>injection ② is not re-sent on every turn: it arrives only at events such as session start or compaction</i> <i>· another session may save the same work in the meantime</i></span></li><li><span><i>when this session saves, the tool refuses with "the record has changed"</i><br><i class="a">the model re-reads the record, merges, and saves again</i></span></li><li><span>nothing for you to do</span></li></ul></div>
     <div class="card"><span class="t">Uninstall</span>
-      <ul class="dots"><li><span><i>say to the AI "remove Worklog from this machine"</i> <i class="p">(이 기기에서 Worklog 제거해 줘)</i> <i class="a">it asks which tool to remove, then runs the uninstaller</i></span></li><li><span><i>everything the installer changed on the machine is reverted</i> <i class="p">(rules block, hooks, skill files; changed files are backed up)</i></span></li><li><span><i>every project's records in <code>.worklog/</code> stay, so a later install continues from them</i> <i>· to delete one project's record, ask "delete this project's Worklog record"</i> <i class="p">(--root … --tool all --delete-records)</i></span></li></ul>
+      <ul class="dots"><li><span><i>say to the AI "remove Worklog from this machine"</i> <i class="p">(이 기기에서 Worklog 제거해 줘)</i> <i class="a">it asks which tool to remove</i> <i class="p">(Claude Code · Codex · agy · pi · all)</i> <i class="a">then runs the uninstaller</i></span></li><li><span><i>for the chosen tools it removes the rules block, the three hooks (pi: the extension), the skill and the tool's entry in <code>~/.worklog/install.json</code></i> <i>· edited rules and settings files are backed up; files that are Worklog's alone, such as the pi extension and <code>SKILL.md</code>, are deleted without a backup</i> <i class="p">(project records and the shared <code>config.json</code> stay)</i></span></li><li><span><i>every project's records in <code>.worklog/</code> stay, so a later install continues from them</i> <i>· to delete one project's record, ask "delete this project's Worklog record"</i> <i class="p">(--root … --tool all --delete-records)</i></span></li></ul>
       <div class="cmd"><pre id="cmd-uninstall">python3 -B worklog/tools/uninstall_project.py --user --tool all</pre><button type="button" class="copy" data-for="cmd-uninstall">Copy</button></div>
       <span><small>one tool only: <code>--tool codex</code> · full removal and options: AGENT.md</small></span></div>
+  </div>
+</section>
+<section>
+  <h2>9. File map <small>the files that appear on the machine while you install and use it · as of 2.26.0</small></h2>
+  <span><small>8. Structure is the README's architecture diagram (<a href="https://buggieeeee.github.io/worklog/archify/worklog-architecture.en.html">open the interactive version</a>)</small></span>
+  <div class="fmap">
+    <div class="card"><span class="t">Overview</span>
+<pre>machine
+├── &lt;clone location&gt;/worklog/ ① the cloned repository: core and installers
+├── each AI tool's config     ② rules, hooks and skills written by the installer
+├── ~/.worklog/               ③ machine-wide state: install, connection, update info
+└── &lt;project&gt;/                ④ project record: .worklog/ and one .gitignore line</pre>
+    </div>
+    <div class="card"><span class="t">① The cloned repository <small>61 files + .git/</small></span>
+    <div class="split2">
+<pre>worklog/
+├── core/wl.py           the whole core: save, read, hook replies, injection
+├── adapters/            rules.md (rules source) · pi/worklog.ts (pi extension source)
+├── tools/               install · uninstall · update · migrate_v1_to_v2
+├── docs/ (37)           format and install docs, 20 figure PNGs, explainer HTML,
+│                        verification records
+├── tests/ (11)          test_wl.py and sample records
+├── README ×2 · AGENT.md for people · the procedure an AI reads to install
+├── CHANGELOG · LICENSE · .gitignore
+└── .git/                new-version check: if the notice is on, a SessionStart
+                         in a connected folder that is not off tries a background fetch,
+                         at most once a day
+                         update = merge --ff-only, rollback = checkout</pre>
+      <div class="fn fnotes"><span><i>hooks, the extension and skills call <code>core/wl.py</code> by absolute path</i> <i class="a">reinstall if you move it</i></span>
+      <details><summary>all 61 files <i class="p">(git ls-tree -r --name-only HEAD)</i></summary><pre>.gitignore
+AGENT.md
+CHANGELOG.md
+LICENSE
+README.ko.md
+README.md
+adapters/pi/worklog.ts
+adapters/rules.md
+core/wl.py
+docs/.nojekyll
+docs/ADAPTERS.md
+docs/FORMAT.md
+docs/VERIFICATION.md
+docs/archify/worklog-architecture.en.html
+docs/archify/worklog-architecture.en.json
+docs/archify/worklog-architecture.ko.html
+docs/archify/worklog-architecture.ko.json
+docs/figures.en.html
+docs/figures.ko.html
+docs/img/en-01-units.png
+docs/img/en-02-usage.png
+docs/img/en-03-example.png
+docs/img/en-04-context.png
+docs/img/en-05-injection.png
+docs/img/en-06-flow.png
+docs/img/en-07-notes.png
+docs/img/en-08-architecture-dark.png
+docs/img/en-08-architecture-light.png
+docs/img/en-09-files.png
+docs/img/ko-01-units.png
+docs/img/ko-02-usage.png
+docs/img/ko-03-example.png
+docs/img/ko-04-context.png
+docs/img/ko-05-injection.png
+docs/img/ko-06-flow.png
+docs/img/ko-07-notes.png
+docs/img/ko-08-architecture-dark.png
+docs/img/ko-08-architecture-light.png
+docs/img/ko-09-files.png
+docs/verification/checks-20261014.md
+docs/verification/m-20261013-delegation2.md
+docs/verification/m-20261013-v290.md
+docs/verification/m-20261014-v2150.md
+docs/verification/m-20261017-v2230.md
+docs/verification/m-20261020-v2240.md
+docs/verification/m-20261020-v2250.md
+tests/fixtures/sample-events.jsonl
+tests/fixtures/sample-v2/.worklog/index.json
+tests/fixtures/sample-v2/.worklog/works/garden-plan/events.jsonl
+tests/fixtures/sample-v2/.worklog/works/garden-plan/state.json
+tests/fixtures/sample-v2/.worklog/works/garden-plan/state.md
+tests/fixtures/sample-v2/.worklog/works/garden-plan/writer.json
+tests/fixtures/sample-v2/.worklog/works/reading-log/events.jsonl
+tests/fixtures/sample-v2/.worklog/works/reading-log/state.json
+tests/fixtures/sample-v2/.worklog/works/reading-log/state.md
+tests/fixtures/sample-v2/.worklog/works/reading-log/writer.json
+tests/test_wl.py
+tools/install_project.py
+tools/migrate_v1_to_v2.py
+tools/uninstall_project.py
+tools/update.py</pre></details></div>
+    </div>
+    </div>
+  <div class="card"><span class="t">② Files the installer writes <small>default --user · once per machine</small></span>
+    <table class="mini wide tools"><tr><th>tool</th><th>rules block</th><th>hooks</th><th>skill</th></tr>
+    <tr><td>Claude Code</td><td><code>~/.claude/CLAUDE.md</code></td><td><code>~/.claude/settings.json</code> <i class="p">(SessionStart · UserPromptSubmit · Stop)</i></td><td><code>~/.claude/skills/worklog/</code></td></tr>
+    <tr><td>Codex</td><td><code>~/.codex/AGENTS.md</code></td><td><code>~/.codex/hooks.json</code> <i class="p">(the same 3)</i></td><td><code>~/.agents/skills/worklog/</code></td></tr>
+    <tr><td>agy</td><td><code>~/.gemini/config/rules/worklog.md</code></td><td><code>~/.gemini/config/hooks.json</code> <i class="p">(hook named worklog; the middle one is PreInvocation)</i></td><td><code>~/.gemini/config/skills/worklog/</code></td></tr>
+    <tr><td>pi</td><td><code>~/.pi/agent/AGENTS.md</code></td><td><code>~/.pi/agent/extensions/worklog.ts</code> <i class="p">(3 extension events)</i></td><td><code>~/.pi/agent/skills/worklog/</code></td></tr></table>
+    <ul class="dots fn"><li><span><i>an existing rules, hook or skill file the installer changes gets a <code>.bak-worklog-&lt;timestamp&gt;</code> backup next to it</i> <i class="p">(reinstall on update too)</i> <i>· the shared <code>~/.worklog/install.json</code> (that tool's entry only) and <code>config.json</code> are updated without a backup</i></span></li>
+    <li><span><i>the uninstaller backs up the rules and hook settings it edits (by default)</i> <i>· files that are Worklog's alone, such as the pi extension and <code>SKILL.md</code>, are deleted without a backup</i> <i class="p">(the same when <code>--migrate</code> removes a per-project install)</i></span></li>
+    <li><span><i><code>--user</code> also writes ③'s <code>install.json</code> (the install record)</i> <i>and adds <code>"auto": "on"</code> to <code>config.json</code> when the key is missing</i> <i class="p">(other keys kept)</i></span></li>
+    <li><span><i>a per-project install (<code>--root</code>) writes the same files inside the project</i> <i class="p">(e.g. Claude <code>CLAUDE.md</code>, <code>.claude/settings.local.json</code> · agy has no project skill)</i></span></li></ul>
+  </div>
+  <div class="card"><span class="t">③ ~/.worklog/ <small>or the path in <code>WL_HOME</code></small></span>
+    <div class="split2">
+<pre>~/.worklog/
+├── install.json    installed version and rules-source hash per tool
+│                   (overwritten, no backup)
+├── installs.json   connected projects (what the uninstaller goes through)
+├── update.json     new-version check result · commit to roll back to
+└── config.json     auto: automatic connection on/off (no key = on)
+                    update: update notice notify/off</pre>
+      <ul class="dots fn"><li><span><i><code>config.json</code> appears when the installer's <code>--user</code> adds the <code>auto</code> key</i> <i class="p">(the <code>update</code> key when you change it with <code>update --mode</code>)</i></span></li>
+      <li><span><i>this folder does not count as a connected project without <code>index.json</code></i> <i class="p">(the home folder is never connected automatically)</i></span></li>
+      <li><span><i>while saving, a temporary file appears briefly and is gone again:</i> <i>the core writes <code>&lt;file&gt;.&lt;pid&gt;.&lt;8 chars&gt;.tmp</code>,</i> <i><code>update.py</code> writes <code>&lt;file&gt;.&lt;pid&gt;.tmp</code></i></span></li></ul>
+    </div>
+  </div>
+  <div class="card"><span class="t">④ A project <small>with when each file appears</small></span>
+    <div class="split2">
+<pre>&lt;project&gt;/
+├── .gitignore               on connection: one `.worklog/` line (only if the root has .git)
+└── .worklog/
+    ├── install.json         on connection: when and how it was connected
+    ├── index.json           on connection: the list of works
+    ├── sessions/…json       per session: current work, read position, turn, hooks seen,
+    │                        duplicate checks
+    ├── works/&lt;id&gt;/          new work: the folder; first save: inside it
+    │                        <b class="f-ev">events.jsonl</b> (history) · state.json ·
+    │                        <b class="f-st">state.md</b> (current state) · writer.json (last writer)
+    ├── .lock                decides whose turn it is to save
+    ├── project.md           optional. items shared by all works (after the user confirms)
+    ├── project-archive.md   optional. items retired from project.md (not injected)
+    └── off                  only after `워크로그 꺼` (Worklog off)</pre>
+      <ul class="dots fn"><li><span><i>while saving, the core's temporary file <code>&lt;file&gt;.&lt;pid&gt;.&lt;8 chars&gt;.tmp</code></i> <i>appears briefly and is gone again</i></span></li>
+      <li><span><i>connection = this folder's first <code>new-work</code>:</i> <i>with auto=on (default) the model runs it on the first request worth recording,</i> <i>with auto=off the user's <code>새 작업:</code></i></span></li>
+      <li><span><i>where: the opened folder if it is connected · inside git, the nearest folder up to the git top level that has a record, else the git top level · outside git, the opened folder</i> <i class="a">a session in a subfolder joins the project's record</i></span></li>
+      <li><span><i>the times are for the default <code>--user</code> install</i> <i class="p">(a <code>--root</code> install can create <code>.worklog/</code>, <code>install.json</code> and the <code>.gitignore</code> line at install time)</i></span></li>
+      <li><span><i>a format-1 record is moved into <code>works/&lt;id&gt;/</code></i> <i>by <code>migrate_v1_to_v2.py</code></i></span></li>
+      <li><span><i>purple = history, teal = current state</i> <i class="p">(the same colors as §1)</i></span></li></ul>
+    </div>
+  </div>
+  <div class="card"><span class="t">How the files reach the model <small>continues layers ① and ② of §4–5 · teal = what Worklog adds to the model input</small></span>
+    <table class="mini wide"><tr><th>role</th><th>files</th></tr>
+    <tr><td class="wl">① read as instructions</td><td>the rules-block file <i class="p">(under the tool's own conditions for reading instruction files)</i></td></tr>
+    <tr><td>skill list</td><td>name and description in <code>SKILL.md</code> <i class="p">(Claude Code and Codex: the body when the skill is called · agy and pi follow their own way of loading skills)</i></td></tr>
+    <tr><td class="wl">② source of the injection body</td><td><code>events.jsonl</code><i class="p"> (current state, next step, up to 20 unseen events)</i> · <code>index.json</code><i class="p"> (list of works · none → EMPTY guide)</i> · <code>project.md</code><i class="p"> (first 4,000 characters)</i> · the session file<i class="p"> (current work, range of unseen events)</i></td></tr>
+    <tr><td class="wl">② adds warnings or switches the injection</td><td><code>update.json</code>·<code>config.json</code><i class="p"> (update: new-version notice, hidden when off · auto: what the NOT_CONNECTED line says to do)</i> · <code>install.json</code>·<code>rules.md</code><i class="p"> (rules-copy warning: the recorded source hash vs. the current rules.md)</i> · a project <code>.git</code> that is a file → worktree warning · a missing artifact file → missing-artifact warning · <code>off</code><i class="p"> (one OFF line)</i> · no <code>.worklog/</code>, or a <code>~/.worklog</code> without <code>index.json</code><i class="p"> (one NOT_CONNECTED line: root, auto, git and what to do)</i></td></tr>
+    <tr><td>saved copies computed from the ledger</td><td><code>state.md</code><i class="p"> (for people)</i> · <code>state.json</code> <i>· the SessionStart injection does not read them</i> <i>· show and use rebuild them, with a note, when they differ from the ledger</i> <i>· verify checks that they match</i></td></tr>
+    <tr><td>housekeeping</td><td><code>writer.json</code> · <code>.lock</code> · <code>installs.json</code> · <code>project-archive.md</code> · backups · temporary files · <code>docs/</code> · <code>tests/</code></td></tr></table>
+  </div>
   </div>
 </section>
 </main>

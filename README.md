@@ -60,4 +60,6 @@ python3 -B worklog/tools/uninstall_project.py --user --tool all
 
 8. Structure — [open the interactive version](https://buggieeeee.github.io/worklog/archify/worklog-architecture.en.html): click a box to see its connections and the source lines (GitHub links) it is based on. Sources and the Korean version: [docs/archify/](docs/archify/)
 
+![9. File map](docs/img/en-09-files.png)
+
 Details: [docs/ADAPTERS.md](docs/ADAPTERS.md) · [docs/FORMAT.md](docs/FORMAT.md) · [docs/VERIFICATION.md](docs/VERIFICATION.md) · MIT ([LICENSE](LICENSE))
