@@ -3392,3 +3392,31 @@ class FinalPlanTest(unittest.TestCase):
         out = self.ok(new_work(self.root, "C"))
         self.assertIn("a 1개", out["notice"])
         self.assertIn("사용자에게 확인", out["notice"])
+
+
+class CleanupTest(Base):
+    """2.26.1: characterization tests added before the core cleanup (hook table, save helpers). Behaviour unchanged."""
+
+    def test_codex_turn_start_and_stop_hook(self):
+        """codex as its hooks run it: turn_id dedups UserPromptSubmit, a SessionStart repeat is silent, Stop blocks once per
+        turn with {"decision": "block"} and records hook_keys (no agy marks)."""
+        self.ok(new_work(self.root, "t", tool="codex"))
+        sess = lambda: json.loads(session_file(self.root, "codex_s1").read_text())
+        ctx = self.ctx(tool="codex", source="startup")
+        self.assertIn("| PROVIDED |", ctx)
+        self.assertEqual(hook(self.root, "hook", tool="codex", source="startup"), (0, ""))
+        for kw, want in (({"turn_id": "t1"}, 1), ({"turn_id": "t1"}, 1), ({"turn_id": "t2"}, 2)):
+            self.assertEqual(hook(self.root, "turn-start", tool="codex", **kw), (0, ""))
+            self.assertEqual(sess()["turn"], want, kw)
+        self.assertEqual((sess()["hook_keys"]["UserPromptSubmit"], sess()["agy_pre"], sess()["in_turn"]), ("t2", None, True))
+        r, out = hook(self.root, "stop-hook", tool="codex")
+        self.assertEqual((r, json.loads(out)["decision"]), (0, "block"))
+        self.assertEqual((sess()["turn"], sess()["blocked_turn"], sess()["agy_stop"]), (2, 2, None))
+        self.assertTrue(sess()["hook_keys"]["Stop"].startswith("2/0@"))
+        self.assertEqual(hook(self.root, "stop-hook", tool="codex"), (0, ""))  # blocked once: pass, turn advances
+        self.assertEqual((sess()["turn"], sess()["in_turn"]), (3, False))
+        self.assertTrue(sess()["hook_keys"]["Stop"].startswith("3/0@"))
+        hook(self.root, "turn-start", tool="codex", turn_id="t3")
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="codex"))
+        self.assertEqual(hook(self.root, "stop-hook", tool="codex"), (0, ""))  # saved → pass
+        self.assertEqual((sess()["turn"], sess()["blocked_turn"]), (5, 2))

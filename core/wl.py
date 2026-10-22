@@ -24,7 +24,28 @@ TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VE
 USER_TYPES = {"REQUEST", "APPROVAL", "D_USER"}
 REMOVE_TYPES = {"D_USER", "APPROVAL", "CORRECTION"}
 STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"]
-TOOL_ENV = [("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID"), ("agy", "ANTIGRAVITY_CONVERSATION_ID"), ("pi", "PI_SESSION_ID")]  # pi: set by the Worklog extension (2.24.0)
+# Per-tool differences in one table (2.26.1). Order = the session-variable lookup order of identity(). A tool not listed (or
+# none) behaves like claude: hook_tool(). Values only; the judgements (agy's turn count, Stop dedup) stay in the hook functions.
+#   env            session id variable (pi: set by the Worklog extension, 2.24.0)
+#   marks          duplicate-delivery marks: "hook_keys" (claude·codex·pi: SessionStart/UserPromptSubmit/Stop keys, 2.25.0) or
+#                  "agy" (agy_pre/agy_stop, a turn started by the first PreInvocation, a second SessionStart before any turn, 2.24.2)
+#   inject         SessionStart output: "additionalContext" (hookSpecificOutput) or "injectSteps" (agy hooks.json, 2.24.0)
+#   stop_decision  the Stop hook's "decision" when it blocks
+#   empty_reply    what a hook prints when it has nothing to say (agy's hooks.json wants a JSON object; the others print nothing)
+#   cancel_reasons Stop terminationReason values that are never blocked (agy)
+#   hook_warning   whether a session file with no hook record gets HOOK_WARNING (pi: hooks only with the user-level extension)
+# The hook payload keys (cwd or agy's workspacePaths[0], session_id or agy's conversationId) are read the same way for every tool.
+HOOK_TOOLS = {
+    "codex": {"env": "CODEX_THREAD_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+              "empty_reply": None, "cancel_reasons": (), "hook_warning": True},
+    "claude": {"env": "CLAUDE_CODE_SESSION_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+               "empty_reply": None, "cancel_reasons": (), "hook_warning": True},
+    "agy": {"env": "ANTIGRAVITY_CONVERSATION_ID", "marks": "agy", "inject": "injectSteps", "stop_decision": "continue",
+            "empty_reply": "{}", "cancel_reasons": ("USER_CANCELED", "ERROR"), "hook_warning": True},
+    "pi": {"env": "PI_SESSION_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+           "empty_reply": None, "cancel_reasons": (), "hook_warning": False},
+}
+TOOL_ENV = [(name, t["env"]) for name, t in HOOK_TOOLS.items()]
 WORK_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 ID_MAX = 40
 PROJECT_MAX = 4000
@@ -162,6 +183,11 @@ def identity(args):
     if not (tool and sid):
         raise Reject("세션을 확인할 수 없습니다. --tool <codex|claude|agy|pi> --session <ID>를 지정하세요.")
     return tool, sid
+
+
+def hook_tool(tool):
+    """The HOOK_TOOLS row of a tool; any other name (or None) gets claude's row."""
+    return HOOK_TOOLS.get(tool) or HOOK_TOOLS["claude"]
 
 
 def try_identity(args):
@@ -567,7 +593,7 @@ def hooks_report(d, tool, sid):
         out = {"hooks": dict.fromkeys(("session_start", "turn_start", "stop")), "notice": FIRST_CONNECT_NOTICE}
     else:
         out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
-    if not seen and tool != "pi":  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
+    if not seen and hook_tool(tool)["hook_warning"]:  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
         out["warning"] = HOOK_WARNING  # pi: hooks exist only with the user-level extension (2.24.0); a project-level install has none, so no warning
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
@@ -1826,8 +1852,8 @@ def injection(d, who):
 
 def hook_output(tool, text):
     """The SessionStart injection in the tool's own hook output format: Claude Code and Codex (and the pi extension, which
-    reads the same shape) take hookSpecificOutput.additionalContext; agy's hooks.json takes injectSteps (2.24.0)."""
-    if tool == "agy":
+    reads the same shape) take hookSpecificOutput.additionalContext; agy's hooks.json takes injectSteps (2.24.0). HOOK_TOOLS "inject"."""
+    if hook_tool(tool)["inject"] == "injectSteps":
         return json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": text}}]}, ensure_ascii=False)
     return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False)
 
@@ -1880,6 +1906,16 @@ def sessionstart_duplicate(d, who, event):
     return False
 
 
+def agy_sessionstart_repeat(d, who):
+    """agy (2.24.2, HOOK_TOOLS marks "agy"): True for a second SessionStart from a duplicate registration before any turn
+    (this session already saw a SessionStart and its turn is still 0) → nothing to add. Reads without the lock."""
+    try:
+        s0 = load_session(d, *who)
+    except SessionCorrupt:
+        s0 = None
+    return bool(s0 and "SessionStart" in s0["hooks_seen"] and s0["turn"] == 0)
+
+
 def cmd_hook(args):
     """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection(); agy: injectSteps).
     Valid without a session ID; then no session file is touched and there is no current work.
@@ -1889,24 +1925,20 @@ def cmd_hook(args):
     its own session file without a current work); the rules keep it from saving until the user names a work."""
     d, who, event = hook_input(args)
     fork = event.get("source") == "fork"
+    tool = hook_tool(args.tool)
     if not d:
         print(hook_output(args.tool, not_connected_line(args.root_info, fork)))
         return
-    if args.tool == "agy" and who:  # 2.24.2: a second SessionStart from a duplicate registration, before any turn → nothing to add
-        try:
-            s0 = load_session(d, *who)
-        except SessionCorrupt:
-            s0 = None
-        if s0 and "SessionStart" in s0["hooks_seen"] and s0["turn"] == 0:
-            print("{}")
-            return
+    if tool["marks"] == "agy" and who and agy_sessionstart_repeat(d, who):
+        print(tool["empty_reply"])
+        return
     off = off_marker(d)
     if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
         line = (f"[Worklog {FORMAT} SessionStart | OFF | root={d.parent}] Worklog가 꺼져 있다(이유: {norm(off.get('reason') or '') or '없음'}, "
                 f"시각: {norm(off.get('at') or '') or '알 수 없음'}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
         print(hook_output(args.tool, line))
         return
-    if who and args.tool != "agy":
+    if who and tool["marks"] == "hook_keys":
         with locked(d):
             if sessionstart_duplicate(d, who, event):
                 return  # the first call of the pair already injected
@@ -1932,7 +1964,8 @@ def cmd_turn_start(args):
     a turn counted per tool call put save and Stop out of step and looped). So for agy the first PreInvocation after a Stop
     (or SessionStart) starts the turn and the rest of that turn is ignored: session in_turn."""
     d, who, event = hook_input(args)
-    agy = args.tool == "agy"
+    tool = hook_tool(args.tool)
+    agy = tool["marks"] == "agy"  # agy marks: agy_pre + in_turn; hook_keys: the prompt's own id
     if d and who and not is_off(d):
         with locked(d):
             s = session_or_new(d, *who)
@@ -1948,8 +1981,8 @@ def cmd_turn_start(args):
                                **({"agy_pre": key} if agy else {}), **({"hook_keys": dict(s["hook_keys"], UserPromptSubmit=pid)} if pid else {}))
             elif agy:
                 update_session(d, *who, agy_pre=key)
-    if agy:
-        print("{}")
+    if tool["empty_reply"] is not None:
+        print(tool["empty_reply"])
 
 
 def cmd_stop_hook(args):
@@ -1957,15 +1990,16 @@ def cmd_stop_hook(args):
     When the turn ends (satisfied, or already blocked once: stop_hook_active) the turn counter advances here too, so a next
     turn that starts without UserPromptSubmit (`!` shell input, another session's notification) still needs its own save or skip."""
     d, who, event = hook_input(args)
-    agy = args.tool == "agy"
+    tool = hook_tool(args.tool)
+    agy = tool["marks"] == "agy"  # agy marks: agy_stop/agy_pre + blocked_turn covers the re-entry turn; hook_keys: Stop key
 
     def answer(block, reason=None):  # Claude/Codex/pi: block → {"decision": "block"}, else nothing; agy: {"decision": "continue"} or {}
-        if agy:
-            print(json.dumps({"decision": "continue", "reason": reason} if block else {}, ensure_ascii=False))
-        elif block:
-            print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        if block:
+            print(json.dumps({"decision": tool["stop_decision"], "reason": reason}, ensure_ascii=False))
+        elif tool["empty_reply"] is not None:
+            print(tool["empty_reply"])
 
-    if not (d and who) or is_off(d) or (agy and event.get("terminationReason") in ("USER_CANCELED", "ERROR")):
+    if not (d and who) or is_off(d) or event.get("terminationReason") in tool["cancel_reasons"]:
         answer(False)
         return
     try:
