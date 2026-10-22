@@ -17,14 +17,35 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.26.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.26.1"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
 USER_TYPES = {"REQUEST", "APPROVAL", "D_USER"}
 REMOVE_TYPES = {"D_USER", "APPROVAL", "CORRECTION"}
 STATUSES = ["ACTIVE", "PAUSED", "BLOCKED", "COMPLETED", "CANCELLED"]
-TOOL_ENV = [("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID"), ("agy", "ANTIGRAVITY_CONVERSATION_ID"), ("pi", "PI_SESSION_ID")]  # pi: set by the Worklog extension (2.24.0)
+# Per-tool differences in one table (2.26.1). Order = the session-variable lookup order of identity(). A tool not listed (or
+# none) behaves like claude: hook_tool(). Values only; the judgements (agy's turn count, Stop dedup) stay in the hook functions.
+#   env            session id variable (pi: set by the Worklog extension, 2.24.0)
+#   marks          duplicate-delivery marks: "hook_keys" (claude·codex·pi: SessionStart/UserPromptSubmit/Stop keys, 2.25.0) or
+#                  "agy" (agy_pre/agy_stop, a turn started by the first PreInvocation, a second SessionStart before any turn, 2.24.2)
+#   inject         SessionStart output: "additionalContext" (hookSpecificOutput) or "injectSteps" (agy hooks.json, 2.24.0)
+#   stop_decision  the Stop hook's "decision" when it blocks
+#   empty_reply    what a hook prints when it has nothing to say (agy's hooks.json wants a JSON object; the others print nothing)
+#   cancel_reasons Stop terminationReason values that are never blocked (agy)
+#   hook_warning   whether a session file with no hook record gets HOOK_WARNING (pi: hooks only with the user-level extension)
+# The hook payload keys (cwd or agy's workspacePaths[0], session_id or agy's conversationId) are read the same way for every tool.
+HOOK_TOOLS = {
+    "codex": {"env": "CODEX_THREAD_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+              "empty_reply": None, "cancel_reasons": (), "hook_warning": True},
+    "claude": {"env": "CLAUDE_CODE_SESSION_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+               "empty_reply": None, "cancel_reasons": (), "hook_warning": True},
+    "agy": {"env": "ANTIGRAVITY_CONVERSATION_ID", "marks": "agy", "inject": "injectSteps", "stop_decision": "continue",
+            "empty_reply": "{}", "cancel_reasons": ("USER_CANCELED", "ERROR"), "hook_warning": True},
+    "pi": {"env": "PI_SESSION_ID", "marks": "hook_keys", "inject": "additionalContext", "stop_decision": "block",
+           "empty_reply": None, "cancel_reasons": (), "hook_warning": False},
+}
+TOOL_ENV = [(name, t["env"]) for name, t in HOOK_TOOLS.items()]
 WORK_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 ID_MAX = 40
 PROJECT_MAX = 4000
@@ -164,6 +185,11 @@ def identity(args):
     return tool, sid
 
 
+def hook_tool(tool):
+    """The HOOK_TOOLS row of a tool; any other name (or None) gets claude's row."""
+    return HOOK_TOOLS.get(tool) or HOOK_TOOLS["claude"]
+
+
 def try_identity(args):
     try:
         return identity(args)
@@ -293,43 +319,11 @@ def manifest_entry(path, tool):
     return entry if isinstance(entry, dict) else None
 
 
-def install_report(d, tool):
-    """{"warning_install": ...} when the manifest says this tool's rules copy was made from a different adapters/rules.md.
-    A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
-    connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
-    WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
-    # 2.26.0: the home folder as a project has WL_HOME as its store, whose install.json is the user-level manifest: user scope
-    entry = None if is_wl_home(d) else manifest_entry(d / "install.json", tool)
-    user = entry is None or entry.get("scope") == "user"
-    if user:
-        entry = manifest_entry(WL_HOME / "install.json", tool)
-        if entry is None:
-            return {}
-    recorded, current = entry.get("rules_src_sha"), rules_src_sha()
-    if not (isinstance(recorded, str) and current) or recorded == current:
-        return {}
-    where = "--user" if user else f"--root {shlex.quote(str(d.parent))}"
-    return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
-                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} {where} 를 다시 실행하세요."}
-
-
 def parse_version(v):
     try:
         return tuple(int(x) for x in str(v).split("."))
     except ValueError:
         return None
-
-
-def core_report(events):
-    """{"warning_core": ...} when any event carries a `core` with a newer major or minor number than this VERSION
-    (patch differences are text-only by the numbering rule; older events without `core`, or unparsable values, never warn).
-    FORMAT is untouched, so nothing is refused."""
-    mine = parse_version(VERSION)[:2]
-    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine)[:2] > mine]
-    if not newer:
-        return {}
-    top = max(newer, key=parse_version)
-    return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
 
 
 # --- 갱신 알림 (tools/update.py가 한다. Hook은 캐시 파일만 읽고, 하루 한 번 배경 검사를 띄울 뿐 기다리지 않는다. 적용은 사용자가 `update`를 칠 때만) ---
@@ -404,6 +398,20 @@ def update_note():
             return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
         return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
     return ""
+
+
+def cmd_update(args):
+    """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
+    action = args.arg or "apply"
+    if action not in ("check", "apply", "rollback"):
+        raise Reject("update 형식: update [check|rollback] [--mode notify|off]")
+    cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
+    if args.mode:
+        cmd += ["--mode", args.mode]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
+    print(p.stdout, end="")
 
 
 # --- 연결 (2.21.0: 사용자 범위 설치에서는 new-work가 만든 .worklog/가 연결 신호다. 설치기의 --root 모드도 같은 함수를 쓴다) ---
@@ -497,20 +505,6 @@ def connect(root, tool):
     return changed, notes
 
 
-def cmd_update(args):
-    """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
-    action = args.arg or "apply"
-    if action not in ("check", "apply", "rollback"):
-        raise Reject("update 형식: update [check|rollback] [--mode notify|off]")
-    cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
-    if args.mode:
-        cmd += ["--mode", args.mode]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if p.returncode != 0:
-        raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
-    print(p.stdout, end="")
-
-
 ARTIFACTS_MISSING = "이 세션이 기록한 산출물이 실제 파일에 없다"
 
 
@@ -548,6 +542,53 @@ def artifacts_check(d, state):
     return {"missing": missing, "changed": changed, "checked": len(arts)}
 
 
+def hooks_note(d, who):
+    """Text warning line for use (text output) when hooks look inactive."""
+    if not who:
+        return ""
+    report = hooks_report(d, *who)
+    note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
+    if "warning_install" in report:
+        note += f"[Worklog 사본 경고] {report['warning_install']}\n"
+    if "warning_worktree" in report:
+        note += f"[Worklog worktree 경고] {report['warning_worktree']}\n"
+    return note
+
+
+# --- 진단 (save·skip·show·use 결과와 SessionStart 주입의 경고: 설치 사본·코어 버전·worktree·Hook) ---
+
+def install_report(d, tool):
+    """{"warning_install": ...} when the manifest says this tool's rules copy was made from a different adapters/rules.md.
+    A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
+    connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
+    WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
+    # 2.26.0: the home folder as a project has WL_HOME as its store, whose install.json is the user-level manifest: user scope
+    entry = None if is_wl_home(d) else manifest_entry(d / "install.json", tool)
+    user = entry is None or entry.get("scope") == "user"
+    if user:
+        entry = manifest_entry(WL_HOME / "install.json", tool)
+        if entry is None:
+            return {}
+    recorded, current = entry.get("rules_src_sha"), rules_src_sha()
+    if not (isinstance(recorded, str) and current) or recorded == current:
+        return {}
+    where = "--user" if user else f"--root {shlex.quote(str(d.parent))}"
+    return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
+                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} {where} 를 다시 실행하세요."}
+
+
+def core_report(events):
+    """{"warning_core": ...} when any event carries a `core` with a newer major or minor number than this VERSION
+    (patch differences are text-only by the numbering rule; older events without `core`, or unparsable values, never warn).
+    FORMAT is untouched, so nothing is refused."""
+    mine = parse_version(VERSION)[:2]
+    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine)[:2] > mine]
+    if not newer:
+        return {}
+    top = max(newer, key=parse_version)
+    return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
+
+
 def worktree_report(d):
     """{"warning_worktree": ...} when the project root is a git worktree (.git is a file, not a directory): its ledger diverges from the main checkout."""
     return {"warning_worktree": WORKTREE_WARNING} if (d.parent / ".git").is_file() else {}
@@ -567,24 +608,11 @@ def hooks_report(d, tool, sid):
         out = {"hooks": dict.fromkeys(("session_start", "turn_start", "stop")), "notice": FIRST_CONNECT_NOTICE}
     else:
         out = {"hooks": {"session_start": "SessionStart" in seen, "turn_start": "UserPromptSubmit" in seen, "stop": "Stop" in seen}}
-    if not seen and tool != "pi":  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
+    if not seen and hook_tool(tool)["hook_warning"]:  # "connect" (new-work created .worklog/ in this session, 2.21.0): the hooks ran before there was a session file to mark.
         out["warning"] = HOOK_WARNING  # pi: hooks exist only with the user-level extension (2.24.0); a project-level install has none, so no warning
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
     return out
-
-
-def hooks_note(d, who):
-    """Text warning line for use (text output) when hooks look inactive."""
-    if not who:
-        return ""
-    report = hooks_report(d, *who)
-    note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
-    if "warning_install" in report:
-        note += f"[Worklog 사본 경고] {report['warning_install']}\n"
-    if "warning_worktree" in report:
-        note += f"[Worklog worktree 경고] {report['warning_worktree']}\n"
-    return note
 
 
 # --- 작업 목록 (index.json) ---
@@ -978,6 +1006,75 @@ def moved_artifacts(p, root, state):
     return out
 
 
+def drop_repeats(changes, state):
+    """save (2.26.1, from cmd_save): strip source tags from changes["constraints"]/["decisions"] (F6: the core adds them), refuse
+    an empty text, and drop items whose text the state already has (or an earlier item of this save has; a decision with
+    replaces is kept). Changes `changes` (and its decision items) in place and returns the dropped items. No disk, no lock."""
+    ignored = []
+    if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
+        changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
+        if any(not t for t in changes["constraints"]):
+            raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+        have = {norm(x["text"]) for x in state["constraints"]}
+        keep = []
+        for t in changes["constraints"]:
+            (ignored if norm(t) in have else keep).append(t)
+            have.add(norm(t))
+        changes["constraints"] = keep
+    if "decisions" in changes:
+        for item in changes["decisions"]:
+            item["text"] = strip_source_tag(item["text"])
+            if not item["text"]:
+                raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+        have = {norm(x["text"]) for x in state["decisions"]}
+        keep = []
+        for item in changes["decisions"]:
+            (ignored if not item.get("replaces") and norm(item["text"]) in have else keep).append(item)
+            have.add(norm(item["text"]))
+        changes["decisions"] = keep
+    return ignored
+
+
+def check_quotes(p, arts, bodies, state):
+    """save (2.26.1, from cmd_save): match p["check"] against the artifacts. state = the state after this save; arts/bodies from
+    validate(). Text artifacts: every valid decision·constraint needs a quote from a body or "미반영: <이유>"; non-text only:
+    check is optional and takes only 미반영. Returns (need: the checked ids, unreflected, self_quoted) or raises Reject (same
+    texts and order as before). No disk, no lock."""
+    unreflected, self_quoted = [], []
+    rules = state["decisions"] + state["constraints"]
+    check = p.get("check") or {}
+    if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
+        need = [x["id"] for x in rules]
+        missing = [i for i in need if not str(check.get(i) or "").strip()]
+        if missing:
+            raise Reject(f"산출물 대조 누락: {missing}. 각 결정·제약마다 산출물 본문의 인용('...') 또는 \"미반영: 이유\"를 check에 적으세요. "
+                         f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in rules))
+    elif arts:  # 비텍스트 산출물만: 인용할 본문이 없으므로 check는 선택이고 미반영만 받는다
+        need = [i for i in check if i in {x["id"] for x in rules}]
+    else:
+        need = []
+    texts = {x["id"]: norm(x["text"]) for x in rules}
+    for i in need:
+        value = norm(check[i])
+        if value.startswith("미반영:"):
+            if not value[len("미반영:"):].strip():
+                raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
+            unreflected.append(i)
+            continue
+        if not bodies:
+            raise Reject(f"check {i}: 산출물이 모두 비텍스트(그림·압축 등)라 인용할 본문이 없습니다. \"미반영: 이유\"로 적거나 check를 생략하세요.")
+        m = QUOTE.search(value)
+        quote = norm(next(g for g in m.groups() if g) if m else value)
+        if len(quote) < MIN_QUOTE:
+            raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
+        if not any(quote in b for b in bodies):
+            raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
+                         "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
+        if quote == texts[i] or quote.rstrip(".") == texts[i].rstrip("."):  # 규칙 문장을 본문에 써 넣고 그대로 인용한 것: 증거가 아니다
+            self_quoted.append(i)
+    return need, unreflected, self_quoted
+
+
 def cmd_save(args):
     root = Path(args.root).resolve()
     tool, sid = identity(args)
@@ -1028,28 +1125,7 @@ def cmd_save(args):
             changes["goal"] = NEW_WORK_PREFIX.sub("", changes["goal"]).strip() or changes["goal"]
         elif not events and "goal" not in changes:  # 첫 저장에 목표가 없으면 작업 제목
             changes["goal"] = title
-        ignored = []
-        if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
-            changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
-            if any(not t for t in changes["constraints"]):
-                raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
-            have = {norm(x["text"]) for x in state["constraints"]}
-            keep = []
-            for t in changes["constraints"]:
-                (ignored if norm(t) in have else keep).append(t)
-                have.add(norm(t))
-            changes["constraints"] = keep
-        if "decisions" in changes:
-            for item in changes["decisions"]:
-                item["text"] = strip_source_tag(item["text"])
-                if not item["text"]:
-                    raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
-            have = {norm(x["text"]) for x in state["decisions"]}
-            keep = []
-            for item in changes["decisions"]:
-                (ignored if not item.get("replaces") and norm(item["text"]) in have else keep).append(item)
-                have.add(norm(item["text"]))
-            changes["decisions"] = keep
+        ignored = drop_repeats(changes, state)
         if arts:
             changes["artifacts"] = arts
         moved = moved_artifacts(p, root, state)
@@ -1066,38 +1142,8 @@ def cmd_save(args):
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
-        unreflected, self_quoted = [], []
-        rules = new_state["decisions"] + new_state["constraints"]
+        need, unreflected, self_quoted = check_quotes(p, arts, bodies, new_state)
         check = p.get("check") or {}
-        if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
-            need = [x["id"] for x in rules]
-            missing = [i for i in need if not str(check.get(i) or "").strip()]
-            if missing:
-                raise Reject(f"산출물 대조 누락: {missing}. 각 결정·제약마다 산출물 본문의 인용('...') 또는 \"미반영: 이유\"를 check에 적으세요. "
-                             f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in rules))
-        elif arts:  # 비텍스트 산출물만: 인용할 본문이 없으므로 check는 선택이고 미반영만 받는다
-            need = [i for i in check if i in {x["id"] for x in rules}]
-        else:
-            need = []
-        texts = {x["id"]: norm(x["text"]) for x in rules}
-        for i in need:
-            value = norm(check[i])
-            if value.startswith("미반영:"):
-                if not value[len("미반영:"):].strip():
-                    raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
-                unreflected.append(i)
-                continue
-            if not bodies:
-                raise Reject(f"check {i}: 산출물이 모두 비텍스트(그림·압축 등)라 인용할 본문이 없습니다. \"미반영: 이유\"로 적거나 check를 생략하세요.")
-            m = QUOTE.search(value)
-            quote = norm(next(g for g in m.groups() if g) if m else value)
-            if len(quote) < MIN_QUOTE:
-                raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
-            if not any(quote in b for b in bodies):
-                raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
-                             "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
-            if quote == texts[i] or quote.rstrip(".") == texts[i].rstrip("."):  # 규칙 문장을 본문에 써 넣고 그대로 인용한 것: 증거가 아니다
-                self_quoted.append(i)
         if need:
             ev["check"] = {i: check[i] for i in need}
         if self_quoted:
@@ -1113,6 +1159,30 @@ def cmd_save(args):
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]],
                       "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d),
                       **core_report(events), **hooks_report(d, tool, sid)}, ensure_ascii=False))
+
+
+def cmd_skip(args):
+    """Read-only turn: skipped_turn = turn. Writes nothing to the ledger."""
+    if not str(args.arg or "").strip():
+        raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
+    d = store(args.root)
+    tool, sid = identity(args)
+    if not connected(d):
+        print(json.dumps({"ok": True, "turn": 0}))
+        return
+    with locked(d):
+        s = session_or_new(d, tool, sid)
+        turn = s["turn"]
+        update_session(d, tool, sid, skipped_turn=turn)
+        missing, cur = [], s.get("current_work")
+        if cur and work_dir(d, cur).is_dir():
+            try:
+                evs, _ = read_events(work_dir(d, cur))
+                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
+            except (Reject, OSError, ValueError):
+                pass
+    print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
+                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 # --- 작업 선택 ---
@@ -1826,8 +1896,8 @@ def injection(d, who):
 
 def hook_output(tool, text):
     """The SessionStart injection in the tool's own hook output format: Claude Code and Codex (and the pi extension, which
-    reads the same shape) take hookSpecificOutput.additionalContext; agy's hooks.json takes injectSteps (2.24.0)."""
-    if tool == "agy":
+    reads the same shape) take hookSpecificOutput.additionalContext; agy's hooks.json takes injectSteps (2.24.0). HOOK_TOOLS "inject"."""
+    if hook_tool(tool)["inject"] == "injectSteps":
         return json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": text}}]}, ensure_ascii=False)
     return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False)
 
@@ -1880,6 +1950,16 @@ def sessionstart_duplicate(d, who, event):
     return False
 
 
+def agy_sessionstart_repeat(d, who):
+    """agy (2.24.2, HOOK_TOOLS marks "agy"): True for a second SessionStart from a duplicate registration before any turn
+    (this session already saw a SessionStart and its turn is still 0) → nothing to add. Reads without the lock."""
+    try:
+        s0 = load_session(d, *who)
+    except SessionCorrupt:
+        s0 = None
+    return bool(s0 and "SessionStart" in s0["hooks_seen"] and s0["turn"] == 0)
+
+
 def cmd_hook(args):
     """SessionStart hook: prints {"hookSpecificOutput": {..., "additionalContext": ...}} (format: injection(); agy: injectSteps).
     Valid without a session ID; then no session file is touched and there is no current work.
@@ -1889,24 +1969,20 @@ def cmd_hook(args):
     its own session file without a current work); the rules keep it from saving until the user names a work."""
     d, who, event = hook_input(args)
     fork = event.get("source") == "fork"
+    tool = hook_tool(args.tool)
     if not d:
         print(hook_output(args.tool, not_connected_line(args.root_info, fork)))
         return
-    if args.tool == "agy" and who:  # 2.24.2: a second SessionStart from a duplicate registration, before any turn → nothing to add
-        try:
-            s0 = load_session(d, *who)
-        except SessionCorrupt:
-            s0 = None
-        if s0 and "SessionStart" in s0["hooks_seen"] and s0["turn"] == 0:
-            print("{}")
-            return
+    if tool["marks"] == "agy" and who and agy_sessionstart_repeat(d, who):
+        print(tool["empty_reply"])
+        return
     off = off_marker(d)
     if off is not None:  # 꺼짐: 한 줄만 주입하고 세션 파일은 만들거나 갱신하지 않는다
         line = (f"[Worklog {FORMAT} SessionStart | OFF | root={d.parent}] Worklog가 꺼져 있다(이유: {norm(off.get('reason') or '') or '없음'}, "
                 f"시각: {norm(off.get('at') or '') or '알 수 없음'}). 사용자가 켜 달라고 하기 전까지 Worklog 절차를 적용하지 않는다.\n")
         print(hook_output(args.tool, line))
         return
-    if who and args.tool != "agy":
+    if who and tool["marks"] == "hook_keys":
         with locked(d):
             if sessionstart_duplicate(d, who, event):
                 return  # the first call of the pair already injected
@@ -1932,7 +2008,8 @@ def cmd_turn_start(args):
     a turn counted per tool call put save and Stop out of step and looped). So for agy the first PreInvocation after a Stop
     (or SessionStart) starts the turn and the rest of that turn is ignored: session in_turn."""
     d, who, event = hook_input(args)
-    agy = args.tool == "agy"
+    tool = hook_tool(args.tool)
+    agy = tool["marks"] == "agy"  # agy marks: agy_pre + in_turn; hook_keys: the prompt's own id
     if d and who and not is_off(d):
         with locked(d):
             s = session_or_new(d, *who)
@@ -1948,8 +2025,8 @@ def cmd_turn_start(args):
                                **({"agy_pre": key} if agy else {}), **({"hook_keys": dict(s["hook_keys"], UserPromptSubmit=pid)} if pid else {}))
             elif agy:
                 update_session(d, *who, agy_pre=key)
-    if agy:
-        print("{}")
+    if tool["empty_reply"] is not None:
+        print(tool["empty_reply"])
 
 
 def cmd_stop_hook(args):
@@ -1957,15 +2034,16 @@ def cmd_stop_hook(args):
     When the turn ends (satisfied, or already blocked once: stop_hook_active) the turn counter advances here too, so a next
     turn that starts without UserPromptSubmit (`!` shell input, another session's notification) still needs its own save or skip."""
     d, who, event = hook_input(args)
-    agy = args.tool == "agy"
+    tool = hook_tool(args.tool)
+    agy = tool["marks"] == "agy"  # agy marks: agy_stop/agy_pre + blocked_turn covers the re-entry turn; hook_keys: Stop key
 
     def answer(block, reason=None):  # Claude/Codex/pi: block → {"decision": "block"}, else nothing; agy: {"decision": "continue"} or {}
-        if agy:
-            print(json.dumps({"decision": "continue", "reason": reason} if block else {}, ensure_ascii=False))
-        elif block:
-            print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        if block:
+            print(json.dumps({"decision": tool["stop_decision"], "reason": reason}, ensure_ascii=False))
+        elif tool["empty_reply"] is not None:
+            print(tool["empty_reply"])
 
-    if not (d and who) or is_off(d) or (agy and event.get("terminationReason") in ("USER_CANCELED", "ERROR")):
+    if not (d and who) or is_off(d) or event.get("terminationReason") in tool["cancel_reasons"]:
         answer(False)
         return
     try:
@@ -2007,30 +2085,6 @@ def cmd_stop_hook(args):
     skip = f'python3 -B {q(str(Path(__file__).resolve()))} skip "이유" --tool {q(who[0])} --session {q(who[1])} --root {q(str(d.parent))}'
     answer(True, "Worklog: 이번 턴에 save가 없습니다. 기록할 것이 있으면 save, "
                  f"읽기 전용 턴이거나 작업이 지정되지 않았으면 `{skip}`를 실행한 뒤 마치세요.")
-
-
-def cmd_skip(args):
-    """Read-only turn: skipped_turn = turn. Writes nothing to the ledger."""
-    if not str(args.arg or "").strip():
-        raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
-    d = store(args.root)
-    tool, sid = identity(args)
-    if not connected(d):
-        print(json.dumps({"ok": True, "turn": 0}))
-        return
-    with locked(d):
-        s = session_or_new(d, tool, sid)
-        turn = s["turn"]
-        update_session(d, tool, sid, skipped_turn=turn)
-        missing, cur = [], s.get("current_work")
-        if cur and work_dir(d, cur).is_dir():
-            try:
-                evs, _ = read_events(work_dir(d, cur))
-                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
-            except (Reject, OSError, ValueError):
-                pass
-    print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
-                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 def main(argv=None):
