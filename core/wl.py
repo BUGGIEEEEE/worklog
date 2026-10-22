@@ -76,7 +76,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "summary": "이번 턴에 일어난 일 한두 문장",
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
-  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},
+  "decisions": [{"text": "11분으로 변경(집중 유지)", "replaces": "D1"},
                 {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],
   "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],
   "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
