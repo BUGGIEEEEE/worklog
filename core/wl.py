@@ -306,6 +306,12 @@ def update_session(d, tool, sid, seen=None, **changes):
     return s
 
 
+def mark_seen_if_current(d, tool, sid, wid, before, after):
+    """A session that had read this work up to `before` has read its own event too (archive/reopen, reassign, rename)."""
+    if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == before:
+        update_session(d, tool, sid, seen=(wid, after))
+
+
 def mark_hook(d, who, name):  # SessionStart also resets in_turn (2.24.1): a new or resumed session starts outside a turn
     """Inside locked(d): record that hook `name` ran for this session (self-diagnosis shown by save·skip·verify)."""
     seen = dict(session_or_new(d, *who)["hooks_seen"], **{name: now()})
@@ -1424,6 +1430,8 @@ def cmd_reopen(args):
 
 
 # --- 잘못 고른 작업의 정정 (2.25.0). 원장은 작업별 추가 전용: 사건을 옮기지 않고 양쪽에 서로를 가리키는 CORRECTION을 남긴다 ---
+# 바깥 의존 함수(27, 2.27.0): commit connected create_work entry fold identity index_or_new locked mark_seen_if_current need_quote new_event new_work_refusal norm not_connected_text other_constraints others_notice project projection_ok read_events session_or_new sha store tag title_slug update_session work_dir write_index (+ 상수 NEW_WORK_PREFIX·REASSIGNED_MAX, Reject)
+# 이 구역은 `import wl`·형제 파일 분리를 전제하지 않는다(분리는 보류, 2026-10-22 결정). 위 목록은 경계 표시이며 옮길 때의 비용 기준이다.
 
 EVENT_ID = re.compile(r"E(\d{1,6})")
 
@@ -1441,12 +1449,6 @@ def event_ids(spec, events):
     if missing:
         raise Reject(f"작업에 없는 사건: {missing}. show의 사건 목록에서 범위를 고르세요.")
     return sorted(set(out))
-
-
-def mark_seen_if_current(d, tool, sid, wid, before, after):
-    """A session that had read this work up to `before` has read its own event too (archive/reopen, reassign, rename)."""
-    if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == before:
-        update_session(d, tool, sid, seen=(wid, after))
 
 
 def ref_ids(e, kind, work=None):
