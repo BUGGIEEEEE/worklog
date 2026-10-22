@@ -3684,3 +3684,82 @@ class Release2270Test(Base):
         self.assertEqual(self.state("guide")["goal"], "guide")
         self.assertTrue(self.ok(run(self.root, "verify", extra=["--all"]))["ok"])
         self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "q"]), "이미 옮겼습니다")
+
+    # --- 2.27.0 fix (검증 지적 N01~N03) ---
+    def test_reassign_new_refuses_other_sessions_empty_work(self):
+        """N01: another session's empty work with the --new title is not continued (no session marker for this refile): it is a
+        slug clash; and the same-turn new-work refusal still applies to reassign --new."""
+        self.ok(new_work(self.root, "recipe", session="a"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "seed", "quote": "q", "decisions": [{"text": "three columns"}]}, session="a"))
+        self.ok(new_work(self.root, "guide", session="other", quote="other guide"))
+        argv = ["recipe", "--new", "guide", "--events", "E0001", "--quote", "new guide"]
+        self.refused(run(self.root, "reassign", session="a", extra=argv), "작업 id guide가 이미 있습니다")
+        self.assertFalse((self.d / "works/guide/events.jsonl").exists())                 # other의 빈 작업은 그대로
+        self.assertEqual(json.loads(session_file(self.root, "codex_a").read_text())["current_work"], "recipe")
+        self.refused(run(self.root, "reassign", session="a", extra=["recipe", "--new", "guide2", "--events", "E0001", "--quote", "q"]),
+                     "이번 턴에 이미 new-work로 작업 recipe")                              # 같은 턴의 두 번째 생성은 거부
+        self.assertNotIn("guide2", self.index()["works"])
+
+    def test_reassign_new_partial_on_create_failure(self):
+        """N02: a failure while creating the --new work is a partial result (done, created when the work is in index.json), not a
+        plain refusal; the same command by the same session then continues, by another session it is a slug clash (N01)."""
+        self.recipe()
+        self.wl = load_wl()
+        real = self.wl.write_index
+        def before_write(*a, **kw):
+            raise OSError("index 쓰기 실패(시험)")
+        args = dict(arg="recipe", arg2=None, new="guide", events="E0001", quote="새 작업 guide야", root=str(self.root), tool="codex",
+                    session="s1", force=False)
+        code, res = self.call(self.wl.cmd_reassign, args, write_index=before_write)         # index에 쓰기 전 실패
+        self.assertEqual((code, res["partial"], res["done"]), (2, True, []), res)
+        self.assertNotIn("created", res)
+        self.assertNotIn("guide", self.index()["works"])
+        self.assertEqual(json.loads(session_file(self.root, "codex_s1").read_text())["new_work_from"], "recipe:E0001")
+        out = self.ok(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001", "--quote", "새 작업 guide야"]))
+        self.assertEqual((out["created"], out["to"], sorted(self.index()["works"])), ("guide", "guide", ["guide", "memo", "recipe"]))
+        hook(self.root, "turn-start", session="s1", tool="codex")
+        n = [0]
+        def after_write(*a, **kw):
+            real(*a, **kw)
+            n[0] += 1
+            if n[0] == 1:
+                raise OSError("index 뒤 실패(시험)")
+        args.update(new="notes", events="E0002")
+        code, res = self.call(self.wl.cmd_reassign, args, write_index=after_write)          # index에 쓴 뒤 실패
+        self.assertEqual((code, res["partial"], res["done"], res["created"]), (2, True, [], "notes"), res)
+        self.assertEqual(self.index()["works"]["notes"]["last_seq"], 0)
+        argv = ["recipe", "--new", "notes", "--events", "E0002", "--quote", "notes야"]
+        self.refused(run(self.root, "reassign", session="s9", extra=argv), "작업 id notes가 이미 있습니다")  # 다른 세션은 이어 가지 않는다
+        out = self.ok(run(self.root, "reassign", extra=argv))
+        self.assertEqual((out["to"], out["refiled"]), ("notes", "E0001"))
+        self.assertNotIn("created", out)
+        self.assertEqual(sorted(self.index()["works"]), ["guide", "memo", "notes", "recipe"])
+        self.assertTrue(self.ok(run(self.root, "verify", extra=["--all"]))["ok"])
+
+    def test_artifacts_gone_path_aliases(self):
+        """N03: artifacts_gone compares paths as one file (b.md, ./b.md, the absolute path): an alias in the same save's artifacts
+        or twice in artifacts_gone is refused, and an alias names the recorded artifact (its spelling is what the change keeps)."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["게시 금지"]}))
+        for n in ("b.md", "c.md"):
+            (self.root / n).write_text("본문 " + n)
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "b.md"}, {"path": "c.md"}],
+                                        "check": {"C1": "미반영: 게시는 하지 않음"}}))
+        chk = {"check": {"C1": "미반영: x"}}
+        for gone, extra, text in (([{"path": "b.md", "reason": "r"}], dict(chk, artifacts=[{"path": "./b.md"}]), "같은 save의"),
+                                  ([{"path": "./b.md", "reason": "r"}], dict(chk, artifacts=[{"path": "b.md"}]), "같은 save의"),
+                                  ([{"path": "b.md", "reason": "r"}], dict(chk, artifacts=[{"path": str(self.root / "b.md")}]), "같은 save의"),
+                                  ([{"path": "b.md", "reason": "r"}, {"path": "./b.md", "reason": "r"}], {}, "두 번")):
+            r, out = run(self.root, "save", dict({"type": "RESULT" if "artifacts" in extra else "CHECKPOINT", "summary": "지움",
+                                                  "artifacts_gone": gone}, **extra))
+            self.assertEqual(r, 2, out)
+            self.assertIn(text, json.loads(out)["error"])
+        self.assertEqual(len(self.events("t")), 2)
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "지움", "artifacts_gone": [
+            {"path": "./b.md", "reason": "사용자가 지웠다고 확인"}, {"path": str(self.root / "c.md"), "reason": "필요 없다고 함"}]}))
+        self.assertEqual(self.events("t")[-1]["changes"]["artifacts_gone"], [{"path": "b.md", "reason": "사용자가 지웠다고 확인"},
+                                                                             {"path": "c.md", "reason": "필요 없다고 함"}])
+        self.assertEqual(self.state("t")["artifacts"], [])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["works"][0]["artifacts"]["gone"], ["b.md(E0003)", "c.md(E0003)"])
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": "./b.md"}], "check": {"C1": "미반영: x"}}))
+        self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["c.md(E0003)"])  # ./b.md로 다시 기록: 같은 파일
