@@ -3420,3 +3420,42 @@ class CleanupTest(Base):
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}, tool="codex"))
         self.assertEqual(hook(self.root, "stop-hook", tool="codex"), (0, ""))  # saved → pass
         self.assertEqual((sess()["turn"], sess()["blocked_turn"]), (5, 2))
+
+    def test_drop_repeats(self):
+        """drop_repeats (from cmd_save): source tags stripped, repeats of the state or of this save dropped (replaces kept),
+        empty text refused with the constraint check first. In place, no disk."""
+        wl = load_wl()
+        state = {"constraints": [{"text": "알림 금지"}], "decisions": [{"text": "7분"}]}
+        changes = {"constraints": ["[사용자] 알림 금지", "게시 금지", "게시  금지"],
+                   "decisions": [{"text": "7분 [모델]"}, {"text": "7분", "replaces": "D1"}, {"text": "11분"}, {"text": "11 분"}]}
+        ignored = wl.drop_repeats(changes, state)
+        self.assertEqual(ignored, ["알림 금지", "게시  금지", {"text": "7분"}])
+        self.assertEqual(changes, {"constraints": ["게시 금지"],
+                                   "decisions": [{"text": "7분", "replaces": "D1"}, {"text": "11분"}, {"text": "11 분"}]})
+        self.assertEqual(wl.drop_repeats({"waiting": []}, state), [])
+        with self.assertRaisesRegex(wl.Reject, "^제약 내용이 비어 있습니다"):
+            wl.drop_repeats({"constraints": ["[모델]"], "decisions": [{"text": "[사용자]"}]}, state)
+        with self.assertRaisesRegex(wl.Reject, "^결정 내용이 비어 있습니다"):
+            wl.drop_repeats({"decisions": [{"text": "x"}, {"text": " [사용자] "}]}, state)
+
+    def test_check_quotes_function(self):
+        """check_quotes (from cmd_save): (need, unreflected, self_quoted) or the same refusals as save."""
+        wl = load_wl()
+        state = {"decisions": [{"id": "D1", "text": "7분"}], "constraints": [{"id": "C1", "text": "알림 금지"}]}
+        body = [wl.norm("수요일 저녁 7분 동안 적는다.\n알림 금지")]
+        arts = [{"path": "a.md"}]
+        cq = lambda check, a=arts, b=body: wl.check_quotes({"check": check}, a, b, state)
+        self.assertEqual(wl.check_quotes({}, [], [], state), ([], [], []))
+        with self.assertRaisesRegex(wl.Reject, r"^산출물 대조 누락: \['D1', 'C1'\]"):
+            cq({})
+        self.assertEqual(cq({"D1": "'저녁 7분 동안'", "C1": "미반영: 작업 방식"}), (["D1", "C1"], ["C1"], []))
+        self.assertEqual(cq({"D1": "“저녁 7분 동안”", "C1": "'알림 금지'"}), (["D1", "C1"], [], ["C1"]))
+        with self.assertRaisesRegex(wl.Reject, "^check D1의 미반영 이유가 비어"):
+            cq({"D1": "미반영:  ", "C1": "'없는 문장입니다'"})
+        with self.assertRaisesRegex(wl.Reject, "^check D1의 인용이 너무 짧습니다"):
+            cq({"D1": "'7분'", "C1": "미반영: x"})
+        with self.assertRaisesRegex(wl.Reject, "^check C1의 인용이 산출물에 없습니다"):
+            cq({"D1": "'저녁 7분 동안'", "C1": "'없는 문장입니다'"})
+        self.assertEqual(cq({"D1": "미반영: 그림", "X9": "'아무거나 넣음'"}, b=[]), (["D1"], ["D1"], []))  # 비텍스트만: 있는 id만
+        with self.assertRaisesRegex(wl.Reject, "^check D1: 산출물이 모두 비텍스트"):
+            cq({"D1": "'저녁 7분 동안'"}, b=[])

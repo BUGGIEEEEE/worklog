@@ -1004,6 +1004,75 @@ def moved_artifacts(p, root, state):
     return out
 
 
+def drop_repeats(changes, state):
+    """save (2.26.1, from cmd_save): strip source tags from changes["constraints"]/["decisions"] (F6: the core adds them), refuse
+    an empty text, and drop items whose text the state already has (or an earlier item of this save has; a decision with
+    replaces is kept). Changes `changes` (and its decision items) in place and returns the dropped items. No disk, no lock."""
+    ignored = []
+    if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
+        changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
+        if any(not t for t in changes["constraints"]):
+            raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+        have = {norm(x["text"]) for x in state["constraints"]}
+        keep = []
+        for t in changes["constraints"]:
+            (ignored if norm(t) in have else keep).append(t)
+            have.add(norm(t))
+        changes["constraints"] = keep
+    if "decisions" in changes:
+        for item in changes["decisions"]:
+            item["text"] = strip_source_tag(item["text"])
+            if not item["text"]:
+                raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+        have = {norm(x["text"]) for x in state["decisions"]}
+        keep = []
+        for item in changes["decisions"]:
+            (ignored if not item.get("replaces") and norm(item["text"]) in have else keep).append(item)
+            have.add(norm(item["text"]))
+        changes["decisions"] = keep
+    return ignored
+
+
+def check_quotes(p, arts, bodies, state):
+    """save (2.26.1, from cmd_save): match p["check"] against the artifacts. state = the state after this save; arts/bodies from
+    validate(). Text artifacts: every valid decision·constraint needs a quote from a body or "미반영: <이유>"; non-text only:
+    check is optional and takes only 미반영. Returns (need: the checked ids, unreflected, self_quoted) or raises Reject (same
+    texts and order as before). No disk, no lock."""
+    unreflected, self_quoted = [], []
+    rules = state["decisions"] + state["constraints"]
+    check = p.get("check") or {}
+    if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
+        need = [x["id"] for x in rules]
+        missing = [i for i in need if not str(check.get(i) or "").strip()]
+        if missing:
+            raise Reject(f"산출물 대조 누락: {missing}. 각 결정·제약마다 산출물 본문의 인용('...') 또는 \"미반영: 이유\"를 check에 적으세요. "
+                         f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in rules))
+    elif arts:  # 비텍스트 산출물만: 인용할 본문이 없으므로 check는 선택이고 미반영만 받는다
+        need = [i for i in check if i in {x["id"] for x in rules}]
+    else:
+        need = []
+    texts = {x["id"]: norm(x["text"]) for x in rules}
+    for i in need:
+        value = norm(check[i])
+        if value.startswith("미반영:"):
+            if not value[len("미반영:"):].strip():
+                raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
+            unreflected.append(i)
+            continue
+        if not bodies:
+            raise Reject(f"check {i}: 산출물이 모두 비텍스트(그림·압축 등)라 인용할 본문이 없습니다. \"미반영: 이유\"로 적거나 check를 생략하세요.")
+        m = QUOTE.search(value)
+        quote = norm(next(g for g in m.groups() if g) if m else value)
+        if len(quote) < MIN_QUOTE:
+            raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
+        if not any(quote in b for b in bodies):
+            raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
+                         "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
+        if quote == texts[i] or quote.rstrip(".") == texts[i].rstrip("."):  # 규칙 문장을 본문에 써 넣고 그대로 인용한 것: 증거가 아니다
+            self_quoted.append(i)
+    return need, unreflected, self_quoted
+
+
 def cmd_save(args):
     root = Path(args.root).resolve()
     tool, sid = identity(args)
@@ -1054,28 +1123,7 @@ def cmd_save(args):
             changes["goal"] = NEW_WORK_PREFIX.sub("", changes["goal"]).strip() or changes["goal"]
         elif not events and "goal" not in changes:  # 첫 저장에 목표가 없으면 작업 제목
             changes["goal"] = title
-        ignored = []
-        if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
-            changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
-            if any(not t for t in changes["constraints"]):
-                raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
-            have = {norm(x["text"]) for x in state["constraints"]}
-            keep = []
-            for t in changes["constraints"]:
-                (ignored if norm(t) in have else keep).append(t)
-                have.add(norm(t))
-            changes["constraints"] = keep
-        if "decisions" in changes:
-            for item in changes["decisions"]:
-                item["text"] = strip_source_tag(item["text"])
-                if not item["text"]:
-                    raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
-            have = {norm(x["text"]) for x in state["decisions"]}
-            keep = []
-            for item in changes["decisions"]:
-                (ignored if not item.get("replaces") and norm(item["text"]) in have else keep).append(item)
-                have.add(norm(item["text"]))
-            changes["decisions"] = keep
+        ignored = drop_repeats(changes, state)
         if arts:
             changes["artifacts"] = arts
         moved = moved_artifacts(p, root, state)
@@ -1092,38 +1140,8 @@ def cmd_save(args):
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
-        unreflected, self_quoted = [], []
-        rules = new_state["decisions"] + new_state["constraints"]
+        need, unreflected, self_quoted = check_quotes(p, arts, bodies, new_state)
         check = p.get("check") or {}
-        if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
-            need = [x["id"] for x in rules]
-            missing = [i for i in need if not str(check.get(i) or "").strip()]
-            if missing:
-                raise Reject(f"산출물 대조 누락: {missing}. 각 결정·제약마다 산출물 본문의 인용('...') 또는 \"미반영: 이유\"를 check에 적으세요. "
-                             f"현재 목록: " + "; ".join(f"{x['id']}={x['text']}" for x in rules))
-        elif arts:  # 비텍스트 산출물만: 인용할 본문이 없으므로 check는 선택이고 미반영만 받는다
-            need = [i for i in check if i in {x["id"] for x in rules}]
-        else:
-            need = []
-        texts = {x["id"]: norm(x["text"]) for x in rules}
-        for i in need:
-            value = norm(check[i])
-            if value.startswith("미반영:"):
-                if not value[len("미반영:"):].strip():
-                    raise Reject(f"check {i}의 미반영 이유가 비어 있습니다. \"미반영: <이유>\"로 적으세요.")
-                unreflected.append(i)
-                continue
-            if not bodies:
-                raise Reject(f"check {i}: 산출물이 모두 비텍스트(그림·압축 등)라 인용할 본문이 없습니다. \"미반영: 이유\"로 적거나 check를 생략하세요.")
-            m = QUOTE.search(value)
-            quote = norm(next(g for g in m.groups() if g) if m else value)
-            if len(quote) < MIN_QUOTE:
-                raise Reject(f"check {i}의 인용이 너무 짧습니다({MIN_QUOTE}자 이상): '{quote}'. 산출물 본문의 문장을 더 길게 인용하세요.")
-            if not any(quote in b for b in bodies):
-                raise Reject(f"check {i}의 인용이 산출물에 없습니다: '{quote}'. 산출물 본문에 그대로 있는 문장을 따옴표로 인용하거나, "
-                             "본문에 넣지 않았다면 \"미반영: 이유\"로 적으세요.")
-            if quote == texts[i] or quote.rstrip(".") == texts[i].rstrip("."):  # 규칙 문장을 본문에 써 넣고 그대로 인용한 것: 증거가 아니다
-                self_quoted.append(i)
         if need:
             ev["check"] = {i: check[i] for i in need}
         if self_quoted:
