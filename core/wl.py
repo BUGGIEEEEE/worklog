@@ -103,6 +103,11 @@ class Reject(Exception):
     pass
 
 
+class ToolAmbiguous(Reject):
+    """2.27.0 (U16, N-1): two or more tool session variables and no --tool/WL_TOOL. Refused by every command that reads the
+    session, including the ones that otherwise run without a session (show·works·verify·off)."""
+
+
 def norm(text):
     return " ".join(str(text).split())
 
@@ -183,8 +188,8 @@ def identity_how(args):
     if not (tool and sid):
         found = [(name, env) for name, env in TOOL_ENV if os.environ.get(env) and (not tool or tool == name)]
         if not tool and len(found) > 1:
-            raise Reject(f"도구를 확정할 수 없습니다: {', '.join(f'{env}({name})' for name, env in found)}가 함께 있습니다. "
-                         "--tool <codex|claude|agy|pi>를 지정하세요.")
+            raise ToolAmbiguous(f"도구를 확정할 수 없습니다: {', '.join(f'{env}({name})' for name, env in found)}가 함께 있습니다. "
+                                "--tool <codex|claude|agy|pi>를 지정하세요.")
         if found:
             name, env = found[0]
             tool, sid, how = name, sid or os.environ[env], how or f"환경변수 {env}에서 추정"
@@ -208,8 +213,12 @@ def hook_tool(tool):
 
 
 def try_identity(args):
+    """identity, or None when no session can be found (a call outside any tool session). Two tool session variables are still
+    refused (2.27.0, N-1): guessing would read another tool's session, and None would hide the cause."""
     try:
         return identity(args)
+    except ToolAmbiguous:
+        raise
     except Reject:
         return None
 
@@ -253,7 +262,8 @@ def new_session():
     # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work.
     # new_work_id (2.26.0): the id that new-work was creating, written with new_work_turn before index.json (retry marker).
     # reassigned (2.26.0): ["<right id>:<refiled event id>@<turn>", …] (last REASSIGNED_MAX) written with current_work by
-    # reassign's session step. missing_noted (2.27.0): ["path(Eid)", …] missing artifacts already reported to this session.
+    # reassign's session step. missing_noted (2.27.0): ["<work id>:path(Eid)", …] missing artifacts already reported to this
+    # session (an entry without the work id, from a pre-release 2.27.0 build, matches nothing: that file is reported once more).
     # new_work_from (2.27.0): "<wrong id>:<E0001,E0002>" when reassign --new wrote new_work_id (None for new-work): a re-run of the
     # same command by this session continues only the work this marker names
 
@@ -552,16 +562,17 @@ def own_missing_artifacts(d, events, state, who):
     return out
 
 
-def note_once(d, who, missing):
-    """Inside locked(d), 2.27.0 (U12 A): the entries of `missing` ("path(Eid)") not yet reported to this session, recorded in its
-    missing_noted so show·use·SessionStart·save·skip report each one once per session. A file that comes back and goes again is
+def note_once(d, who, wid, missing):
+    """Inside locked(d), 2.27.0 (U12 A): the entries of `missing` ("path(Eid)") of work `wid` not yet reported to this session,
+    recorded in its missing_noted as "<wid>:path(Eid)" so show·use·SessionStart·save·skip report each one once per session; the
+    work id keeps another work's same path(Eid) apart (N-2). A file that comes back and goes again is
     not reported again in that session (simple rule); verify still checks every artifact."""
     if not (who and missing):
         return []
     s = session_or_new(d, *who)
-    new = [m for m in missing if m not in s["missing_noted"]]
+    new = [m for m in missing if f"{wid}:{m}" not in s["missing_noted"]]
     if new:
-        update_session(d, *who, missing_noted=s["missing_noted"] + new)
+        update_session(d, *who, missing_noted=s["missing_noted"] + [f"{wid}:{m}" for m in new])
     return new
 
 
@@ -1259,7 +1270,7 @@ def cmd_save(args):
         rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
         update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
-        missing = note_once(d, (tool, sid), own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid)))
+        missing = note_once(d, (tool, sid), wid, own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid)))
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
                       "self_quoted": self_quoted, **({"artifacts_missing": missing} if missing else {}),
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
@@ -1286,7 +1297,7 @@ def cmd_skip(args):
         if cur and work_dir(d, cur).is_dir():
             try:
                 evs, _ = read_events(work_dir(d, cur))
-                missing = note_once(d, (tool, sid), own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid)))
+                missing = note_once(d, (tool, sid), cur, own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid)))
             except (Reject, OSError, ValueError):
                 pass
     print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
@@ -1623,6 +1634,8 @@ def cmd_reassign(args):
             right = new_target_resume(d, index, who, title, wrong, ids)
             if not right:
                 slug = title_slug(title)
+                if slug == wrong:  # N-3: the clash advice below would say "reassign recipe recipe"
+                    raise Reject(f"--new 제목으로 만들 작업 id가 잘못된 작업의 id({wrong})와 같습니다. 다른 제목을 쓰세요.")
                 if slug and not slug.replace("-", "").isdigit() and slug in index["works"]:
                     raise Reject(f"--new 제목의 작업 id {slug}가 이미 있습니다(제목: {index['works'][slug]['title']}). 그 작업으로 옮기려면 "
                                  f"reassign {wrong} {slug} --events {args.events} --quote \"<원문>\", 새 작업이 맞으면 다른 제목을 쓰세요.")
@@ -1860,7 +1873,7 @@ def read_work(d, wid, title, who, **session_changes):
     newer = core_report(events)
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
-    note += artifacts_note(note_once(d, who, own_missing_artifacts(d, events, state, who)))
+    note += artifacts_note(note_once(d, who, wid, own_missing_artifacts(d, events, state, who)))
     unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
@@ -2080,7 +2093,7 @@ def injection(d, who):
             if cur:
                 events, _ = read_events(work_dir(d, cur))
                 unseen = unseen_section(d, who, cur, events)
-                missing = note_once(d, who, own_missing_artifacts(d, events, fold(events)[0], who))  # 2.27.0: inside the lock
+                missing = note_once(d, who, cur, own_missing_artifacts(d, events, fold(events)[0], who))  # 2.27.0: inside the lock
                 update_session(d, *who, seen=(cur, len(events)))
             mark_hook(d, who, "SessionStart")
     if cur:

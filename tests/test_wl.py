@@ -3523,6 +3523,25 @@ class Release2270Test(Base):
         s = json.loads(session_file(self.root, "claude_c9").read_text())
         self.assertEqual((s["turn"], s["blocked_turn"], sorted(s["hooks_seen"])), (1, 1, ["SessionStart", "Stop", "UserPromptSubmit"]))
 
+    def test_tool_guess_refused_for_read_commands(self):
+        """N-1: show·works·verify·off refuse two tool session variables the same way save·skip·use do (rc 2, nothing written);
+        with no session variable at all they still run without a session, and --tool picks one."""
+        self.ok(new_work(self.root, "t", tool="claude"))
+        both = {"CLAUDE_CODE_SESSION_ID": "c1", "PI_SESSION_ID": "p1"}
+        for argv in (["show"], ["show", "--work", "t"], ["works"], ["verify"], ["verify", "--all"], ["off", "--quote", "꺼"]):
+            r, out = self.bare(*argv, env=both)
+            self.assertEqual(r, 2, (argv, out))
+            self.assertTrue(json.loads(out)["error"].startswith("도구를 확정할 수 없습니다: CLAUDE_CODE_SESSION_ID(claude), "
+                                                                "PI_SESSION_ID(pi)가 함께 있습니다."), (argv, out))
+        self.assertFalse((self.d / "off").exists())                                    # off 거부: 표식을 쓰지 않는다
+        self.assertFalse((self.d / "sessions/claude_c1.json").exists())
+        self.assertFalse((self.d / "sessions/pi_p1.json").exists())
+        self.assertTrue(self.bare("show")[1].startswith("현재 작업 없음."))              # 세션 변수 없음: 세션 없이 읽는다
+        self.assertIsNone(json.loads(self.bare("works")[1])["current_work"])
+        self.assertTrue(self.bare("show", "--tool", "claude", env=dict(both, CLAUDE_CODE_SESSION_ID="s1"))[1].startswith("# "))
+        self.assertEqual(json.loads(self.bare("works", "--tool", "pi", env=both)[1])["current_work"], None)
+        self.assertEqual(self.bare("verify", "--work", "t", env=both)[0], 0)            # --work: 세션을 읽지 않는다
+
     # --- U12 ---
     def test_missing_noted_once_per_session(self):
         """U12 A: each session sees a missing path(Eid) once; another session's own missing file is not hidden by it; a file that
@@ -3542,8 +3561,8 @@ class Release2270Test(Base):
         self.assertNotIn("산출물 없음", run(self.root, "show", session="a")[1])
         self.assertIn("b.md(E0002)", run(self.root, "show", session="b")[1])           # 다른 세션: 자기 것은 보인다
         self.assertNotIn("산출물 없음", run(self.root, "show", session="b")[1])
-        self.assertEqual(json.loads(session_file(self.root, "codex_a").read_text())["missing_noted"], ["a.md(E0001)"])
-        self.assertEqual(json.loads(session_file(self.root, "codex_b").read_text())["missing_noted"], ["b.md(E0002)"])
+        self.assertEqual(json.loads(session_file(self.root, "codex_a").read_text())["missing_noted"], ["t:a.md(E0001)"])
+        self.assertEqual(json.loads(session_file(self.root, "codex_b").read_text())["missing_noted"], ["t:b.md(E0002)"])
         (self.root / "a.md").write_text("A 본문")
         run(self.root, "show", session="a")
         (self.root / "a.md").unlink()
@@ -3552,6 +3571,26 @@ class Release2270Test(Base):
         bad = json.loads(session_file(self.root, "codex_a").read_text())
         session_file(self.root, "codex_a").write_text(json.dumps(dict(bad, missing_noted="x")))  # 잘못된 값: 손상이 아니라 빈 목록
         self.assertIn("a.md(E0001)", run(self.root, "show", session="a")[1])
+
+    def test_missing_noted_per_work(self):
+        """N-2: the same path(Eid) in another work is reported again in the same session (the key carries the work id); an old
+        key without the work id is read without error and only reports the missing file once more."""
+        self.ok(new_work(self.root, "alpha", session="a"))
+        (self.root / "b.md").write_text("알파")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "a", "artifacts": [{"path": "b.md"}]}, session="a"))
+        (self.root / "b.md").unlink()
+        self.assertIn("b.md(E0001)", run(self.root, "show", session="a")[1])
+        self.ok(new_work(self.root, "beta", session="a"))
+        (self.root / "b.md").write_text("베타")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "b", "artifacts": [{"path": "b.md"}]}, session="a"))
+        (self.root / "b.md").unlink()
+        self.assertIn("[Worklog 산출물 없음]", run(self.root, "show", session="a")[1])    # 다른 작업의 같은 b.md(E0001)
+        self.assertNotIn("산출물 없음", run(self.root, "show", session="a")[1])
+        path = session_file(self.root, "codex_a")
+        self.assertEqual(json.loads(path.read_text())["missing_noted"], ["alpha:b.md(E0001)", "beta:b.md(E0001)"])
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), missing_noted=["b.md(E0001)"])))  # 작업 id 없는 옛 키
+        self.assertIn("b.md(E0001)", run(self.root, "show", session="a")[1])
+        self.assertEqual(json.loads(path.read_text())["missing_noted"], ["b.md(E0001)", "beta:b.md(E0001)"])
 
     def test_artifacts_gone(self):
         """U12 B′: save artifacts_gone [{path, reason}] drops recorded paths the user confirmed deleted from the list (no more
@@ -3648,6 +3687,9 @@ class Release2270Test(Base):
         self.refused(run(self.root, "reassign", extra=["recipe", "--new", " 새 작업: ", "--events", "E0001", "--quote", "q"]), "--new의 제목이 비어")
         self.refused(run(self.root, "reassign", extra=["recipe", "--new", "Memo", "--events", "E0001", "--quote", "q"]),
                      'reassign recipe memo --events E0001 --quote "<원문>"')                     # id 충돌: 그 작업으로 옮기라고 안내
+        r = run(self.root, "reassign", extra=["recipe", "--new", "Recipe", "--events", "E0001", "--quote", "q"])  # N-3: 자기 자신
+        self.refused(r, "--new 제목으로 만들 작업 id가 잘못된 작업의 id(recipe)와 같습니다. 다른 제목을 쓰세요.")
+        self.assertNotIn("reassign recipe recipe", r[1])
         self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0009", "--quote", "q"]), "작업에 없는 사건")
         self.refused(run(self.root, "reassign", extra=["recipe", "--new", "guide", "--events", "E0001"]), "사용자 원문")
         self.assertEqual(sorted(self.index()["works"]), ["memo", "recipe"])                       # 거부는 아무것도 만들지 않는다
