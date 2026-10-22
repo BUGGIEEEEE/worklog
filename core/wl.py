@@ -319,43 +319,11 @@ def manifest_entry(path, tool):
     return entry if isinstance(entry, dict) else None
 
 
-def install_report(d, tool):
-    """{"warning_install": ...} when the manifest says this tool's rules copy was made from a different adapters/rules.md.
-    A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
-    connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
-    WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
-    # 2.26.0: the home folder as a project has WL_HOME as its store, whose install.json is the user-level manifest: user scope
-    entry = None if is_wl_home(d) else manifest_entry(d / "install.json", tool)
-    user = entry is None or entry.get("scope") == "user"
-    if user:
-        entry = manifest_entry(WL_HOME / "install.json", tool)
-        if entry is None:
-            return {}
-    recorded, current = entry.get("rules_src_sha"), rules_src_sha()
-    if not (isinstance(recorded, str) and current) or recorded == current:
-        return {}
-    where = "--user" if user else f"--root {shlex.quote(str(d.parent))}"
-    return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
-                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} {where} 를 다시 실행하세요."}
-
-
 def parse_version(v):
     try:
         return tuple(int(x) for x in str(v).split("."))
     except ValueError:
         return None
-
-
-def core_report(events):
-    """{"warning_core": ...} when any event carries a `core` with a newer major or minor number than this VERSION
-    (patch differences are text-only by the numbering rule; older events without `core`, or unparsable values, never warn).
-    FORMAT is untouched, so nothing is refused."""
-    mine = parse_version(VERSION)[:2]
-    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine)[:2] > mine]
-    if not newer:
-        return {}
-    top = max(newer, key=parse_version)
-    return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
 
 
 # --- 갱신 알림 (tools/update.py가 한다. Hook은 캐시 파일만 읽고, 하루 한 번 배경 검사를 띄울 뿐 기다리지 않는다. 적용은 사용자가 `update`를 칠 때만) ---
@@ -430,6 +398,20 @@ def update_note():
             return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
         return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
     return ""
+
+
+def cmd_update(args):
+    """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
+    action = args.arg or "apply"
+    if action not in ("check", "apply", "rollback"):
+        raise Reject("update 형식: update [check|rollback] [--mode notify|off]")
+    cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
+    if args.mode:
+        cmd += ["--mode", args.mode]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
+    print(p.stdout, end="")
 
 
 # --- 연결 (2.21.0: 사용자 범위 설치에서는 new-work가 만든 .worklog/가 연결 신호다. 설치기의 --root 모드도 같은 함수를 쓴다) ---
@@ -523,20 +505,6 @@ def connect(root, tool):
     return changed, notes
 
 
-def cmd_update(args):
-    """update [check|rollback] [--mode notify|off]: runs tools/update.py and prints its JSON. Only this applies an update."""
-    action = args.arg or "apply"
-    if action not in ("check", "apply", "rollback"):
-        raise Reject("update 형식: update [check|rollback] [--mode notify|off]")
-    cmd = [sys.executable, "-B", str(UPDATE_PY), action, "--root", str(Path(args.root).resolve())]
-    if args.mode:
-        cmd += ["--mode", args.mode]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if p.returncode != 0:
-        raise Reject(f"update.py 실패: {(p.stderr or p.stdout).strip()[:300]}")
-    print(p.stdout, end="")
-
-
 ARTIFACTS_MISSING = "이 세션이 기록한 산출물이 실제 파일에 없다"
 
 
@@ -574,6 +542,53 @@ def artifacts_check(d, state):
     return {"missing": missing, "changed": changed, "checked": len(arts)}
 
 
+def hooks_note(d, who):
+    """Text warning line for use (text output) when hooks look inactive."""
+    if not who:
+        return ""
+    report = hooks_report(d, *who)
+    note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
+    if "warning_install" in report:
+        note += f"[Worklog 사본 경고] {report['warning_install']}\n"
+    if "warning_worktree" in report:
+        note += f"[Worklog worktree 경고] {report['warning_worktree']}\n"
+    return note
+
+
+# --- 진단 (save·skip·show·use 결과와 SessionStart 주입의 경고: 설치 사본·코어 버전·worktree·Hook) ---
+
+def install_report(d, tool):
+    """{"warning_install": ...} when the manifest says this tool's rules copy was made from a different adapters/rules.md.
+    A project-level install (.worklog/install.json entry with rules_src_sha) is compared there; a folder that was only
+    connected by new-work (entry with scope "user") or has no entry is compared with the user-level manifest
+    WL_HOME/install.json (2.21.0). Anything missing or broken means no warning and no error."""
+    # 2.26.0: the home folder as a project has WL_HOME as its store, whose install.json is the user-level manifest: user scope
+    entry = None if is_wl_home(d) else manifest_entry(d / "install.json", tool)
+    user = entry is None or entry.get("scope") == "user"
+    if user:
+        entry = manifest_entry(WL_HOME / "install.json", tool)
+        if entry is None:
+            return {}
+    recorded, current = entry.get("rules_src_sha"), rules_src_sha()
+    if not (isinstance(recorded, str) and current) or recorded == current:
+        return {}
+    where = "--user" if user else f"--root {shlex.quote(str(d.parent))}"
+    return {"warning_install": f"규칙 사본이 설치 당시(v{entry.get('version') or '?'})와 다릅니다(코어 {VERSION}). "
+                               f"python3 -B {shlex.quote(str(INSTALLER))} --tool {tool} {where} 를 다시 실행하세요."}
+
+
+def core_report(events):
+    """{"warning_core": ...} when any event carries a `core` with a newer major or minor number than this VERSION
+    (patch differences are text-only by the numbering rule; older events without `core`, or unparsable values, never warn).
+    FORMAT is untouched, so nothing is refused."""
+    mine = parse_version(VERSION)[:2]
+    newer = [ev["core"] for ev in events if (parse_version(ev.get("core")) or mine)[:2] > mine]
+    if not newer:
+        return {}
+    top = max(newer, key=parse_version)
+    return {"warning_core": f"이 기록은 코어 {top}이 썼습니다(현재 {VERSION}). 코어를 갱신하세요."}
+
+
 def worktree_report(d):
     """{"warning_worktree": ...} when the project root is a git worktree (.git is a file, not a directory): its ledger diverges from the main checkout."""
     return {"warning_worktree": WORKTREE_WARNING} if (d.parent / ".git").is_file() else {}
@@ -598,19 +613,6 @@ def hooks_report(d, tool, sid):
     out.update(install_report(d, tool))
     out.update(worktree_report(d))
     return out
-
-
-def hooks_note(d, who):
-    """Text warning line for use (text output) when hooks look inactive."""
-    if not who:
-        return ""
-    report = hooks_report(d, *who)
-    note = f"[Worklog Hook 경고] {HOOK_WARNING}\n" if "warning" in report else ""
-    if "warning_install" in report:
-        note += f"[Worklog 사본 경고] {report['warning_install']}\n"
-    if "warning_worktree" in report:
-        note += f"[Worklog worktree 경고] {report['warning_worktree']}\n"
-    return note
 
 
 # --- 작업 목록 (index.json) ---
@@ -1157,6 +1159,30 @@ def cmd_save(args):
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]],
                       "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d),
                       **core_report(events), **hooks_report(d, tool, sid)}, ensure_ascii=False))
+
+
+def cmd_skip(args):
+    """Read-only turn: skipped_turn = turn. Writes nothing to the ledger."""
+    if not str(args.arg or "").strip():
+        raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
+    d = store(args.root)
+    tool, sid = identity(args)
+    if not connected(d):
+        print(json.dumps({"ok": True, "turn": 0}))
+        return
+    with locked(d):
+        s = session_or_new(d, tool, sid)
+        turn = s["turn"]
+        update_session(d, tool, sid, skipped_turn=turn)
+        missing, cur = [], s.get("current_work")
+        if cur and work_dir(d, cur).is_dir():
+            try:
+                evs, _ = read_events(work_dir(d, cur))
+                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
+            except (Reject, OSError, ValueError):
+                pass
+    print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
+                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 # --- 작업 선택 ---
@@ -2059,30 +2085,6 @@ def cmd_stop_hook(args):
     skip = f'python3 -B {q(str(Path(__file__).resolve()))} skip "이유" --tool {q(who[0])} --session {q(who[1])} --root {q(str(d.parent))}'
     answer(True, "Worklog: 이번 턴에 save가 없습니다. 기록할 것이 있으면 save, "
                  f"읽기 전용 턴이거나 작업이 지정되지 않았으면 `{skip}`를 실행한 뒤 마치세요.")
-
-
-def cmd_skip(args):
-    """Read-only turn: skipped_turn = turn. Writes nothing to the ledger."""
-    if not str(args.arg or "").strip():
-        raise Reject('skip에는 이유가 필요합니다: wl.py skip "읽기 전용: 질문에 답만 함"')
-    d = store(args.root)
-    tool, sid = identity(args)
-    if not connected(d):
-        print(json.dumps({"ok": True, "turn": 0}))
-        return
-    with locked(d):
-        s = session_or_new(d, tool, sid)
-        turn = s["turn"]
-        update_session(d, tool, sid, skipped_turn=turn)
-        missing, cur = [], s.get("current_work")
-        if cur and work_dir(d, cur).is_dir():
-            try:
-                evs, _ = read_events(work_dir(d, cur))
-                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
-            except (Reject, OSError, ValueError):
-                pass
-    print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
-                      **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
 
 def main(argv=None):
