@@ -1822,11 +1822,11 @@ def cmd_show(args):
     if not connected(d):  # 2.26.0: the hook's NOT_CONNECTED line (root·auto·git and what to do), after the plain first line
         print(not_connected_text(args, d, "show"))
         return
+    who = try_identity(args)  # N-1 (2.27.0): before the no-work text, so two tool session variables are refused with or without works
     index = load_index(d)
     if not index or not index["works"]:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
         print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
         return
-    who = try_identity(args)
     wid = args.work or current_work(d, who, index)
     if not wid:
         print(off_note(d) + "현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"

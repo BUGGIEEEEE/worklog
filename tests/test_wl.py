@@ -3526,8 +3526,11 @@ class Release2270Test(Base):
     def test_tool_guess_refused_for_read_commands(self):
         """N-1: show·works·verify·off refuse two tool session variables the same way save·skip·use do (rc 2, nothing written);
         with no session variable at all they still run without a session, and --tool picks one."""
-        self.ok(new_work(self.root, "t", tool="claude"))
         both = {"CLAUDE_CODE_SESSION_ID": "c1", "PI_SESSION_ID": "p1"}
+        self.d.mkdir()                                                                  # 작업 없는 연결 폴더
+        self.assertTrue(json.loads(self.bare("show", env=both)[1])["error"].startswith("도구를 확정할 수 없습니다"))  # 작업 없음 안내보다 먼저
+        self.assertTrue(self.bare("show", env={"PI_SESSION_ID": "p1"})[1].startswith("Worklog 작업 없음."))           # 하나면 안내
+        self.ok(new_work(self.root, "t", tool="claude"))
         for argv in (["show"], ["show", "--work", "t"], ["works"], ["verify"], ["verify", "--all"], ["off", "--quote", "꺼"]):
             r, out = self.bare(*argv, env=both)
             self.assertEqual(r, 2, (argv, out))
