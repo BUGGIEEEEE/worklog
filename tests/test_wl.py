@@ -3763,3 +3763,14 @@ class Release2270Test(Base):
         self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["works"][0]["artifacts"]["gone"], ["b.md(E0003)", "c.md(E0003)"])
         self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": "./b.md"}], "check": {"C1": "미반영: x"}}))
         self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["c.md(E0003)"])  # ./b.md로 다시 기록: 같은 파일
+
+    def test_verify_gone_absolute_path_recorded_again(self):
+        """fix2: verify's gone list compares with path_key too, so a gone file recorded again by its absolute path leaves it."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        (self.root / "b.md").write_text("본문")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s", "artifacts": [{"path": "b.md"}]}))
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "지움", "artifacts_gone": [{"path": "b.md", "reason": "사용자 확인"}]}))
+        self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["b.md(E0003)"])
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": str(self.root / "b.md")}]}))
+        self.assertNotIn("gone", self.ok(run(self.root, "verify"))["artifacts"])

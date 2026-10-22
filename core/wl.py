@@ -1100,10 +1100,10 @@ def gone_artifacts(p, root, state):
     return gone
 
 
-def gone_list(events, state):
+def gone_list(events, state, root):
     """verify (2.27.0): ["path(Eid)"] of artifacts recorded as gone (Eid = the event that recorded it), except a path recorded
     again afterwards."""
-    key = os.path.normpath  # N03: ./b.md recorded again after b.md went is the same file (no root here: relative spellings)
+    key = lambda x: path_key(root, x)  # N03: ./b.md or the absolute path recorded again after b.md went is the same file
     live, out = {key(a["path"]) for a in state["artifacts"]}, {}
     for ev in events:
         for g in (ev.get("changes") or {}).get("artifacts_gone") or []:
@@ -1872,7 +1872,7 @@ def check_work(d, wid, title):
     events, _ = read_events(wd)
     state, _ = fold(events)
     ok_json, ok_md = projection_ok(wd, state, wid, title, events)
-    arts, gone = artifacts_check(d, state), gone_list(events, state)
+    arts, gone = artifacts_check(d, state), gone_list(events, state, d.parent)
     if gone:  # 2.27.0: shown apart from missing, only when there is one (older results unchanged)
         arts["gone"] = gone
     return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
