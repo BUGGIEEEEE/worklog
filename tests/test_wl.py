@@ -3527,6 +3527,8 @@ class Release2270Test(Base):
         """N-1: show·works·verify·off refuse two tool session variables the same way save·skip·use do (rc 2, nothing written);
         with no session variable at all they still run without a session, and --tool picks one."""
         both = {"CLAUDE_CODE_SESSION_ID": "c1", "PI_SESSION_ID": "p1"}
+        r, out = self.bare("show", env=both)                                            # 미연결 폴더: 세션을 읽지 않아 예외(안내)
+        self.assertEqual((r, "NOT_CONNECTED" in out, "도구를 확정할 수 없습니다" in out), (0, True, False), out)
         self.d.mkdir()                                                                  # 작업 없는 연결 폴더
         self.assertTrue(json.loads(self.bare("show", env=both)[1])["error"].startswith("도구를 확정할 수 없습니다"))  # 작업 없음 안내보다 먼저
         self.assertTrue(self.bare("show", env={"PI_SESSION_ID": "p1"})[1].startswith("Worklog 작업 없음."))           # 하나면 안내
