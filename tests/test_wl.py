@@ -3925,7 +3925,8 @@ class Release2280Test(Base):
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
         for bad in ("2026-10-23 10:00:00", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", "2026-13-01T00:00:00Z", "어제"):
             self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", bad]), "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)")
-        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", self.ts_ago(-3600)]), "미래 시각")
+        for ahead in (3600, 30):                                                 # 유예 없음: 지금보다 뒤면 거부
+            self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", self.ts_ago(-ahead)]), "--ts가 미래 시각입니다")
         self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y", "refs": [{"occurred_at": self.ts_ago(60)}]}),
                      "save --ts")
         self.assertEqual(len(self.events()), 1)
@@ -3963,6 +3964,29 @@ class Release2280Test(Base):
         self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "q", "decisions": [{"text": "c", "replaces": "D1"}]}))
         self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "q", "decisions": [{"text": "d", "replaces": "D1"}]},
                          extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")  # z 앞이면 z의 대상을 빼앗고, 뒤면 D1이 이미 대체됐다: 어느 쪽이든 거부
+
+    def test_archive_reports_the_folded_status(self):
+        """archive/reopen answer with the status the fold gives: unchanged JSON when it is the one asked for, ok:false with the
+        real status when a later-dated event (an occurred_at after now, from a clock set back) overrides it."""
+        wl = load_wl()
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        self.assertEqual(self.ok(run(self.root, "archive", extra=["t"])), {"ok": True, "work": "t", "status": "COMPLETED", "saved": "E0002", "seq": 2})
+        self.assertEqual(self.ok(run(self.root, "reopen", extra=["t"])), {"ok": True, "work": "t", "status": "ACTIVE", "saved": "E0003", "seq": 3})
+        path = self.d / "works/t/events.jsonl"
+        prev = wl.sha(path.read_bytes().splitlines()[-1])
+        ev = wl.new_event(self.events(), prev, "CHECKPOINT", "codex", "s1", "미래 시각 사건", None,
+                          [{"occurred_at": "2099-01-01T00:00:00Z"}], {"status": "PAUSED"})
+        with open(path, "ab") as f:
+            f.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+        self.assertEqual(run(self.root, "show")[0], 0)
+        self.assertEqual(self.state()["status"], "PAUSED")
+        r, out = run(self.root, "archive", extra=["t"])
+        self.assertEqual(r, 2, out)
+        self.assertEqual(json.loads(out), {"ok": False, "work": "t", "status": "PAUSED", "requested": "COMPLETED", "saved": "E0005", "seq": 5,
+                                           "error": "상태를 바꾸지 못했습니다: 실제 PAUSED"})
+        self.assertEqual((self.state()["status"], len(self.events())), ("PAUSED", 5))  # 사건은 남고 응답만 사실대로
+        self.assertEqual(json.loads((self.d / "index.json").read_text())["works"]["t"]["status"], "PAUSED")
 
     # --- U21 ---
     def show_json(self, *extra, session="s1"):

@@ -1263,11 +1263,12 @@ def check_quotes(p, arts, bodies, state):
 
 
 TS_FORMAT = "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)"
-TS_FUTURE = 60  # seconds of clock difference save --ts allows
 
 
 def import_ts(value):
-    """2.28.0 (U20): the checked `save --ts` value (None without it). Only now()'s UTC form, a real date, not in the future."""
+    """2.28.0 (U20): the checked `save --ts` value (None without it). Only now()'s UTC form, a real date, not after now: an
+    imported event later than the save would sort after events appended after it, e.g. after an archive that then reports a
+    status the ledger does not have."""
     if value is None:
         return None
     try:
@@ -1276,7 +1277,7 @@ def import_ts(value):
         raise Reject(TS_FORMAT)
     if not STAMP.fullmatch(value):
         raise Reject(TS_FORMAT)
-    if at > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=TS_FUTURE):
+    if at > datetime.datetime.now(datetime.timezone.utc):
         raise Reject(f"--ts가 미래 시각입니다({value}, 지금 {now()}). 가져오는 사건이 실제로 일어난 UTC 시각을 넣으세요.")
     return value
 
@@ -1541,8 +1542,12 @@ def set_status(args, status, summary):
             raise Reject(f"작업 {wid}는 이미 {status}입니다.")
         events, prev = read_events(work_dir(d, wid))
         ev = new_event(events, prev, "CHECKPOINT", tool, sid, summary, None, [], {"status": status})
-        commit(d, index, wid, ev)
+        rebuilt = commit(d, index, wid, ev)
         mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])  # 최신을 보던 세션은 자기 사건 뒤도 최신
+    if rebuilt["status"] != status:  # 2.28.0: the status the fold gives, not the one asked for (a later-dated event can override it)
+        print(json.dumps({"ok": False, "work": wid, "status": rebuilt["status"], "requested": status, "saved": ev["id"], "seq": ev["seq"],
+                          "error": f"상태를 바꾸지 못했습니다: 실제 {rebuilt['status']}"}, ensure_ascii=False))
+        sys.exit(2)
     print(json.dumps({"ok": True, "work": wid, "status": status, "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
 
 
