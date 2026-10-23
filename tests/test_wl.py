@@ -3919,6 +3919,41 @@ class Release2280Test(Base):
         evs[1]["refs"] = [{"occurred_at": "2026-10-23T10:00:01Z"}]
         self.assertEqual(wl.fold(evs)[0]["next_action"], "a")                        # 정확한 형식이면 그 시각으로 끼어든다
 
+    def test_unseen_order_knows_the_events_seen(self):
+        """The unseen list is the whole ledger in time order, filtered by append position: E0001 at 10 s (seen), E0002 at 5 s (clock
+        set back), E0003 imported at 6 s fold as E3, E1, E2, so the reader who saw E1 gets E3 before E2 in show, show --json and SessionStart."""
+        wl = load_wl()
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "첫째", "quote": "q"}))
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "둘째"}))
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "셋째"}, extra=["--ts", self.ts_ago(60)]))
+        path, prev, lines = self.d / "works/t/events.jsonl", None, []
+        events = self.events()
+        for ev, at in zip(events, ("2026-01-01T00:00:10Z", "2026-01-01T00:00:05Z", "2026-01-01T00:00:11Z")):
+            ev["at"], ev["prev"] = at, prev
+            line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+            lines.append(line)
+            prev = wl.sha(line)
+        events[2]["refs"] = [{"occurred_at": "2026-01-01T00:00:06Z"}]
+        lines[2] = json.dumps(events[2], ensure_ascii=False, separators=(",", ":")).encode()
+        path.write_bytes(b"\n".join(lines) + b"\n")
+        self.assertEqual(wl.time_order(wl.read_events(self.d / "works/t")[0]), [2, 0, 1])
+        self.assertEqual(run(self.root, "show")[0], 0)                                     # 투영 복구(s1)
+        sess = self.d / "sessions/codex_s2.json"
+        saw_one = sess.read_bytes()
+        self.assertEqual(json.loads(saw_one)["last_seen"]["t"], 1)
+        r, text = run(self.root, "show", session="s2")
+        sect = text.split("## 이 세션이 아직 못 본 사건 (seq 2~3)\n")[1].splitlines()
+        self.assertTrue(sect[0].startswith("- E0003") and sect[1].startswith("- E0002"), sect)
+        sess.write_bytes(saw_one)
+        out = self.show_json(session="s2")
+        self.assertEqual([x["id"] for x in out["unseen"]], ["E0003", "E0002"])
+        sess.write_bytes(saw_one)
+        r, out = hook(self.root, "hook", session="s2", tool="codex")
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"].split("## 이 세션이 아직 못 본 사건 (seq 2~3)\n")[1].splitlines()
+        self.assertTrue(ctx[0].startswith("- E0003") and ctx[1].startswith("- E0002"), ctx)
+
     def test_fixture_ledgers_fold_unchanged(self):
         """Ledgers without occurred_at keep their projections byte for byte (fixture sample-v2, two works)."""
         wl = load_wl()

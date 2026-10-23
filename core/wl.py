@@ -1970,15 +1970,15 @@ def cmd_show(args):
 
 
 def unseen_events(d, who, wid, events):
-    """(seen seq, the events after it in time order). The set is by append position (last_seen); 2.28.0 (U19) only the order is by time."""
+    """(seen seq, the events after it in time order). The set is by append position (last_seen); 2.28.0 (U19) only the order is by time.
+    The whole ledger is ordered, then filtered: time_order of the tail alone would not know the latest at of the events seen."""
     if not who or not events:
         return 0, []
     try:
         seen = ((load_session(d, *who) or {}).get("last_seen") or {}).get(wid) or 0
     except SessionCorrupt:
         seen = 0
-    rest = events[seen:]
-    return seen, [rest[i] for i in time_order(rest)]
+    return seen, [events[i] for i in time_order(events) if i >= seen]
 
 
 def imported_mark(e):
