@@ -1082,7 +1082,7 @@ class UpdateTest(Base):
         self.home_write("config.json", {"update": "notify"})
         self.home_write("update.json", {"checked_at": wl.now(), "latest": "9.9.0", "current": wl.VERSION})
         ctx = self.ctx(tool="codex", env=self.env)
-        self.assertIn("[Worklog 갱신 안내] 새 버전 v9.9.0", ctx)
+        self.assertIn("[Worklog 갱신 안내] v9.9.0 사용 가능", ctx)  # 2.28.0 (U17) 문구
         self.assertIn("wl.py update", ctx.split("\n")[2])
         self.home_write("update.json", {"checked_at": wl.now(), "latest_major": "10.0.0", "current": wl.VERSION})
         self.assertIn("새 주 버전 v10.0.0", self.ctx(tool="codex", env=self.env))
@@ -3970,3 +3970,86 @@ class Release2280Test(Base):
         self.assertEqual((j["work"], j["works"]), (None, self.ok(run(self.root, "works", session="other"))["works"]))  # works 명령과 같은 목록
         self.assertEqual(sorted(w["id"] for w in j["works"]), ["t", "u"])
         self.assertEqual(self.show_json("--work", "t", session="other")["work"], "t")
+
+    # --- U22·U17 ---
+    def note_with(self, files):
+        """update_note() with a WL_HOME holding these JSON files (str value = raw text)."""
+        wl, home = load_wl(), Path(tempfile.mkdtemp())
+        for name, value in files.items():
+            (home / name).write_text(value if isinstance(value, str) else json.dumps(value))
+        with mock.patch.object(wl, "WL_HOME", home):
+            return wl, wl.update_note()
+
+    def test_module_update_lines(self):
+        cfg = {"update": "notify"}
+        cache = {"checked_at": "2026-10-23T00:00:00Z", "modules": {
+            "worklog-mods": {"current": "0.1.0", "latest": "0.2.0", "error": None},
+            "worklog-jev": {"current": "1.0.0", "latest": "1.0.0", "error": None},
+            "worklog-scan": {"current": "0.1.0", "latest": "0.9.0", "error": None}}}           # scan은 modules.json에 없다
+        reg = {"worklog-mods": {"version": "0.1.0", "source": "https://github.com/BUGGIEEEEE/worklog-mods", "installed_at": "x"},
+               "worklog-jev": {"version": "1.0.0", "source": "https://github.com/BUGGIEEEEE/worklog-jev"}, "other": {"version": "9.0.0"}}
+        _, note = self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})
+        self.assertEqual(note, "[Worklog 갱신 안내] 모듈 worklog-mods v0.2.0 사용 가능(현재 v0.1.0). 에이전트는 자동 갱신하지 않는다. "
+                               "사용자가 그 모듈의 설치기로 갱신한다.\n")
+        reg["worklog-mods"]["version"] = "0.2.0"                                                      # 검사 뒤에 갱신한 모듈: 안내 없음
+        self.assertEqual(self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})[1], "")
+        for broken in (None, "{", "[]", json.dumps({"worklog-mods": "0.1.0"}), json.dumps({"worklog-mods": {"version": "v0.1"}})):
+            files = {"config.json": cfg, "update.json": cache, **({"modules.json": broken} if broken is not None else {})}
+            self.assertEqual(self.note_with(files)[1], "", broken)                                   # 없음·깨짐: 조용히 무시
+        reg["worklog-mods"]["version"] = "0.1.0"
+        cache["latest"] = "99.0.0"
+        wl, note = self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})
+        core, mod = note.splitlines()                                                                 # 코어 안내 뒤에 모듈 줄
+        self.assertTrue(core.startswith("[Worklog 갱신 안내] v99.0.0 사용 가능") and "모듈 worklog-mods" in mod, note)
+        self.assertEqual(self.note_with({"config.json": {"update": "off"}, "update.json": cache, "modules.json": reg})[1], "")
+
+    def test_core_update_line_wording(self):
+        """U17: [Worklog …] head and one thing to do, for the new version, applied, major and failure lines."""
+        wl, note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0"}})
+        cmd = f"python3 -B {shlex.quote(str(WL.resolve()))} update"
+        changelog = WL.resolve().parents[1] / "CHANGELOG.md"
+        self.assertEqual(note, f"[Worklog 갱신 안내] v99.0.0 사용 가능(현재 {wl.VERSION}). 바뀐 것: {changelog} 99.0.0 절. "
+                               f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
+        note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0", "error": "e"}})[1]
+        self.assertEqual(note, f"[Worklog 갱신 실패] v99.0.0 갱신 실패: e. 에이전트는 다시 시도하지 않는다. 사용자가 원인을 확인한 뒤 실행: {cmd}\n")
+        note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest_major": "100.0.0"}})[1]
+        self.assertIn("새 주 버전 v100.0.0 사용 가능", note)
+        self.assertIn("에이전트는 자동 갱신하지 않는다. 사용자가", note)
+        note = self.note_with({"config.json": {"update": "notify"},
+                               "update.json": {"applied": {"from": "0.0.1", "to": wl.VERSION, "at": wl.now()}}})[1]
+        self.assertTrue(note.startswith(f"[Worklog 갱신] 코어를 v0.0.1에서 v{wl.VERSION}으로 갱신했다(") and note.endswith(f"{cmd} rollback\n"), note)
+
+    def load_update(self, home):
+        spec = importlib.util.spec_from_file_location("wl_update", WL.parents[1] / "tools/update.py")
+        mod = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"WL_HOME": str(home)}):
+            spec.loader.exec_module(mod)
+        return mod
+
+    def test_update_py_checks_module_tags(self):
+        home = Path(tempfile.mkdtemp())
+        up = self.load_update(home)
+        self.assertEqual(up.check_modules(), {})                                                      # modules.json 없음
+        (home / "modules.json").write_text("{")
+        self.assertEqual(up.check_modules(), {})                                                      # 깨짐
+        src = lambda n: f"https://github.com/BUGGIEEEEE/{n}"
+        (home / "modules.json").write_text(json.dumps({
+            "worklog-mods": {"version": "0.1.0", "source": src("worklog-mods")}, "worklog-jev": {"version": "1.0.0", "source": src("worklog-jev")},
+            "worklog-scan": {"version": "0.1.0", "source": "file:///tmp/x"}, "worklog-global": "broken", "other": {"version": "1.0.0", "source": src("o")}}))
+        asked = []
+        def fake_git(*args, timeout=None):
+            asked.append(args)
+            if args[-1] == src("worklog-jev"):
+                return 128, "", "fatal: unable to access\n"
+            return 0, "a\trefs/tags/v0.1.0\nb\trefs/tags/v0.10.0\nc\trefs/tags/0.2.0\nd\trefs/tags/v1.0.0-rc1\ne\trefs/tags/nightly\n", ""
+        with mock.patch.object(up, "git", fake_git):
+            found = up.check_modules()
+            with mock.patch.object(up, "is_clone", lambda: False):
+                cache = up.check()
+        self.assertEqual(found, {"worklog-mods": {"current": "0.1.0", "latest": "0.10.0", "error": None},
+                                 "worklog-jev": {"current": "1.0.0", "latest": None, "error": "git ls-remote 실패: fatal: unable to access"},
+                                 "worklog-scan": {"current": "0.1.0", "latest": None, "error": "source가 https:// 주소가 아니다"}})
+        self.assertEqual([a[:3] for a in asked[:2]], [("ls-remote", "--tags", "--refs")] * 2)          # https 두 개만 물었다
+        self.assertEqual(len(asked), 4)
+        self.assertEqual(cache["modules"], found)                                                     # check()·background의 캐시에 들어간다
+        self.assertEqual(json.loads((home / "update.json").read_text())["modules"], found)

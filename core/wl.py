@@ -419,24 +419,58 @@ def spawn_update_check():
 
 
 def update_note():
-    """One line for the SessionStart injection, from the cache file only (no network)."""
+    """SessionStart lines from the cache file only (no network): the core line, then one line per module with a newer tag (2.28.0, U22).
+    2.28.0 (U17): every line is a [Worklog …] head and one thing to do; the agent never updates on its own."""
     cache, mode = home_json("update.json"), update_mode()
     if mode == "off" or not cache:
         return ""
+    return core_update_line(cache) + module_update_lines(cache)
+
+
+def core_update_line(cache):
     cmd = f"python3 -B {shlex.quote(str(Path(__file__).resolve()))} update"
+    changelog = UPDATE_PY.parents[1] / "CHANGELOG.md"
     applied = cache.get("applied") or {}
     if isinstance(applied, dict) and applied.get("to") == VERSION and recent(applied.get("at")):
         return (f"[Worklog 갱신] 코어를 v{applied.get('from')}에서 v{VERSION}으로 갱신했다({applied.get('at')}). "
-                f"변경 내용: {UPDATE_PY.parents[1] / 'CHANGELOG.md'}. 되돌리기: {cmd} rollback\n")
+                f"바뀐 것: {changelog} {VERSION} 절. 되돌리려면 사용자가 실행: {cmd} rollback\n")
     if cache.get("latest_major"):
-        return (f"[Worklog 갱신 안내] 새 주 버전 v{cache['latest_major']}이 있다(현재 {VERSION}). 기록 구조가 바뀌므로 자동 갱신하지 않는다. "
-                "CHANGELOG의 마이그레이션 안내를 읽고 사용자가 직접 진행한다.\n")
+        return (f"[Worklog 갱신 안내] 새 주 버전 v{cache['latest_major']} 사용 가능(현재 {VERSION}). 기록 구조가 바뀐다. "
+                f"에이전트는 자동 갱신하지 않는다. 사용자가 {changelog}의 마이그레이션 안내를 따라 직접 옮긴다.\n")
     latest = cache.get("latest")
     if latest and (parse_version(latest) or (0,)) > (parse_version(VERSION) or (0,)):
         if cache.get("error"):
-            return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
-        return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
+            return (f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 에이전트는 다시 시도하지 않는다. "
+                    f"사용자가 원인을 확인한 뒤 실행: {cmd}\n")
+        return (f"[Worklog 갱신 안내] v{latest} 사용 가능(현재 {VERSION}). 바뀐 것: {changelog} {latest} 절. "
+                f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
     return ""
+
+
+MODULES = ("worklog-mods", "worklog-jev", "worklog-global", "worklog-scan")  # 2.28.0 (U22): extension modules the update check knows
+
+
+def installed_modules():
+    """WL_HOME/modules.json (written by the module installers, read only here): {name: version} of the known modules.
+    A missing or broken file, or a broken entry, is ignored."""
+    reg = home_json("modules.json")
+    return {n: reg[n]["version"] for n in MODULES
+            if isinstance(reg.get(n), dict) and isinstance(reg[n].get("version"), str) and parse_version(reg[n]["version"])}
+
+
+def module_update_lines(cache):
+    """One line per installed module whose latest tag (cache "modules", written by update.py) is newer than the version in
+    modules.json now — a module updated since the last check is not announced again."""
+    found = cache.get("modules")
+    if not isinstance(found, dict):
+        return ""
+    out = ""
+    for name, current in installed_modules().items():
+        latest = (found.get(name) or {}).get("latest") if isinstance(found.get(name), dict) else None
+        if isinstance(latest, str) and (parse_version(latest) or (0,)) > parse_version(current):
+            out += (f"[Worklog 갱신 안내] 모듈 {name} v{latest} 사용 가능(현재 v{current}). 에이전트는 자동 갱신하지 않는다. "
+                    "사용자가 그 모듈의 설치기로 갱신한다.\n")
+    return out
 
 
 def cmd_update(args):
