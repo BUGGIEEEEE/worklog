@@ -4,6 +4,34 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Fork-session rule, `reassign --new`, tool-identity refusal, `artifacts_gone` (2.27.0, 2026-10-23, 11 adopted cells across four tools)
+
+2.27.0 ships five update-list items (U16 tool-identity refusal, U12 once-per-session missing notice + `artifacts_gone`, U11 decision reason, U15 `reassign --new`, U14 fork-session rule) plus the fixes from two independent reviews (GPT astra, seven reports; Claude opus as the second reviewer). Unit tests: 166 on Python 3.14.7 and 3.9.6, exit 0. The M harness (`run_m.py`) now distinguishes *unreadable* commands (command substitution, loops, variable heads, stdin interpreters) from rule violations: such items are `unknown` and need a human look instead of being counted as pass or fail; agy and pi never record commands, so their call counts are always `unknown`. Each adopted cell below was judged by a human against the raw calls and the ledger. Full table: [m-20261023-v2270](verification/m-20261023-v2270.md).
+
+| Run | low model | high model | what is judged |
+|---|---|---|---|
+| M15 fork session, claude | PASS 11.5 s (sonnet 5.5; judge FAIL: the question sat in the message before `skip`) | PASS 12.4 s (opus 5.5) | parent turn saves; the fork answers, asks once at the end, skips; resumed with `recipe 이어서` it uses and saves once |
+| M15 fork session, codex | PASS 20.0 s (luna; second run, the first recorded a BLOCKER instead of the content) | PASS 20.5 s (sol 6.1) | same |
+| M17 `reassign --new`, claude | PASS 11.7 s (sonnet) | PASS 19.0 s (opus; judge `unknown`: a `$W` variable head) | T1 saves into recipe; T2 one `reassign recipe --new guide`, `[misfiled → guide]`/`[refiled ← recipe]`, texts moved, guide's goal set, current work guide, `verify --all` ok |
+| M17 `reassign --new`, codex | PASS 9.5 s (luna; second run, the first skipped the T1 save) | PASS 14.9 s (sol) | same |
+| M17 `reassign --new`, agy | PASS 124+132 s (3.8 flash, temporary HOME; judge FAIL: a decision replaced inside T1 was counted as "not moved") | not run (argon: quota exhausted) | same, commands read from the agy transcript |
+| M17 `reassign --new`, pi | PASS 14+10 s (luna via proxy) | PASS 27+14 s (sol 6.1) | same, commands read from the pi session file |
+
+Two harness findings are recorded rather than fixed: the judge reads only the last message when looking for the fork question, and it counts decisions replaced within the first turn as unmoved. A test-isolation defect was found and documented: with `--setting-sources project,local`, `claude -p` still reads CLAUDE.md files from ancestor folders, so a test project under `$HOME` picks up the user-level Worklog block (one cell called the 2.26.1 core); the claude cells were re-run from `/private/tmp`.
+
+2.27.0은 갱신 목록 다섯 항목(U16 도구 판정 거부, U12 누락 안내 세션당 1회 + `artifacts_gone`, U11 결정 이유, U15 `reassign --new`, U14 fork 세션 규칙)과 독립 검증 두 계열(GPT astra 보고 7회, Claude opus 2차)의 수정을 담는다. 단위 테스트 166건, Python 3.14.7·3.9.6 exit 0. M 실행기(`run_m.py`)는 이제 *판독 불가* 명령(명령 치환·반복문·변수 머리·stdin 인터프리터)을 규칙 위반과 구분한다. 그런 항목은 `unknown`으로 두고 사람이 보며, 합격·실패로 세지 않는다. agy·pi는 명령을 기록하지 않아 호출 횟수가 항상 `unknown`이다. 아래 채택 셀은 모두 사람이 원 호출과 원장을 대조해 판정했다. 전체 표: [m-20261023-v2270](verification/m-20261023-v2270.md).
+
+| 회차 | 낮은 모델 | 높은 모델 | 판정 내용 |
+|---|---|---|---|
+| M15 fork 세션, claude | PASS 11.5초 (sonnet 5.5; 판정기 FAIL: 질문이 `skip` 앞 메시지에 있음) | PASS 12.4초 (opus 5.5) | 부모 턴 save; 곁가지는 답하고 끝에 1회 묻고 skip; `recipe 이어서`로 재개하면 use 뒤 save 1회 |
+| M15 fork 세션, codex | PASS 20.0초 (luna; 2회차, 1회차는 내용 대신 BLOCKER 기록) | PASS 20.5초 (sol 6.1) | 같음 |
+| M17 `reassign --new`, claude | PASS 11.7초 (sonnet) | PASS 19.0초 (opus; 판정기 `unknown`: `$W` 변수 머리) | T1은 recipe에 save; T2는 `reassign recipe --new guide` 1회, `[misfiled → guide]`/`[refiled ← recipe]`, 텍스트 이동, guide goal 설정, 현재 작업 guide, `verify --all` ok |
+| M17 `reassign --new`, codex | PASS 9.5초 (luna; 2회차, 1회차는 T1 save 누락) | PASS 14.9초 (sol) | 같음 |
+| M17 `reassign --new`, agy | PASS 124+132초 (3.8 flash, 임시 HOME; 판정기 FAIL: T1 안에서 대체된 결정을 "안 옮김"으로 셈) | 미실행 (argon: quota 소진) | 같음, 명령은 agy 대화 기록에서 확인 |
+| M17 `reassign --new`, pi | PASS 14+10초 (luna, 프록시) | PASS 27+14초 (sol 6.1) | 같음, 명령은 pi 세션 파일에서 확인 |
+
+실행기 한계 두 가지는 고치지 않고 기록한다: fork 질문을 마지막 메시지에서만 찾는 점, 첫 턴 안에서 대체된 결정을 안 옮긴 것으로 세는 점. 시험 격리 결함도 찾아 기록했다: `--setting-sources project,local`로도 `claude -p`는 조상 폴더의 CLAUDE.md를 읽으므로 `$HOME` 아래 시험 프로젝트는 사용자 수준 Worklog 블록을 함께 읽는다(한 셀은 2.26.1 코어를 호출). claude 셀은 `/private/tmp`에서 다시 돌렸다.
+
 ## Reassign order reversal, source-aware dedupe, hooks null, artifacts_moved (2.26.0, 2026-10-21/22, 6 model runs + 2 re-runs)
 
 2.26.0 closes the findings left by the independent review of 2.25.0 (F03–F09) and adds the decisions taken on them. `reassign` now writes the correct work first and refers to the real event id of the other side, resumes from whatever steps are already on disk (refiled → refiled_state → misfiled → misfiled_state → session) and reports a partial run as JSON with exit 2; a 2.25.0 partial whose predicted id turned out wrong gets one correction event (`corrected_ref`), a ledger that cannot be read makes the double-refile check refuse instead of skipping it, and a batch that carries the same text from a model and a user source keeps the user source. The same-turn second `new-work` is refused at turn 0 too, a SessionStart after a prompt or Stop is injected again even inside the 5-second window, the first connected turn's save reports `hooks` as null with a `notice`, `save` accepts `artifacts_moved {old: new}` (whole mapping at once, cycles refused), `SAVE_HELP` got its dropped guidance back (3,100 → 3,426 bytes), and `show` in an unconnected or empty folder uses the same function as the hook. FORMAT states the optional-field policy (readers 2.25.0+, same-day update when the ledger is shared through git, rollback to 2.25.0 or later, 2.26.0 or later once `artifacts_moved` was used); the format number stays worklog/2. Runs are isolated (temporary `WL_HOME`, `--isolate-claude`, `--codex-home`), one per cell, models at their defaults.
