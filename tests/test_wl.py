@@ -3921,3 +3921,52 @@ class Release2280Test(Base):
         self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "q", "decisions": [{"text": "c", "replaces": "D1"}]}))
         self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "q", "decisions": [{"text": "d", "replaces": "D1"}]},
                          extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")  # z 앞이면 z의 대상을 빼앗고, 뒤면 D1이 이미 대체됐다: 어느 쪽이든 거부
+
+    # --- U21 ---
+    def show_json(self, *extra, session="s1"):
+        r, out = run(self.root, "show", session=session, extra=["--json", *extra])
+        self.assertEqual(r, 0, out)
+        self.assertEqual(out.count("\n"), 1, out)                                # 한 덩이
+        return json.loads(out)
+
+    def test_show_json_work(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}]}))
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s2가 한 일"}, session="s2"))
+        (self.d / "project.md").write_text("- [P1] 공통 규칙\n")
+        j = self.show_json()
+        self.assertEqual({k: j[k] for k in ("format", "core", "work", "title")},
+                         {"format": "worklog/2", "core": load_wl().VERSION, "work": "t", "title": "t"})
+        self.assertEqual(j["state"], self.state())                               # state.json 그대로
+        self.assertEqual(j["project"], "- [P1] 공통 규칙\n")
+        self.assertEqual([(u["id"], u["type"], u["summary"]) for u in j["unseen"]], [("E0002", "RESULT", "s2가 한 일")])
+        self.assertEqual(set(j["unseen"][0]), {"id", "type", "at", "summary"})
+        self.assertEqual(self.show_json()["unseen"], [])                         # 텍스트 show처럼 본 것으로 기록된다
+        self.assertEqual(json.loads(session_file(self.root, "codex_s1").read_text())["last_seen"]["t"], 2)
+        self.assertNotIn("못 본 사건", run(self.root, "show")[1])
+
+    def test_show_json_projection_repaired_and_imported_unseen(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        old = self.ts_ago(600)
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "옛 사건"}, session="s2", extra=["--ts", old]))
+        (self.d / "works/t/state.json").write_text("{}\n")
+        j = self.show_json()
+        self.assertEqual(j["state"], self.state())
+        self.assertNotEqual(self.state(), {})                                   # 원장에서 다시 만들었다
+        self.assertTrue(any("다시 만들었다" in n for n in j["notes"]), j["notes"])
+        self.assertEqual(j["unseen"][0]["occurred_at"], old)
+        self.assertIsNone(j["project"])
+
+    def test_show_json_no_work_and_not_connected(self):
+        j = self.show_json()                                                      # 연결되지 않은 폴더
+        self.assertEqual(j, {"format": "worklog/2", "core": load_wl().VERSION, "work": None, "works": [], "connected": False})
+        self.assertFalse(self.d.exists())                                         # show --json도 폴더를 만들지 않는다
+        self.ok(new_work(self.root, "t"))
+        self.ok(new_work(self.root, "u"))
+        j = self.show_json(session="other")                                       # 이 세션에는 현재 작업이 없다
+        self.assertEqual((j["work"], j["works"]), (None, self.ok(run(self.root, "works", session="other"))["works"]))  # works 명령과 같은 목록
+        self.assertEqual(sorted(w["id"] for w in j["works"]), ["t", "u"])
+        self.assertEqual(self.show_json("--work", "t", session="other")["work"], "t")

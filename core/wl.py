@@ -1877,25 +1877,48 @@ def no_work_guide(index):
     return EMPTY_GUIDE if not index["works"] and auto_mode() == "on" else NO_WORK_GUIDE
 
 
+def show_json(**fields):
+    """2.28.0 (U21): `show --json` prints one JSON object; the field list is provisional (see CHANGELOG 2.28.0)."""
+    print(json.dumps({"format": FORMAT, "core": VERSION, **fields}, ensure_ascii=False))
+
+
 def cmd_show(args):
     d = store(args.root)
+    as_json = getattr(args, "json", False)
     if not connected(d):  # 2.26.0: the hook's NOT_CONNECTED line (root·auto·git and what to do), after the plain first line
+        if as_json:
+            return show_json(work=None, works=[], connected=False)
         print(not_connected_text(args, d, "show"))
         return
     who = try_identity(args)  # N-1 (2.27.0): before the no-work text, so two tool session variables are refused with or without works
     index = load_index(d)
-    if not index or not index["works"]:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
-        print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
-        return
-    wid = args.work or current_work(d, who, index)
+    wid = (args.work or current_work(d, who, index)) if index and index["works"] else None
     if not wid:
+        works = sorted_works((index or {"works": {}})["works"])
+        if as_json:
+            return show_json(work=None, works=[dict(id=i, **w) for i, w in works], **off_flag(d))
+        if not works:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
+            print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
+            return
         print(off_note(d) + "현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
-              + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in sorted_works(index["works"])))
+              + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in works))
         return
     title = entry(index, wid)["title"]
     with locked(d):  # 잠금 뒤에 읽어야 동시 저장 이후의 투영을 과거 seq로 되돌리지 않는다
-        text = read_work(d, wid, title, who)
-    print(off_note(d) + text, end="")
+        if not as_json:
+            text = read_work(d, wid, title, who)
+        else:  # same reads and session update as the text show (last_seen, one-time notices)
+            v = work_view(d, wid, title, who)
+    if not as_json:
+        print(off_note(d) + text, end="")
+        return
+    pm = d / "project.md"
+    show_json(work=wid, title=title, state=v["state"] if v["events"] else None,
+              unseen=[dict({k: e.get(k) for k in ("id", "type", "at", "summary")},
+                           **({"occurred_at": occurred_at(e)} if occurred_at(e) else {})) for e in v["unseen"][-UNSEEN_MAX:]],
+              unseen_omitted=max(0, len(v["unseen"]) - UNSEEN_MAX),
+              project=pm.read_text(encoding="utf-8", errors="replace") if pm.is_file() else None,
+              notes=[x for x in v["note"].splitlines() if x], **off_flag(d))
 
 
 def unseen_events(d, who, wid, events):
@@ -1918,10 +1941,13 @@ def imported_mark(e):
 def unseen_section(d, who, wid, events):
     """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
     the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
-    seen, unseen = unseen_events(d, who, wid, events)
+    return unseen_text(*unseen_events(d, who, wid, events), len(events))
+
+
+def unseen_text(seen, unseen, total):
     if not unseen:
         return ""
-    lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{len(events)})"]
+    lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{total})"]
     for e in unseen[-UNSEEN_MAX:]:
         summary = norm(e.get("summary") or "")
         lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')}{imported_mark(e)} · "
@@ -1934,6 +1960,13 @@ def unseen_section(d, who, wid, events):
 def read_work(d, wid, title, who, **session_changes):
     """Inside locked(d): one work's state text (projection repaired from the ledger if stale) and, when the
     session is known, the events it has not seen yet (2.23.0) and mark it as seen (plus session_changes). Shared by show and use."""
+    v = work_view(d, wid, title, who, **session_changes)
+    return v["note"] + (render(v["state"], wid, title) if v["events"] else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") \
+        + unseen_text(v["seen"], v["unseen"], len(v["events"]))
+
+
+def work_view(d, wid, title, who, **session_changes):
+    """read_work's parts (2.28.0, shared with show --json): events, state, note text, (seen, unseen) — with the same side effects."""
     wd = work_dir(d, wid)
     events, _ = read_events(wd)
     state, _ = fold(events)
@@ -1945,10 +1978,10 @@ def read_work(d, wid, title, who, **session_changes):
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
     note += artifacts_note(note_once(d, who, wid, own_missing_artifacts(d, events, state, who)))
-    unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
+    seen, unseen = unseen_events(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
-    return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") + unseen
+    return {"events": events, "state": state, "note": note, "seen": seen, "unseen": unseen}
 
 
 def check_work(d, wid, title):
@@ -2393,6 +2426,7 @@ def main(argv=None):
     ap.add_argument("--quote", help="use·new-work·reassign·rename: 사용자가 작업을 지정하거나 고치라고 한 원문 / off: 사용자가 끄라고 한 원문")
     ap.add_argument("--reason", help="off: 끄는 이유(선택)")
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
+    ap.add_argument("--json", action="store_true", help="show: 사람용 텍스트 대신 JSON 한 덩이(format·core·work·title·state·unseen·project, 필드 잠정)")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
     ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
