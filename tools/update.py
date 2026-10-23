@@ -12,6 +12,8 @@ Mode (~/.worklog/config.json, key "update"): notify (default when this folder is
                reinstalled; --root DIR also reinstalls the project-level rules copy of that project (tools listed in
                its .worklog/install.json without scope "user").
 Prints the cache as JSON. A newer major version (3.0.0) is reported but never applied: the ledger structure changes.
+check and background also look up the newest semver tag of every extension module in ~/.worklog/modules.json
+(git ls-remote, written by the module installers) and record it under "modules"; nothing here ever updates a module.
 """
 import argparse, datetime, json, os, re, subprocess, sys
 from pathlib import Path
@@ -21,6 +23,7 @@ CORE = REPO / "core" / "wl.py"
 HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
 CONFIG, CACHE = HOME / "config.json", HOME / "update.json"
 MODES = ("notify", "off")
+MODULES = ("worklog-mods", "worklog-jev", "worklog-global", "worklog-scan")  # same list as core/wl.py
 FETCH_TIMEOUT = 20
 
 
@@ -73,10 +76,43 @@ def git(*args, timeout=FETCH_TIMEOUT):
     return p.returncode, p.stdout, p.stderr
 
 
+MODULE_TAG = re.compile(r"v?(\d+)\.(\d+)\.(\d+)", re.ASCII)  # whole tag name only: vv1.0.0, v1.2, 1.0.0-rc1, release-1.0.0,
+# releases/v1.0.0 are skipped
+
+
+def module_tags(source):
+    """(newest semver tag of a module's git source or None, error or None). Tags v1.2.3 or 1.2.3; others are skipped."""
+    rc, out, err = git("ls-remote", "--tags", "--refs", source)
+    if rc:
+        return None, f"git ls-remote 실패: {err.strip()[:200]}"
+    found = (MODULE_TAG.fullmatch(t) for t in re.findall(r"refs/tags/(\S+)", out))  # the whole name: releases/v1.0.0 is skipped
+    tags = [tuple(int(x) for x in m.groups()) for m in found if m]
+    return (".".join(map(str, max(tags))) if tags else None), None
+
+
+def check_modules():
+    """{name: {current, latest, error}} for the known modules in ~/.worklog/modules.json. A missing or broken file or entry is
+    skipped; a failed lookup is recorded in that module's error and the others go on. Only https sources are asked."""
+    reg, found = read_json(HOME / "modules.json"), {}
+    for name in MODULES:
+        entry = reg.get(name)
+        if not isinstance(entry, dict) or not isinstance(entry.get("version"), str) or not isinstance(entry.get("source"), str):
+            continue
+        if not entry["source"].startswith("https://"):
+            found[name] = {"current": entry["version"], "latest": None, "error": "source가 https:// 주소가 아니다"}
+            continue
+        latest, error = module_tags(entry["source"])
+        found[name] = {"current": entry["version"], "latest": latest, "error": error}
+    return found
+
+
 def check():
     old = read_json(CACHE)
     cache = {"checked_at": now(), "mode": mode(), "current": version_of(), "latest": None, "latest_major": None,
              "error": None, "applied": old.get("applied"), "previous": old.get("previous")}
+    modules = check_modules()
+    if modules:  # 2.28.0 (U22): only when a module is installed, so the cache of a core-only install keeps its old keys
+        cache["modules"] = modules
     if not is_clone():
         cache["error"] = "git 저장소가 아니다(복사본). 원본에서 다시 복사해 갱신한다."
         write_json(CACHE, cache)

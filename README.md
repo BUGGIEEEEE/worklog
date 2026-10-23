@@ -39,7 +39,7 @@ python3 -B worklog/tools/uninstall_project.py --user --tool all
 ```
 
 - Requirements: Python 3.9+ (tested on 3.9.6 and 3.14), macOS or Linux. Keep the clone where it is (the hooks call it by path). The installer changes only the tool's own settings files and backs up every file it changes; connected projects are listed in `~/.worklog/installs.json` (used by the uninstaller).
-- Update: a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. `wl.py update` fast-forwards to the newest tag of the same major version and reinstalls the machine-level rules block and skill; `update rollback` undoes it, `update --mode off` silences the notice.
+- Update: a git clone checks the origin tags in the background once a day (session start, never waits) and the next session shows one line when a newer version exists. `wl.py update` fast-forwards to the newest tag of the same major version and reinstalls the machine-level rules block and skill; `update rollback` undoes it, `update --mode off` silences the notice. Since 2.28.0 the same check also looks at installed extension modules (`~/.worklog/modules.json`) and shows one line per newer module; modules are updated with their own installer.
 - Delegating: just tell the agent to delegate. If you open a separate session yourself, start its first prompt with `<id> 이어서. 하위 작업: <name>` ("continue <id>. subtask: <name>"); for an independent work that finishes on its own, use `새 작업: <title>` and list which decisions and constraints it inherits. The agent keeps the record as the rules say.
 - Full removal (every project plus `~/.worklog`) and all uninstall options: [AGENT.md](AGENT.md).
 

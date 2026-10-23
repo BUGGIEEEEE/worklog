@@ -1,3 +1,4 @@
+# TMPDIR는 git 저장소 밖이어야 한다(안이면 git_top()이 상위 .git을 찾아 루트 판정 테스트가 실패한다. 제품 결함 아님).
 import contextlib, fcntl, hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 from argparse import Namespace
 from pathlib import Path
@@ -1082,7 +1083,7 @@ class UpdateTest(Base):
         self.home_write("config.json", {"update": "notify"})
         self.home_write("update.json", {"checked_at": wl.now(), "latest": "9.9.0", "current": wl.VERSION})
         ctx = self.ctx(tool="codex", env=self.env)
-        self.assertIn("[Worklog 갱신 안내] 새 버전 v9.9.0", ctx)
+        self.assertIn("[Worklog 갱신 안내] v9.9.0 사용 가능", ctx)  # 2.28.0 (U17) 문구
         self.assertIn("wl.py update", ctx.split("\n")[2])
         self.home_write("update.json", {"checked_at": wl.now(), "latest_major": "10.0.0", "current": wl.VERSION})
         self.assertIn("새 주 버전 v10.0.0", self.ctx(tool="codex", env=self.env))
@@ -3821,3 +3822,374 @@ class Release2270Test(Base):
         self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["b.md(E0003)"])
         self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": str(self.root / "b.md")}]}))
         self.assertNotIn("gone", self.ok(run(self.root, "verify"))["artifacts"])
+
+
+def mem_event(seq, at, changes, refs=(), kind="D_USER"):
+    """An in-memory ledger event (no prev chain): enough for fold/render."""
+    return {"v": 1, "seq": seq, "id": f"E{seq:04d}", "type": kind, "at": at, "tool": "codex", "session_id": "s1", "summary": f"e{seq}",
+            "quote": "q", "refs": list(refs), "changes": changes, "prev": None, "core": "2.28.0"}
+
+
+class Release2280Test(Base):
+    """2.28.0: U19 time-ordered fold, U20 save --ts, U21 show --json, U22 module update notes, U17 update note wording."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+
+    def events(self, wid="t"):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    def state(self, wid="t"):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    # --- U19 ---
+    def test_fold_applies_events_in_time_order(self):
+        """An imported event (refs occurred_at) that happened before the event appended ahead of it: the later-in-time one wins
+        next_action and is the latest decision; the D numbers follow append order (E0001 → D1) so a replaces keeps pointing at
+        the same decision; seq/updated_at = last appended."""
+        wl = load_wl()
+        late = mem_event(1, "2026-10-23T10:00:05Z", {"decisions": [{"text": "늦은 결정"}], "next_action": "늦음"})
+        early = mem_event(2, "2026-10-23T10:00:06Z", {"decisions": [{"text": "이른 결정"}], "next_action": "이름", "status": "PAUSED"},
+                          refs=[{"occurred_at": "2026-10-23T10:00:01Z"}])
+        s, n = wl.fold([late, early])
+        self.assertEqual([(x["id"], x["text"], x["event"]) for x in s["decisions"]], [("D2", "이른 결정", "E0002"), ("D1", "늦은 결정", "E0001")])
+        self.assertEqual((s["next_action"], s["status"], s["seq"], s["updated_at"]), ("늦음", "PAUSED", 2, "2026-10-23T10:00:06Z"))
+        self.assertEqual(n, {"next_d": 3, "next_c": 1})
+        self.assertIn("현재 범위(최신 결정): D1: 늦은 결정", wl.render(s, "t", "t"))
+        third = mem_event(3, "2026-10-23T10:00:09Z", {"decisions": [{"text": "바꿈", "replaces": "D2"}]})
+        s, _ = wl.fold([late, early, third])
+        self.assertEqual([x["id"] for x in s["decisions"]], ["D1", "D3"])
+        self.assertEqual(s["superseded"], [{"id": "D2", "by_event": "E0003"}])
+        same_second = [mem_event(1, "2026-10-23T10:00:00Z", {"next_action": "a"}), mem_event(2, "2026-10-23T10:00:00Z", {"next_action": "b"})]
+        self.assertEqual(wl.fold(same_second)[0]["next_action"], "b")  # 같은 초: seq 순
+        odd = [mem_event(1, "2026-10-23T10:00:00Z", {"next_action": "a"}), mem_event(2, "어제", {"next_action": "b"})]
+        self.assertEqual(wl.fold(odd)[0]["next_action"], "b")  # UTC 형식이 아닌 at: 앞 사건 자리에 남는다
+
+    def test_at_set_back_keeps_append_order(self):
+        """Without occurred_at an event never moves before an event appended earlier (running max of at): a ledger whose at run
+        backwards (clock set back, at edited by hand) folds in append order as 2.27.0 did, with or without a replaces, and
+        show·verify·save accept it."""
+        wl = load_wl()
+        a = mem_event(1, "2026-10-23T10:00:05Z", {"decisions": [{"text": "a"}], "next_action": "a", "status": "PAUSED"})
+        b = mem_event(2, "2026-10-23T10:00:01Z", {"decisions": [{"text": "b", "replaces": "D1"}], "next_action": "b"})
+        c = mem_event(2, "2026-10-23T10:00:01Z", {"next_action": "c", "status": "ACTIVE"})
+        s, _ = wl.fold([a, b])                                                           # 이전 코어: b가 D1을 대체
+        self.assertEqual(([x["id"] for x in s["decisions"]], s["superseded"], s["next_action"]), (["D2"], [{"id": "D1", "by_event": "E0002"}], "b"))
+        s, _ = wl.fold([a, c])
+        self.assertEqual((s["next_action"], s["status"], s["updated_at"]), ("c", "ACTIVE", "2026-10-23T10:00:01Z"))
+        self.assertEqual(wl.time_order([a, c, mem_event(3, "2026-10-23T10:00:03Z", {})]), [0, 1, 2])
+
+        for replaces in (True, False):
+            with self.subTest(replaces=replaces):
+                shutil.rmtree(self.d, ignore_errors=True)
+                self.ok(new_work(self.root, "t"))
+                self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}],
+                                                "next_action": "a"}))
+                second = {"decisions": [{"text": "b", "replaces": "D1"}]} if replaces else {"decisions": [{"text": "b"}]}
+                self.ok(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "q", "next_action": "b", **second}))
+                before = self.state()
+                path = self.d / "works/t/events.jsonl"
+                events, prev, lines = self.events(), None, []
+                events[0]["at"] = "2099-01-01T00:00:00Z"                                  # 손 수정: 첫 사건이 뒤 사건보다 늦은 at
+                for ev in events:
+                    ev["prev"] = prev
+                    line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+                    lines.append(line)
+                    prev = wl.sha(line)
+                path.write_bytes(b"\n".join(lines) + b"\n")
+                (self.d / "works/t/state.json").unlink()
+                r, text = run(self.root, "show")
+                self.assertEqual(r, 0, text)
+                self.assertEqual(self.state(), before)                                    # 투영 복구 결과 = 이전 코어 상태
+                self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
+                out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "z", "next_action": "z"}))
+                self.assertEqual((out["next_action"], self.state()["next_action"]), ("z", "z"))   # 새 사건은 맨 뒤
+
+    def test_only_exact_occurred_at_counts(self):
+        """refs occurred_at counts only as a string of exactly YYYY-MM-DDTHH:MM:SSZ (ASCII digits); other values a ledger may hold
+        from before 2.28.0 (refs were not read then) leave the event in append order."""
+        wl = load_wl()
+        for odd in ("어제", "2026-10-23", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", 20261023, None,
+                    "\u0662\u0660\u0662\u0666-10-23T10:00:00Z", "2026-10-23T10:00:00Z\n"):
+            evs = [mem_event(1, "2026-10-23T10:00:05Z", {"next_action": "a"}), mem_event(2, "2026-10-23T10:00:06Z", {"next_action": "b"},
+                                                                                   refs=[{"occurred_at": odd}])]
+            self.assertIsNone(wl.occurred_at(evs[1]), odd)
+            self.assertEqual(wl.fold(evs)[0]["next_action"], "b", odd)
+        evs[1]["refs"] = [{"occurred_at": "2026-10-23T10:00:01Z"}]
+        self.assertEqual(wl.fold(evs)[0]["next_action"], "a")                        # 정확한 형식이면 그 시각으로 끼어든다
+
+    def test_unseen_order_knows_the_events_seen(self):
+        """The unseen list is the whole ledger in time order, filtered by append position: E0001 at 10 s (seen), E0002 at 5 s (clock
+        set back), E0003 imported at 6 s fold as E3, E1, E2, so the reader who saw E1 gets E3 before E2 in show, show --json and SessionStart."""
+        wl = load_wl()
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "첫째", "quote": "q"}))
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "둘째"}))
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "셋째"}, extra=["--ts", self.ts_ago(60)]))
+        path, prev, lines = self.d / "works/t/events.jsonl", None, []
+        events = self.events()
+        for ev, at in zip(events, ("2026-01-01T00:00:10Z", "2026-01-01T00:00:05Z", "2026-01-01T00:00:11Z")):
+            ev["at"], ev["prev"] = at, prev
+            line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+            lines.append(line)
+            prev = wl.sha(line)
+        events[2]["refs"] = [{"occurred_at": "2026-01-01T00:00:06Z"}]
+        lines[2] = json.dumps(events[2], ensure_ascii=False, separators=(",", ":")).encode()
+        path.write_bytes(b"\n".join(lines) + b"\n")
+        self.assertEqual(wl.time_order(wl.read_events(self.d / "works/t")[0]), [2, 0, 1])
+        self.assertEqual(run(self.root, "show")[0], 0)                                     # 투영 복구(s1)
+        sess = self.d / "sessions/codex_s2.json"
+        saw_one = sess.read_bytes()
+        self.assertEqual(json.loads(saw_one)["last_seen"]["t"], 1)
+        r, text = run(self.root, "show", session="s2")
+        sect = text.split("## 이 세션이 아직 못 본 사건 (seq 2~3)\n")[1].splitlines()
+        self.assertTrue(sect[0].startswith("- E0003") and sect[1].startswith("- E0002"), sect)
+        sess.write_bytes(saw_one)
+        out = self.show_json(session="s2")
+        self.assertEqual([x["id"] for x in out["unseen"]], ["E0003", "E0002"])
+        sess.write_bytes(saw_one)
+        r, out = hook(self.root, "hook", session="s2", tool="codex")
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"].split("## 이 세션이 아직 못 본 사건 (seq 2~3)\n")[1].splitlines()
+        self.assertTrue(ctx[0].startswith("- E0003") and ctx[1].startswith("- E0002"), ctx)
+
+    def test_fixture_ledgers_fold_unchanged(self):
+        """Ledgers without occurred_at keep their projections byte for byte (fixture sample-v2, two works)."""
+        wl = load_wl()
+        for wd in sorted((SAMPLE_V2 / ".worklog/works").iterdir()):
+            events, _ = wl.read_events(wd)
+            s, _ = wl.fold(events)
+            title = json.loads((SAMPLE_V2 / ".worklog/index.json").read_text())["works"][wd.name]["title"]
+            self.assertEqual(s, json.loads((wd / "state.json").read_text()), wd.name)
+            self.assertEqual(wl.render(s, wd.name, title), (wd / "state.md").read_text(), wd.name)
+
+    # --- U20 ---
+    def ts_ago(self, seconds):
+        import datetime
+        return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_save_ts_refusals(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        for bad in ("2026-10-23 10:00:00", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", "2026-13-01T00:00:00Z", "어제",
+                    "\u0662\u0660\u0662\u0666-10-23T10:00:00Z"):                     # 아랍 숫자: strptime은 받지만 정렬이 맞지 않는다
+            self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", bad]), "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)")
+        for ahead in (3600, 30):                                                 # 유예 없음: 지금보다 뒤면 거부
+            self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", self.ts_ago(-ahead)]), "--ts가 미래 시각입니다")
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y", "refs": [{"occurred_at": self.ts_ago(60)}]}),
+                     "save --ts")
+        self.assertEqual(len(self.events()), 1)
+
+    def test_save_ts_records_refs_and_folds_in_time_order(self):
+        self.ok(new_work(self.root, "t"))
+        old = self.ts_ago(3600)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "최신 결정"}],
+                                        "next_action": "최신"}))
+        out = self.ok(run(self.root, "save", {"type": "D_USER", "summary": "가져온 사건", "quote": "옛 원문", "next_action": "옛것",
+                                              "decisions": [{"text": "옛 결정"}], "refs": [{"kind": "block", "id": "B1"}]},
+                          extra=["--ts", old]))
+        ev = self.events()[-1]
+        self.assertEqual(ev["refs"], [{"kind": "block", "id": "B1"}, {"occurred_at": old}])
+        self.assertNotEqual(ev["at"], old)                                       # at = 기록 시각
+        s = self.state()
+        self.assertEqual(s["next_action"], "최신")                               # 나중에 저장됐지만 더 이른 사건: 상태를 덮지 않는다
+        self.assertEqual([(x["id"], x["text"]) for x in s["decisions"]], [("D2", "옛 결정"), ("D1", "최신 결정")])
+        self.assertEqual((s["seq"], out["seq"], out["next_action"]), (2, 2, "최신"))
+        self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
+        r, text = use(self.root, "t", session="s2")
+        self.assertIn(f"E0002 · codex:s1 · D_USER (가져옴 {old}) · 가져온 사건", text)
+        lines = text.split("## 이 세션이 아직 못 본 사건")[1].splitlines()
+        self.assertTrue(lines[1].startswith("- E0002") and lines[2].startswith("- E0001"), lines)  # 못 본 사건도 시각순
+        self.assertIn("현재 범위(최신 결정): D1: 최신 결정", text)
+
+    def test_save_ts_refused_where_a_reference_breaks(self):
+        """An imported event placed before the decision it replaces, or one that takes a later event's target, is refused before the append."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}]}))
+        before = (self.d / "works/t/events.jsonl").read_bytes()
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "q", "decisions": [{"text": "b", "replaces": "D1"}]},
+                         extra=["--ts", self.ts_ago(3600)]), "자리에 놓으면 기록이 맞지 않습니다: replaces=D1")
+        self.assertEqual((self.d / "works/t/events.jsonl").read_bytes(), before)
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "q", "decisions": [{"text": "c", "replaces": "D1"}]}))
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "q", "decisions": [{"text": "d", "replaces": "D1"}]},
+                         extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")  # z 앞이면 z의 대상을 빼앗고, 뒤면 D1이 이미 대체됐다: 어느 쪽이든 거부
+
+    def test_archive_reports_the_folded_status(self):
+        """archive/reopen answer with the status the fold gives: unchanged JSON when it is the one asked for, ok:false with the
+        real status when a later-dated event (an occurred_at after now, from a clock set back) overrides it."""
+        wl = load_wl()
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        self.assertEqual(self.ok(run(self.root, "archive", extra=["t"])), {"ok": True, "work": "t", "status": "COMPLETED", "saved": "E0002", "seq": 2})
+        self.assertEqual(self.ok(run(self.root, "reopen", extra=["t"])), {"ok": True, "work": "t", "status": "ACTIVE", "saved": "E0003", "seq": 3})
+        path = self.d / "works/t/events.jsonl"
+        prev = wl.sha(path.read_bytes().splitlines()[-1])
+        ev = wl.new_event(self.events(), prev, "CHECKPOINT", "codex", "s1", "미래 시각 사건", None,
+                          [{"occurred_at": "2099-01-01T00:00:00Z"}], {"status": "PAUSED"})
+        with open(path, "ab") as f:
+            f.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+        self.assertEqual(run(self.root, "show")[0], 0)
+        self.assertEqual(self.state()["status"], "PAUSED")
+        r, out = run(self.root, "archive", extra=["t"])
+        self.assertEqual(r, 2, out)
+        self.assertEqual(json.loads(out), {"ok": False, "work": "t", "status": "PAUSED", "requested": "COMPLETED", "saved": "E0005", "seq": 5,
+                                           "error": "상태를 바꾸지 못했습니다: 실제 PAUSED"})
+        self.assertEqual((self.state()["status"], len(self.events())), ("PAUSED", 5))  # 사건은 남고 응답만 사실대로
+        self.assertEqual(json.loads((self.d / "index.json").read_text())["works"]["t"]["status"], "PAUSED")
+
+    def test_save_ts_refused_where_a_constraint_removal_breaks(self):
+        """Like replaces: an imported constraints_remove placed before the constraint exists, or one that takes a later removal's
+        target, is refused with the same wording before the append."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["외부 자료 금지"]}))
+        before = (self.d / "works/t/events.jsonl").read_bytes()
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "해제", "constraints_remove": {"C1": "해제"}},
+                         extra=["--ts", self.ts_ago(3600)]), "자리에 놓으면 기록이 맞지 않습니다: constraints_remove C1")
+        self.assertEqual((self.d / "works/t/events.jsonl").read_bytes(), before)
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "해제", "constraints_remove": {"C1": "해제"}}))
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "해제", "constraints_remove": {"C1": "해제"}},
+                         extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")
+
+    # --- U21 ---
+    def show_json(self, *extra, session="s1"):
+        r, out = run(self.root, "show", session=session, extra=["--json", *extra])
+        self.assertEqual(r, 0, out)
+        self.assertEqual(out.count("\n"), 1, out)                                # 한 덩이
+        return json.loads(out)
+
+    def test_show_json_work(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}]}))
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "s2가 한 일"}, session="s2"))
+        (self.d / "project.md").write_text("- [P1] 공통 규칙\n")
+        j = self.show_json()
+        self.assertEqual({k: j[k] for k in ("format", "core", "work", "title")},
+                         {"format": "worklog/2", "core": load_wl().VERSION, "work": "t", "title": "t"})
+        self.assertEqual(j["state"], self.state())                               # state.json 그대로
+        self.assertEqual(j["project"], "- [P1] 공통 규칙\n")
+        self.assertEqual([(u["id"], u["type"], u["summary"]) for u in j["unseen"]], [("E0002", "RESULT", "s2가 한 일")])
+        self.assertEqual(set(j["unseen"][0]), {"id", "type", "at", "summary"})
+        self.assertEqual(self.show_json()["unseen"], [])                         # 텍스트 show처럼 본 것으로 기록된다
+        self.assertEqual(json.loads(session_file(self.root, "codex_s1").read_text())["last_seen"]["t"], 2)
+        self.assertNotIn("못 본 사건", run(self.root, "show")[1])
+
+    def test_show_json_projection_repaired_and_imported_unseen(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        old = self.ts_ago(600)
+        use(self.root, "t", session="s2")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "옛 사건"}, session="s2", extra=["--ts", old]))
+        (self.d / "works/t/state.json").write_text("{}\n")
+        j = self.show_json()
+        self.assertEqual(j["state"], self.state())
+        self.assertNotEqual(self.state(), {})                                   # 원장에서 다시 만들었다
+        self.assertTrue(any("다시 만들었다" in n for n in j["notes"]), j["notes"])
+        self.assertEqual(j["unseen"][0]["occurred_at"], old)
+        self.assertIsNone(j["project"])
+
+    def test_show_json_no_work_and_not_connected(self):
+        j = self.show_json()                                                      # 연결되지 않은 폴더
+        self.assertEqual(j, {"format": "worklog/2", "core": load_wl().VERSION, "work": None, "works": [], "connected": False})
+        self.assertFalse(self.d.exists())                                         # show --json도 폴더를 만들지 않는다
+        self.ok(new_work(self.root, "t"))
+        self.ok(new_work(self.root, "u"))
+        j = self.show_json(session="other")                                       # 이 세션에는 현재 작업이 없다
+        self.assertEqual((j["work"], j["works"]), (None, self.ok(run(self.root, "works", session="other"))["works"]))  # works 명령과 같은 목록
+        self.assertEqual(sorted(w["id"] for w in j["works"]), ["t", "u"])
+        self.assertEqual(self.show_json("--work", "t", session="other")["work"], "t")
+
+    # --- U22·U17 ---
+    def note_with(self, files):
+        """update_note() with a WL_HOME holding these JSON files (str value = raw text)."""
+        wl, home = load_wl(), Path(tempfile.mkdtemp())
+        for name, value in files.items():
+            (home / name).write_text(value if isinstance(value, str) else json.dumps(value))
+        with mock.patch.object(wl, "WL_HOME", home):
+            return wl, wl.update_note()
+
+    def test_module_update_lines(self):
+        cfg = {"update": "notify"}
+        cache = {"checked_at": "2026-10-23T00:00:00Z", "modules": {
+            "worklog-mods": {"current": "0.1.0", "latest": "0.2.0", "error": None},
+            "worklog-jev": {"current": "1.0.0", "latest": "1.0.0", "error": None},
+            "worklog-scan": {"current": "0.1.0", "latest": "0.9.0", "error": None}}}           # scan은 modules.json에 없다
+        reg = {"worklog-mods": {"version": "0.1.0", "source": "https://github.com/BUGGIEEEEE/worklog-mods", "installed_at": "x"},
+               "worklog-jev": {"version": "1.0.0", "source": "https://github.com/BUGGIEEEEE/worklog-jev"}, "other": {"version": "9.0.0"}}
+        _, note = self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})
+        self.assertEqual(note, "[Worklog 갱신 안내] 모듈 worklog-mods v0.2.0 사용 가능(현재 v0.1.0). 에이전트는 자동 갱신하지 않는다. "
+                               "사용자가 그 모듈의 설치기로 갱신한다.\n")
+        reg["worklog-mods"]["version"] = "0.2.0"                                                      # 검사 뒤에 갱신한 모듈: 안내 없음
+        self.assertEqual(self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})[1], "")
+        for broken in (None, "{", "[]", json.dumps({"worklog-mods": "0.1.0"}), json.dumps({"worklog-mods": {"version": "v0.1"}})):
+            files = {"config.json": cfg, "update.json": cache, **({"modules.json": broken} if broken is not None else {})}
+            self.assertEqual(self.note_with(files)[1], "", broken)                                   # 없음·깨짐: 조용히 무시
+        reg["worklog-mods"]["version"] = "0.1.0"
+        cache["latest"] = "99.0.0"
+        wl, note = self.note_with({"config.json": cfg, "update.json": cache, "modules.json": reg})
+        core, mod = note.splitlines()                                                                 # 코어 안내 뒤에 모듈 줄
+        self.assertTrue(core.startswith("[Worklog 갱신 안내] v99.0.0 사용 가능") and "모듈 worklog-mods" in mod, note)
+        self.assertEqual(self.note_with({"config.json": {"update": "off"}, "update.json": cache, "modules.json": reg})[1], "")
+
+    def test_core_update_line_wording(self):
+        """U17: [Worklog …] head and one thing to do, for the new version, applied, major and failure lines."""
+        wl, note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0"}})
+        cmd = f"python3 -B {shlex.quote(str(WL.resolve()))} update"
+        self.assertEqual(note, f"[Worklog 갱신 안내] v99.0.0 사용 가능(현재 {wl.VERSION}). "            # 갱신 전 로컬 CHANGELOG에는 그 절이 없다
+                               "바뀐 것: https://github.com/BUGGIEEEEE/worklog/blob/v99.0.0/CHANGELOG.md. "
+                               f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
+        note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0", "error": "e"}})[1]
+        self.assertEqual(note, f"[Worklog 갱신 실패] v99.0.0 갱신 실패: e. 에이전트는 다시 시도하지 않는다. 사용자가 원인을 확인한 뒤 실행: {cmd}\n")
+        note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest_major": "100.0.0"}})[1]
+        self.assertIn("새 주 버전 v100.0.0 사용 가능", note)
+        self.assertIn("에이전트는 자동 갱신하지 않는다. 사용자가", note)
+        note = self.note_with({"config.json": {"update": "notify"},
+                               "update.json": {"applied": {"from": "0.0.1", "to": wl.VERSION, "at": wl.now()}}})[1]
+        self.assertTrue(note.startswith(f"[Worklog 갱신] 코어를 v0.0.1에서 v{wl.VERSION}으로 갱신했다(") and note.endswith(f"{cmd} rollback\n"), note)
+
+    def load_update(self, home):
+        spec = importlib.util.spec_from_file_location("wl_update", WL.parents[1] / "tools/update.py")
+        mod = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"WL_HOME": str(home)}):
+            spec.loader.exec_module(mod)
+        return mod
+
+    def test_update_py_module_tag_names(self):
+        """Only whole tag names v1.2.3 or 1.2.3 count: vv999.0.0, v1.2, release-1.0.0, releases/v999.0.0, 1.0.0-rc1 and non-ASCII
+        digits are skipped."""
+        up = self.load_update(Path(tempfile.mkdtemp()))
+        names = ["vv999.0.0", "v1.2", "release-1.0.0", "releases/v999.0.0", "v9.0.0-rc1", "v\u0661.0.0", "v0.3.0", "0.2.9", "v0.3.0^{}"]
+        out = "".join(f"{i}\trefs/tags/{n}\n" for i, n in enumerate(names))
+        with mock.patch.object(up, "git", lambda *a, timeout=None: (0, out, "")):
+            self.assertEqual(up.module_tags("https://example.invalid/m"), ("0.3.0", None))
+        with mock.patch.object(up, "git", lambda *a, timeout=None: (0, "a\trefs/tags/vv999.0.0\nb\trefs/tags/v1.2\n", "")):
+            self.assertEqual(up.module_tags("https://example.invalid/m"), (None, None))
+
+    def test_update_py_checks_module_tags(self):
+        home = Path(tempfile.mkdtemp())
+        up = self.load_update(home)
+        self.assertEqual(up.check_modules(), {})                                                      # modules.json 없음
+        (home / "modules.json").write_text("{")
+        self.assertEqual(up.check_modules(), {})                                                      # 깨짐
+        src = lambda n: f"https://github.com/BUGGIEEEEE/{n}"
+        (home / "modules.json").write_text(json.dumps({
+            "worklog-mods": {"version": "0.1.0", "source": src("worklog-mods")}, "worklog-jev": {"version": "1.0.0", "source": src("worklog-jev")},
+            "worklog-scan": {"version": "0.1.0", "source": "file:///tmp/x"}, "worklog-global": "broken", "other": {"version": "1.0.0", "source": src("o")}}))
+        asked = []
+        def fake_git(*args, timeout=None):
+            asked.append(args)
+            if args[-1] == src("worklog-jev"):
+                return 128, "", "fatal: unable to access\n"
+            return 0, "a\trefs/tags/v0.1.0\nb\trefs/tags/v0.10.0\nc\trefs/tags/0.2.0\nd\trefs/tags/v1.0.0-rc1\ne\trefs/tags/nightly\n", ""
+        with mock.patch.object(up, "git", fake_git):
+            found = up.check_modules()
+            with mock.patch.object(up, "is_clone", lambda: False):
+                cache = up.check()
+        self.assertEqual(found, {"worklog-mods": {"current": "0.1.0", "latest": "0.10.0", "error": None},
+                                 "worklog-jev": {"current": "1.0.0", "latest": None, "error": "git ls-remote 실패: fatal: unable to access"},
+                                 "worklog-scan": {"current": "0.1.0", "latest": None, "error": "source가 https:// 주소가 아니다"}})
+        self.assertEqual([a[:3] for a in asked[:2]], [("ls-remote", "--tags", "--refs")] * 2)          # https 두 개만 물었다
+        self.assertEqual(len(asked), 4)
+        self.assertEqual(cache["modules"], found)                                                     # check()·background의 캐시에 들어간다
+        self.assertEqual(json.loads((home / "update.json").read_text())["modules"], found)

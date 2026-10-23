@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.27.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.28.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -419,24 +419,63 @@ def spawn_update_check():
 
 
 def update_note():
-    """One line for the SessionStart injection, from the cache file only (no network)."""
+    """SessionStart lines from the cache file only (no network): the core line, then one line per module with a newer tag (2.28.0, U22).
+    2.28.0 (U17): every line is a [Worklog …] head and one thing to do; the agent never updates on its own."""
     cache, mode = home_json("update.json"), update_mode()
     if mode == "off" or not cache:
         return ""
+    return core_update_line(cache) + module_update_lines(cache)
+
+
+CHANGELOG_URL = "https://github.com/BUGGIEEEEE/worklog/blob/{tag}/CHANGELOG.md"  # 2.28.0: the new-version line's "바뀐 것"
+
+
+def core_update_line(cache):
     cmd = f"python3 -B {shlex.quote(str(Path(__file__).resolve()))} update"
+    changelog = UPDATE_PY.parents[1] / "CHANGELOG.md"
     applied = cache.get("applied") or {}
     if isinstance(applied, dict) and applied.get("to") == VERSION and recent(applied.get("at")):
         return (f"[Worklog 갱신] 코어를 v{applied.get('from')}에서 v{VERSION}으로 갱신했다({applied.get('at')}). "
-                f"변경 내용: {UPDATE_PY.parents[1] / 'CHANGELOG.md'}. 되돌리기: {cmd} rollback\n")
+                f"바뀐 것: {changelog} {VERSION} 절. 되돌리려면 사용자가 실행: {cmd} rollback\n")
     if cache.get("latest_major"):
-        return (f"[Worklog 갱신 안내] 새 주 버전 v{cache['latest_major']}이 있다(현재 {VERSION}). 기록 구조가 바뀌므로 자동 갱신하지 않는다. "
-                "CHANGELOG의 마이그레이션 안내를 읽고 사용자가 직접 진행한다.\n")
+        return (f"[Worklog 갱신 안내] 새 주 버전 v{cache['latest_major']} 사용 가능(현재 {VERSION}). 기록 구조가 바뀐다. "
+                f"에이전트는 자동 갱신하지 않는다. 사용자가 {changelog}의 마이그레이션 안내를 따라 직접 옮긴다.\n")
     latest = cache.get("latest")
     if latest and (parse_version(latest) or (0,)) > (parse_version(VERSION) or (0,)):
         if cache.get("error"):
-            return f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 다시 시도: {cmd}\n"
-        return f"[Worklog 갱신 안내] 새 버전 v{latest}(현재 {VERSION}). 갱신: {cmd}\n"
+            return (f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 에이전트는 다시 시도하지 않는다. "
+                    f"사용자가 원인을 확인한 뒤 실행: {cmd}\n")
+        tag = "v" + ".".join(map(str, parse_version(latest)))  # before the update the local CHANGELOG lacks that section (fetch --tags
+        # leaves the work tree as is, a copied install has no git at all), so the line points at the tagged file on GitHub
+        return (f"[Worklog 갱신 안내] v{latest} 사용 가능(현재 {VERSION}). 바뀐 것: {CHANGELOG_URL.format(tag=tag)}. "
+                f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
     return ""
+
+
+MODULES = ("worklog-mods", "worklog-jev", "worklog-global", "worklog-scan")  # 2.28.0 (U22): extension modules the update check knows
+
+
+def installed_modules():
+    """WL_HOME/modules.json (written by the module installers, read only here): {name: version} of the known modules.
+    A missing or broken file, or a broken entry, is ignored."""
+    reg = home_json("modules.json")
+    return {n: reg[n]["version"] for n in MODULES
+            if isinstance(reg.get(n), dict) and isinstance(reg[n].get("version"), str) and parse_version(reg[n]["version"])}
+
+
+def module_update_lines(cache):
+    """One line per installed module whose latest tag (cache "modules", written by update.py) is newer than the version in
+    modules.json now — a module updated since the last check is not announced again."""
+    found = cache.get("modules")
+    if not isinstance(found, dict):
+        return ""
+    out = ""
+    for name, current in installed_modules().items():
+        latest = (found.get(name) or {}).get("latest") if isinstance(found.get(name), dict) else None
+        if isinstance(latest, str) and (parse_version(latest) or (0,)) > parse_version(current):
+            out += (f"[Worklog 갱신 안내] 모듈 {name} v{latest} 사용 가능(현재 v{current}). 에이전트는 자동 갱신하지 않는다. "
+                    "사용자가 그 모듈의 설치기로 갱신한다.\n")
+    return out
 
 
 def cmd_update(args):
@@ -859,13 +898,49 @@ def apply(state, ev):
     return s
 
 
+STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", re.ASCII)  # now()'s UTC form: the only form save --ts takes and the sort
+# reads. ASCII digits only: other Unicode digits (\u0662\u0660\u0662\u0666-…) pass strptime and would sort after every ASCII time
+
+
+def occurred_at(ev):
+    """2.28.0 (U20): when an imported event happened — the refs item {"occurred_at": "<UTC>"} that `save --ts` writes — else None.
+    Only a string of exactly the STAMP form counts; any other value (also one written by hand before 2.28.0) is ignored."""
+    for r in ev.get("refs") or []:
+        if isinstance(r, dict) and isinstance(r.get("occurred_at"), str) and STAMP.fullmatch(r["occurred_at"]):
+            return r["occurred_at"]
+    return None
+
+
+def time_order(events):
+    """2.28.0 (U19): positions of the events in the order they happened, key (refs occurred_at or carry, seq). carry is the latest
+    UTC-stamp at so far (running max), so an event without occurred_at never moves before an event appended earlier: a clock set
+    back or an at edited by hand keeps append order, as in 2.27.0. Only an event with occurred_at (save --ts) moves to its time.
+    An event whose at is not a UTC stamp keeps the place of the event before it."""
+    keyed, carry = [], ""
+    for i, ev in enumerate(events):
+        at = ev.get("at")
+        if isinstance(at, str) and STAMP.fullmatch(at):
+            carry = max(carry, at)
+        keyed.append((occurred_at(ev) or carry, i))
+    return [i for _, i in sorted(keyed)]
+
+
 def fold(events):
-    s, counters = empty_state(), {"next_d": 1, "next_c": 1}
+    """State from the ledger. 2.28.0 (U19): applied in time order (time_order), while D·C numbers are counted in append order
+    like the E ids, so an event put in between later does not renumber the others or change what a replaces points at.
+    seq·updated_at·updated_by come from the last appended event. Same result as before for a ledger without occurred_at."""
+    starts, n = [], {"next_d": 1, "next_c": 1}
     for ev in events:
-        tmp = dict(ev, **counters)
-        s = apply(s, tmp)
-        counters = {"next_d": tmp["next_d"], "next_c": tmp["next_c"]}
-    return s, counters
+        starts.append(dict(n))
+        c = ev.get("changes") or {}
+        n = {"next_d": n["next_d"] + len(c.get("decisions") or []), "next_c": n["next_c"] + len(c.get("constraints") or [])}
+    s = empty_state()
+    for i in time_order(events):
+        s = apply(s, dict(events[i], **starts[i]))
+    if events:
+        last = events[-1]
+        s["seq"], s["updated_at"], s["updated_by"] = last["seq"], last["at"], {"tool": last["tool"], "session_id": last["session_id"]}
+    return s, n
 
 
 def tag(item):
@@ -930,6 +1005,7 @@ def commit(d, index, wid, ev):
     """Inside locked(d): append → reread → rebuild projection → compare → index update. Returns the new state."""
     wd = work_dir(d, wid)
     wd.mkdir(parents=True, exist_ok=True)
+    fold(read_events(wd)[0] + [ev])  # 2.28.0 (U19): time order can put ev before others; a ledger that would not fold is refused before the append
     line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
     with open(wd / "events.jsonl", "ab") as f:
         f.write(line + b"\n")
@@ -1001,6 +1077,8 @@ def validate(p, root, state):
     refs = p.get("refs", [])
     if not isinstance(refs, list) or any(not isinstance(r, dict) or not all(isinstance(v, str) for v in r.values()) for r in refs):
         raise Reject('refs는 [{"kind": "block", "id": "B03"}]처럼 문자열 값만 가진 객체 목록입니다.')
+    if any("occurred_at" in r for r in refs):  # 2.28.0 (U20): the sort reads it, so only the checked `save --ts` writes it
+        raise Reject("refs의 occurred_at은 save --ts <YYYY-MM-DDTHH:MM:SSZ>로만 넣습니다.")
     if "status" in p and p["status"] not in STATUSES:
         raise Reject(f"status는 {STATUSES} 중 하나여야 합니다.")
     decisions = p.get("decisions", [])
@@ -1191,9 +1269,30 @@ def check_quotes(p, arts, bodies, state):
     return need, unreflected, self_quoted
 
 
+TS_FORMAT = "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)"
+
+
+def import_ts(value):
+    """2.28.0 (U20): the checked `save --ts` value (None without it). Only now()'s UTC form, a real date, not after now: an
+    imported event later than the save would sort after events appended after it, e.g. after an archive that then reports a
+    status the ledger does not have."""
+    if value is None:
+        return None
+    try:
+        at = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise Reject(TS_FORMAT)
+    if not STAMP.fullmatch(value):
+        raise Reject(TS_FORMAT)
+    if at > datetime.datetime.now(datetime.timezone.utc):
+        raise Reject(f"--ts가 미래 시각입니다({value}, 지금 {now()}). 가져오는 사건이 실제로 일어난 UTC 시각을 넣으세요.")
+    return value
+
+
 def cmd_save(args):
     root = Path(args.root).resolve()
     tool, sid, how = identity_how(args)
+    ts = import_ts(getattr(args, "ts", None))
     raw = sys.stdin.read()
     try:
         p = json.loads(raw)
@@ -1217,7 +1316,7 @@ def cmd_save(args):
         title = entry(index, wid)["title"]
         wd = work_dir(d, wid)
         events, prev = read_events(wd)
-        state, counters = fold(events)
+        state, _ = fold(events)
         arts, bodies = validate(p, root, state)
         # 신선도: 이 세션이 이 작업에서 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
         seen = (sess or {}).get("last_seen", {}).get(wid)
@@ -1250,17 +1349,22 @@ def cmd_save(args):
         gone = gone_artifacts(p, root, state)
         if gone:
             changes["artifacts_gone"] = gone
-        ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
+        refs = list(p.get("refs", [])) + ([{"occurred_at": ts}] if ts else [])  # 2.28.0 (U20): at stays the time of this save
+        ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), refs, changes)
         for k in ("occurred_at", "source"):
             if k in p:
                 ev[k] = p[k]
         if acquired:
             ev["writer_acquired"] = acquired
-        try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다
-            new_state = apply(state, dict(ev, **counters))
+        try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다. 2.28.0 (U19): 시각순 fold라 원장 전체로 계산한다
+            new_state, _ = fold(events + [ev])
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
+        except Reject as e:
+            if ts:  # the event goes where its time puts it, so a reference may not exist yet there or a later event may lose its target
+                raise Reject(f"--ts {ts} 자리에 놓으면 기록이 맞지 않습니다: {e}")
+            raise
         need, unreflected, self_quoted = check_quotes(p, arts, bodies, new_state)
         check = p.get("check") or {}
         if need:
@@ -1445,8 +1549,12 @@ def set_status(args, status, summary):
             raise Reject(f"작업 {wid}는 이미 {status}입니다.")
         events, prev = read_events(work_dir(d, wid))
         ev = new_event(events, prev, "CHECKPOINT", tool, sid, summary, None, [], {"status": status})
-        commit(d, index, wid, ev)
+        rebuilt = commit(d, index, wid, ev)
         mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])  # 최신을 보던 세션은 자기 사건 뒤도 최신
+    if rebuilt["status"] != status:  # 2.28.0: the status the fold gives, not the one asked for (a later-dated event can override it)
+        print(json.dumps({"ok": False, "work": wid, "status": rebuilt["status"], "requested": status, "saved": ev["id"], "seq": ev["seq"],
+                          "error": f"상태를 바꾸지 못했습니다: 실제 {rebuilt['status']}"}, ensure_ascii=False))
+        sys.exit(2)
     print(json.dumps({"ok": True, "work": wid, "status": status, "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
 
 
@@ -1817,43 +1925,80 @@ def no_work_guide(index):
     return EMPTY_GUIDE if not index["works"] and auto_mode() == "on" else NO_WORK_GUIDE
 
 
+def show_json(**fields):
+    """2.28.0 (U21): `show --json` prints one JSON object; the field list is provisional (see CHANGELOG 2.28.0)."""
+    print(json.dumps({"format": FORMAT, "core": VERSION, **fields}, ensure_ascii=False))
+
+
 def cmd_show(args):
     d = store(args.root)
+    as_json = getattr(args, "json", False)
     if not connected(d):  # 2.26.0: the hook's NOT_CONNECTED line (root·auto·git and what to do), after the plain first line
+        if as_json:
+            return show_json(work=None, works=[], connected=False)
         print(not_connected_text(args, d, "show"))
         return
     who = try_identity(args)  # N-1 (2.27.0): before the no-work text, so two tool session variables are refused with or without works
     index = load_index(d)
-    if not index or not index["works"]:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
-        print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
-        return
-    wid = args.work or current_work(d, who, index)
+    wid = (args.work or current_work(d, who, index)) if index and index["works"] else None
     if not wid:
+        works = sorted_works((index or {"works": {}})["works"])
+        if as_json:
+            return show_json(work=None, works=[dict(id=i, **w) for i, w in works], **off_flag(d))
+        if not works:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
+            print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
+            return
         print(off_note(d) + "현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
-              + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in sorted_works(index["works"])))
+              + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in works))
         return
     title = entry(index, wid)["title"]
     with locked(d):  # 잠금 뒤에 읽어야 동시 저장 이후의 투영을 과거 seq로 되돌리지 않는다
-        text = read_work(d, wid, title, who)
-    print(off_note(d) + text, end="")
+        if not as_json:
+            text = read_work(d, wid, title, who)
+        else:  # same reads and session update as the text show (last_seen, one-time notices)
+            v = work_view(d, wid, title, who)
+    if not as_json:
+        print(off_note(d) + text, end="")
+        return
+    pm = d / "project.md"
+    show_json(work=wid, title=title, state=v["state"] if v["events"] else None,
+              unseen=[dict({k: e.get(k) for k in ("id", "type", "at", "summary")},
+                           **({"occurred_at": occurred_at(e)} if occurred_at(e) else {})) for e in v["unseen"][-UNSEEN_MAX:]],
+              unseen_omitted=max(0, len(v["unseen"]) - UNSEEN_MAX),
+              project=pm.read_text(encoding="utf-8", errors="replace") if pm.is_file() else None,
+              notes=[x for x in v["note"].splitlines() if x], **off_flag(d))
+
+
+def unseen_events(d, who, wid, events):
+    """(seen seq, the events after it in time order). The set is by append position (last_seen); 2.28.0 (U19) only the order is by time.
+    The whole ledger is ordered, then filtered: time_order of the tail alone would not know the latest at of the events seen."""
+    if not who or not events:
+        return 0, []
+    try:
+        seen = ((load_session(d, *who) or {}).get("last_seen") or {}).get(wid) or 0
+    except SessionCorrupt:
+        seen = 0
+    return seen, [events[i] for i in time_order(events) if i >= seen]
+
+
+def imported_mark(e):
+    occ = occurred_at(e)
+    return f" (가져옴 {occ})" if occ else ""
 
 
 def unseen_section(d, who, wid, events):
     """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
     the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
-    if not who or not events:
-        return ""
-    try:
-        seen = ((load_session(d, *who) or {}).get("last_seen") or {}).get(wid) or 0
-    except SessionCorrupt:
-        seen = 0
-    unseen = events[seen:]
+    return unseen_text(*unseen_events(d, who, wid, events), len(events))
+
+
+def unseen_text(seen, unseen, total):
     if not unseen:
         return ""
-    lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{len(events)})"]
+    lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{total})"]
     for e in unseen[-UNSEEN_MAX:]:
         summary = norm(e.get("summary") or "")
-        lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')} · "
+        lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')}{imported_mark(e)} · "
                      + (summary if len(summary) <= 80 else summary[:80] + "…"))
     if len(unseen) > UNSEEN_MAX:
         lines.append(f"- …외 {len(unseen) - UNSEEN_MAX}건(오래된 것부터 생략)")
@@ -1863,6 +2008,13 @@ def unseen_section(d, who, wid, events):
 def read_work(d, wid, title, who, **session_changes):
     """Inside locked(d): one work's state text (projection repaired from the ledger if stale) and, when the
     session is known, the events it has not seen yet (2.23.0) and mark it as seen (plus session_changes). Shared by show and use."""
+    v = work_view(d, wid, title, who, **session_changes)
+    return v["note"] + (render(v["state"], wid, title) if v["events"] else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") \
+        + unseen_text(v["seen"], v["unseen"], len(v["events"]))
+
+
+def work_view(d, wid, title, who, **session_changes):
+    """read_work's parts (2.28.0, shared with show --json): events, state, note text, (seen, unseen) — with the same side effects."""
     wd = work_dir(d, wid)
     events, _ = read_events(wd)
     state, _ = fold(events)
@@ -1874,10 +2026,10 @@ def read_work(d, wid, title, who, **session_changes):
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
     note += artifacts_note(note_once(d, who, wid, own_missing_artifacts(d, events, state, who)))
-    unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
+    seen, unseen = unseen_events(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
-    return note + (render(state, wid, title) if events else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") + unseen
+    return {"events": events, "state": state, "note": note, "seen": seen, "unseen": unseen}
 
 
 def check_work(d, wid, title):
@@ -2322,10 +2474,14 @@ def main(argv=None):
     ap.add_argument("--quote", help="use·new-work·reassign·rename: 사용자가 작업을 지정하거나 고치라고 한 원문 / off: 사용자가 끄라고 한 원문")
     ap.add_argument("--reason", help="off: 끄는 이유(선택)")
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
+    ap.add_argument("--json", action="store_true", help="show: 사람용 텍스트 대신 JSON 한 덩이(format·core·work·title·state·unseen·project, 필드 잠정)")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
     ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
     ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
+    ap.add_argument("--ts", help="save(가져오기 전용): 사건이 실제로 일어난 UTC 시각 YYYY-MM-DDTHH:MM:SSZ. "
+                                 "refs에 occurred_at으로 남고 상태는 이 시각 순서로 계산된다. --tool <도구> --session <원래 세션 id>와 함께 쓴다 "
+                                 "(예: save --tool codex --session 01a1… --ts 2026-10-23T09:00:00Z)")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
