@@ -905,13 +905,15 @@ def occurred_at(ev):
 
 
 def time_order(events):
-    """2.28.0 (U19): positions of the events in the order they happened, key (refs occurred_at or at, seq). An event whose at is
-    not a UTC stamp keeps the place of the event before it. A ledger without occurred_at whose at rise with seq keeps its order."""
+    """2.28.0 (U19): positions of the events in the order they happened, key (refs occurred_at or carry, seq). carry is the latest
+    UTC-stamp at so far (running max), so an event without occurred_at never moves before an event appended earlier: a clock set
+    back or an at edited by hand keeps append order, as in 2.27.0. Only an event with occurred_at (save --ts) moves to its time.
+    An event whose at is not a UTC stamp keeps the place of the event before it."""
     keyed, carry = [], ""
     for i, ev in enumerate(events):
         at = ev.get("at")
         if isinstance(at, str) and STAMP.fullmatch(at):
-            carry = at
+            carry = max(carry, at)
         keyed.append((occurred_at(ev) or carry, i))
     return [i for _, i in sorted(keyed)]
 
@@ -919,7 +921,7 @@ def time_order(events):
 def fold(events):
     """State from the ledger. 2.28.0 (U19): applied in time order (time_order), while D·C numbers are counted in append order
     like the E ids, so an event put in between later does not renumber the others or change what a replaces points at.
-    seq·updated_at·updated_by come from the last appended event. Same result as before for a ledger in time order."""
+    seq·updated_at·updated_by come from the last appended event. Same result as before for a ledger without occurred_at."""
     starts, n = [], {"next_d": 1, "next_c": 1}
     for ev in events:
         starts.append(dict(n))

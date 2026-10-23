@@ -3844,14 +3844,16 @@ class Release2280Test(Base):
 
     # --- U19 ---
     def test_fold_applies_events_in_time_order(self):
-        """Two events whose at run backwards: the later-in-time one wins next_action and is the latest decision; the D numbers
-        follow append order (E0001 → D1) so a replaces keeps pointing at the same decision; seq/updated_at = last appended."""
+        """An imported event (refs occurred_at) that happened before the event appended ahead of it: the later-in-time one wins
+        next_action and is the latest decision; the D numbers follow append order (E0001 → D1) so a replaces keeps pointing at
+        the same decision; seq/updated_at = last appended."""
         wl = load_wl()
         late = mem_event(1, "2026-10-23T10:00:05Z", {"decisions": [{"text": "늦은 결정"}], "next_action": "늦음"})
-        early = mem_event(2, "2026-10-23T10:00:01Z", {"decisions": [{"text": "이른 결정"}], "next_action": "이름", "status": "PAUSED"})
+        early = mem_event(2, "2026-10-23T10:00:06Z", {"decisions": [{"text": "이른 결정"}], "next_action": "이름", "status": "PAUSED"},
+                          refs=[{"occurred_at": "2026-10-23T10:00:01Z"}])
         s, n = wl.fold([late, early])
         self.assertEqual([(x["id"], x["text"], x["event"]) for x in s["decisions"]], [("D2", "이른 결정", "E0002"), ("D1", "늦은 결정", "E0001")])
-        self.assertEqual((s["next_action"], s["status"], s["seq"], s["updated_at"]), ("늦음", "PAUSED", 2, "2026-10-23T10:00:01Z"))
+        self.assertEqual((s["next_action"], s["status"], s["seq"], s["updated_at"]), ("늦음", "PAUSED", 2, "2026-10-23T10:00:06Z"))
         self.assertEqual(n, {"next_d": 3, "next_c": 1})
         self.assertIn("현재 범위(최신 결정): D1: 늦은 결정", wl.render(s, "t", "t"))
         third = mem_event(3, "2026-10-23T10:00:09Z", {"decisions": [{"text": "바꿈", "replaces": "D2"}]})
@@ -3862,6 +3864,46 @@ class Release2280Test(Base):
         self.assertEqual(wl.fold(same_second)[0]["next_action"], "b")  # 같은 초: seq 순
         odd = [mem_event(1, "2026-10-23T10:00:00Z", {"next_action": "a"}), mem_event(2, "어제", {"next_action": "b"})]
         self.assertEqual(wl.fold(odd)[0]["next_action"], "b")  # UTC 형식이 아닌 at: 앞 사건 자리에 남는다
+
+    def test_at_set_back_keeps_append_order(self):
+        """Without occurred_at an event never moves before an event appended earlier (running max of at): a ledger whose at run
+        backwards (clock set back, at edited by hand) folds in append order as 2.27.0 did, with or without a replaces, and
+        show·verify·save accept it."""
+        wl = load_wl()
+        a = mem_event(1, "2026-10-23T10:00:05Z", {"decisions": [{"text": "a"}], "next_action": "a", "status": "PAUSED"})
+        b = mem_event(2, "2026-10-23T10:00:01Z", {"decisions": [{"text": "b", "replaces": "D1"}], "next_action": "b"})
+        c = mem_event(2, "2026-10-23T10:00:01Z", {"next_action": "c", "status": "ACTIVE"})
+        s, _ = wl.fold([a, b])                                                           # 이전 코어: b가 D1을 대체
+        self.assertEqual(([x["id"] for x in s["decisions"]], s["superseded"], s["next_action"]), (["D2"], [{"id": "D1", "by_event": "E0002"}], "b"))
+        s, _ = wl.fold([a, c])
+        self.assertEqual((s["next_action"], s["status"], s["updated_at"]), ("c", "ACTIVE", "2026-10-23T10:00:01Z"))
+        self.assertEqual(wl.time_order([a, c, mem_event(3, "2026-10-23T10:00:03Z", {})]), [0, 1, 2])
+
+        for replaces in (True, False):
+            with self.subTest(replaces=replaces):
+                shutil.rmtree(self.d, ignore_errors=True)
+                self.ok(new_work(self.root, "t"))
+                self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}],
+                                                "next_action": "a"}))
+                second = {"decisions": [{"text": "b", "replaces": "D1"}]} if replaces else {"decisions": [{"text": "b"}]}
+                self.ok(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "q", "next_action": "b", **second}))
+                before = self.state()
+                path = self.d / "works/t/events.jsonl"
+                events, prev, lines = self.events(), None, []
+                events[0]["at"] = "2099-01-01T00:00:00Z"                                  # 손 수정: 첫 사건이 뒤 사건보다 늦은 at
+                for ev in events:
+                    ev["prev"] = prev
+                    line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
+                    lines.append(line)
+                    prev = wl.sha(line)
+                path.write_bytes(b"\n".join(lines) + b"\n")
+                (self.d / "works/t/state.json").unlink()
+                r, text = run(self.root, "show")
+                self.assertEqual(r, 0, text)
+                self.assertEqual(self.state(), before)                                    # 투영 복구 결과 = 이전 코어 상태
+                self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
+                out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "z", "next_action": "z"}))
+                self.assertEqual((out["next_action"], self.state()["next_action"]), ("z", "z"))   # 새 사건은 맨 뒤
 
     def test_fixture_ledgers_fold_unchanged(self):
         """Ledgers without occurred_at keep their projections byte for byte (fixture sample-v2, two works)."""
