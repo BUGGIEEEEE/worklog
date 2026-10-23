@@ -859,13 +859,45 @@ def apply(state, ev):
     return s
 
 
+STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")  # now()'s UTC form: the only form save --ts takes and the sort reads
+
+
+def occurred_at(ev):
+    """2.28.0 (U20): when an imported event happened — the refs item {"occurred_at": "<UTC>"} that `save --ts` writes — else None."""
+    for r in ev.get("refs") or []:
+        if isinstance(r, dict) and isinstance(r.get("occurred_at"), str) and STAMP.fullmatch(r["occurred_at"]):
+            return r["occurred_at"]
+    return None
+
+
+def time_order(events):
+    """2.28.0 (U19): positions of the events in the order they happened, key (refs occurred_at or at, seq). An event whose at is
+    not a UTC stamp keeps the place of the event before it. A ledger without occurred_at whose at rise with seq keeps its order."""
+    keyed, carry = [], ""
+    for i, ev in enumerate(events):
+        at = ev.get("at")
+        if isinstance(at, str) and STAMP.fullmatch(at):
+            carry = at
+        keyed.append((occurred_at(ev) or carry, i))
+    return [i for _, i in sorted(keyed)]
+
+
 def fold(events):
-    s, counters = empty_state(), {"next_d": 1, "next_c": 1}
+    """State from the ledger. 2.28.0 (U19): applied in time order (time_order), while D·C numbers are counted in append order
+    like the E ids, so an event put in between later does not renumber the others or change what a replaces points at.
+    seq·updated_at·updated_by come from the last appended event. Same result as before for a ledger in time order."""
+    starts, n = [], {"next_d": 1, "next_c": 1}
     for ev in events:
-        tmp = dict(ev, **counters)
-        s = apply(s, tmp)
-        counters = {"next_d": tmp["next_d"], "next_c": tmp["next_c"]}
-    return s, counters
+        starts.append(dict(n))
+        c = ev.get("changes") or {}
+        n = {"next_d": n["next_d"] + len(c.get("decisions") or []), "next_c": n["next_c"] + len(c.get("constraints") or [])}
+    s = empty_state()
+    for i in time_order(events):
+        s = apply(s, dict(events[i], **starts[i]))
+    if events:
+        last = events[-1]
+        s["seq"], s["updated_at"], s["updated_by"] = last["seq"], last["at"], {"tool": last["tool"], "session_id": last["session_id"]}
+    return s, n
 
 
 def tag(item):
@@ -930,6 +962,7 @@ def commit(d, index, wid, ev):
     """Inside locked(d): append → reread → rebuild projection → compare → index update. Returns the new state."""
     wd = work_dir(d, wid)
     wd.mkdir(parents=True, exist_ok=True)
+    fold(read_events(wd)[0] + [ev])  # 2.28.0 (U19): time order can put ev before others; a ledger that would not fold is refused before the append
     line = json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode()
     with open(wd / "events.jsonl", "ab") as f:
         f.write(line + b"\n")
@@ -1217,7 +1250,7 @@ def cmd_save(args):
         title = entry(index, wid)["title"]
         wd = work_dir(d, wid)
         events, prev = read_events(wd)
-        state, counters = fold(events)
+        state, _ = fold(events)
         arts, bodies = validate(p, root, state)
         # 신선도: 이 세션이 이 작업에서 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
         seen = (sess or {}).get("last_seen", {}).get(wid)
@@ -1256,8 +1289,8 @@ def cmd_save(args):
                 ev[k] = p[k]
         if acquired:
             ev["writer_acquired"] = acquired
-        try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다
-            new_state = apply(state, dict(ev, **counters))
+        try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다. 2.28.0 (U19): 시각순 fold라 원장 전체로 계산한다
+            new_state, _ = fold(events + [ev])
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
@@ -1838,22 +1871,33 @@ def cmd_show(args):
     print(off_note(d) + text, end="")
 
 
-def unseen_section(d, who, wid, events):
-    """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
-    the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
+def unseen_events(d, who, wid, events):
+    """(seen seq, the events after it in time order). The set is by append position (last_seen); 2.28.0 (U19) only the order is by time."""
     if not who or not events:
-        return ""
+        return 0, []
     try:
         seen = ((load_session(d, *who) or {}).get("last_seen") or {}).get(wid) or 0
     except SessionCorrupt:
         seen = 0
-    unseen = events[seen:]
+    rest = events[seen:]
+    return seen, [rest[i] for i in time_order(rest)]
+
+
+def imported_mark(e):
+    occ = occurred_at(e)
+    return f" (가져옴 {occ})" if occ else ""
+
+
+def unseen_section(d, who, wid, events):
+    """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
+    the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
+    seen, unseen = unseen_events(d, who, wid, events)
     if not unseen:
         return ""
     lines = [f"## 이 세션이 아직 못 본 사건 (seq {seen + 1}~{len(events)})"]
     for e in unseen[-UNSEEN_MAX:]:
         summary = norm(e.get("summary") or "")
-        lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')} · "
+        lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')}{imported_mark(e)} · "
                      + (summary if len(summary) <= 80 else summary[:80] + "…"))
     if len(unseen) > UNSEEN_MAX:
         lines.append(f"- …외 {len(unseen) - UNSEEN_MAX}건(오래된 것부터 생략)")

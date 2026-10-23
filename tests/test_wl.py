@@ -3821,3 +3821,54 @@ class Release2270Test(Base):
         self.assertEqual(self.ok(run(self.root, "verify"))["artifacts"]["gone"], ["b.md(E0003)"])
         self.ok(run(self.root, "save", {"type": "RESULT", "summary": "다시", "artifacts": [{"path": str(self.root / "b.md")}]}))
         self.assertNotIn("gone", self.ok(run(self.root, "verify"))["artifacts"])
+
+
+def mem_event(seq, at, changes, refs=(), kind="D_USER"):
+    """An in-memory ledger event (no prev chain): enough for fold/render."""
+    return {"v": 1, "seq": seq, "id": f"E{seq:04d}", "type": kind, "at": at, "tool": "codex", "session_id": "s1", "summary": f"e{seq}",
+            "quote": "q", "refs": list(refs), "changes": changes, "prev": None, "core": "2.28.0"}
+
+
+class Release2280Test(Base):
+    """2.28.0: U19 time-ordered fold, U20 save --ts, U21 show --json, U22 module update notes, U17 update note wording."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+
+    def events(self, wid="t"):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    def state(self, wid="t"):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    # --- U19 ---
+    def test_fold_applies_events_in_time_order(self):
+        """Two events whose at run backwards: the later-in-time one wins next_action and is the latest decision; the D numbers
+        follow append order (E0001 → D1) so a replaces keeps pointing at the same decision; seq/updated_at = last appended."""
+        wl = load_wl()
+        late = mem_event(1, "2026-10-23T10:00:05Z", {"decisions": [{"text": "늦은 결정"}], "next_action": "늦음"})
+        early = mem_event(2, "2026-10-23T10:00:01Z", {"decisions": [{"text": "이른 결정"}], "next_action": "이름", "status": "PAUSED"})
+        s, n = wl.fold([late, early])
+        self.assertEqual([(x["id"], x["text"], x["event"]) for x in s["decisions"]], [("D2", "이른 결정", "E0002"), ("D1", "늦은 결정", "E0001")])
+        self.assertEqual((s["next_action"], s["status"], s["seq"], s["updated_at"]), ("늦음", "PAUSED", 2, "2026-10-23T10:00:01Z"))
+        self.assertEqual(n, {"next_d": 3, "next_c": 1})
+        self.assertIn("현재 범위(최신 결정): D1: 늦은 결정", wl.render(s, "t", "t"))
+        third = mem_event(3, "2026-10-23T10:00:09Z", {"decisions": [{"text": "바꿈", "replaces": "D2"}]})
+        s, _ = wl.fold([late, early, third])
+        self.assertEqual([x["id"] for x in s["decisions"]], ["D1", "D3"])
+        self.assertEqual(s["superseded"], [{"id": "D2", "by_event": "E0003"}])
+        same_second = [mem_event(1, "2026-10-23T10:00:00Z", {"next_action": "a"}), mem_event(2, "2026-10-23T10:00:00Z", {"next_action": "b"})]
+        self.assertEqual(wl.fold(same_second)[0]["next_action"], "b")  # 같은 초: seq 순
+        odd = [mem_event(1, "2026-10-23T10:00:00Z", {"next_action": "a"}), mem_event(2, "어제", {"next_action": "b"})]
+        self.assertEqual(wl.fold(odd)[0]["next_action"], "b")  # UTC 형식이 아닌 at: 앞 사건 자리에 남는다
+
+    def test_fixture_ledgers_fold_unchanged(self):
+        """Ledgers without occurred_at keep their projections byte for byte (fixture sample-v2, two works)."""
+        wl = load_wl()
+        for wd in sorted((SAMPLE_V2 / ".worklog/works").iterdir()):
+            events, _ = wl.read_events(wd)
+            s, _ = wl.fold(events)
+            title = json.loads((SAMPLE_V2 / ".worklog/index.json").read_text())["works"][wd.name]["title"]
+            self.assertEqual(s, json.loads((wd / "state.json").read_text()), wd.name)
+            self.assertEqual(wl.render(s, wd.name, title), (wd / "state.md").read_text(), wd.name)
