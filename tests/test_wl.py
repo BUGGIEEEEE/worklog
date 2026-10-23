@@ -1,3 +1,4 @@
+# TMPDIR는 git 저장소 밖이어야 한다(안이면 git_top()이 상위 .git을 찾아 루트 판정 테스트가 실패한다. 제품 결함 아님).
 import contextlib, fcntl, hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, unittest
 from argparse import Namespace
 from pathlib import Path
