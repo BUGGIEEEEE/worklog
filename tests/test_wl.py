@@ -4003,6 +4003,19 @@ class Release2280Test(Base):
         self.assertEqual((self.state()["status"], len(self.events())), ("PAUSED", 5))  # 사건은 남고 응답만 사실대로
         self.assertEqual(json.loads((self.d / "index.json").read_text())["works"]["t"]["status"], "PAUSED")
 
+    def test_save_ts_refused_where_a_constraint_removal_breaks(self):
+        """Like replaces: an imported constraints_remove placed before the constraint exists, or one that takes a later removal's
+        target, is refused with the same wording before the append."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "constraints": ["외부 자료 금지"]}))
+        before = (self.d / "works/t/events.jsonl").read_bytes()
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "해제", "constraints_remove": {"C1": "해제"}},
+                         extra=["--ts", self.ts_ago(3600)]), "자리에 놓으면 기록이 맞지 않습니다: constraints_remove C1")
+        self.assertEqual((self.d / "works/t/events.jsonl").read_bytes(), before)
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "해제", "constraints_remove": {"C1": "해제"}}))
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "해제", "constraints_remove": {"C1": "해제"}},
+                         extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")
+
     # --- U21 ---
     def show_json(self, *extra, session="s1"):
         r, out = run(self.root, "show", session=session, extra=["--json", *extra])
