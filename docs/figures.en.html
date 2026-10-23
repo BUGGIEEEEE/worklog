@@ -481,7 +481,7 @@ python3 -B worklog/tools/install_project.py --tool pi     --user</pre><button ty
         <div class="chip"><b>NOT_CONNECTED</b><span><i>a folder that is not connected: only this line</i> <i class="p">(root · auto · git)</i> <i class="a">auto=on: connect with new-work on the first request worth recording · auto=off or the home folder: wait for <code>새 작업:</code></i></span></div>
         <div class="chip"><b>OFF</b><span><i>a project that is switched off: only this line</i> <i class="a">no Worklog steps until the user turns it on</i></span></div>
         <div class="chip"><b>UNAVAILABLE</b><span><i>the record could not be read</i> <i class="a">check with show before changing files</i></span></div>
-        <div class="chip"><b>| FORK</b><span><i>added to the header when a Claude Code or Codex session is a fork (source=fork)</i> <i class="p">(the NOT_CONNECTED line too · never the OFF line · not for pi <code>--fork</code>)</i> <i class="a">skip, no save, until the user names a work or asks to record</i></span></div>
+        <div class="chip"><b>| FORK</b><span><i>added to the header when a Claude Code or Codex session is a fork (source=fork)</i> <i class="p">(the NOT_CONNECTED line too · never the OFF line · not for pi <code>--fork</code>)</i> <i class="a">do the request first, ask once at the end of the first reply worth recording which work to record in (the main session's current work first), skip; save only after the user names one</i></span></div>
       </div>
     </div>
   </div>

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.26.1"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.27.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -76,7 +76,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "summary": "이번 턴에 일어난 일 한두 문장",
   "quote": "사용자 원문 일부(그대로)",      # REQUEST/APPROVAL/D_USER, 목표 설정, 사용자 제약 해제에 필수
   "goal": "최초 목표",                     # 처음 한 번만. 생략하면 첫 save가 작업 제목을 목표로 쓴다. 이후 값 변경은 decisions(replaces)로
-  "decisions": [{"text": "11분으로 변경(이유)", "replaces": "D1"},
+  "decisions": [{"text": "11분으로 변경(집중 유지)", "replaces": "D1"},
                 {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],
   "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],
   "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
@@ -85,6 +85,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
   "artifacts": [{"path": "note-guide.md"}],
   "artifacts_moved": {"note-guide.md": "docs/note-guide.md"},  # 기록한 산출물 파일을 옮겼을 때 옛 경로 → 새 경로(새 경로 파일이 있어야 한다)
+  "artifacts_gone": [{"path": "draft.md", "reason": "사용자가 지웠다고 확인"}],  # 기록한 산출물을 영구히 지웠을 때(사용자 확인 뒤). 누락 보고·verify missing에서 빠진다
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
                                            # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
@@ -92,14 +93,19 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
 }
 필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
-결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·삭제). 사용자에게 알린다.
-명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
+결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·이동·삭제). 같은 세션에는 한 번만 보인다.
+명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> (<맞는 id> | --new "<제목>") --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
 
 class Reject(Exception):
     pass
+
+
+class ToolAmbiguous(Reject):
+    """2.27.0 (U16, N-1): two or more tool session variables and no --tool/WL_TOOL. Refused by every command that reads the
+    session, including the ones that otherwise run without a session (show·works·verify·off)."""
 
 
 def norm(text):
@@ -169,20 +175,36 @@ def candidate_root(cwd):
     return root_info(cwd)["root"]
 
 
-def identity(args):
+def identity_how(args):
+    """(tool, session id, how the tool was decided: "--tool 지정", "WL_TOOL" or "환경변수 <NAME>에서 추정"). 2.27.0 (U16): without
+    --tool and WL_TOOL, two or more tool session variables at once (pi run inside Claude Code inherits CLAUDE_CODE_SESSION_ID)
+    are refused instead of guessed — the first in TOOL_ENV order would read and write another tool's session file."""
     tool, sid = os.environ.get("WL_TOOL"), os.environ.get("WL_SESSION_ID")
+    how = "WL_TOOL" if tool else None
     if getattr(args, "tool", None):
-        tool = args.tool
+        tool, how = args.tool, "--tool 지정"
     if getattr(args, "session", None):
         sid = args.session
     if not (tool and sid):
-        for name, env in TOOL_ENV:
-            if os.environ.get(env) and (not tool or tool == name):
-                tool, sid = name, sid or os.environ[env]
-                break
+        found = [(name, env) for name, env in TOOL_ENV if os.environ.get(env) and (not tool or tool == name)]
+        if not tool and len(found) > 1:
+            raise ToolAmbiguous(f"도구를 확정할 수 없습니다: {', '.join(f'{env}({name})' for name, env in found)}가 함께 있습니다. "
+                                "--tool <codex|claude|agy|pi>를 지정하세요.")
+        if found:
+            name, env = found[0]
+            tool, sid, how = name, sid or os.environ[env], how or f"환경변수 {env}에서 추정"
     if not (tool and sid):
         raise Reject("세션을 확인할 수 없습니다. --tool <codex|claude|agy|pi> --session <ID>를 지정하세요.")
-    return tool, sid
+    return tool, sid, how
+
+
+def identity(args):
+    return identity_how(args)[:2]
+
+
+def call_note(tool, sid, how):
+    """2.27.0 (U16): the end of a refusal that depends on this session's file — which session this call was judged to be."""
+    return f" (이 호출: tool={tool} session={sid}, {how})"
 
 
 def hook_tool(tool):
@@ -191,8 +213,12 @@ def hook_tool(tool):
 
 
 def try_identity(args):
+    """identity, or None when no session can be found (a call outside any tool session). Two tool session variables are still
+    refused (2.27.0, N-1): guessing would read another tool's session, and None would hide the cause."""
     try:
         return identity(args)
+    except ToolAmbiguous:
+        raise
     except Reject:
         return None
 
@@ -230,13 +256,16 @@ class SessionCorrupt(Exception):
 
 def new_session():
     return {"current_work": None, "last_seen": {}, "hooks_seen": {}, "in_turn": False, "agy_pre": None, "agy_stop": None,
-            "hook_keys": {}, "new_work_turn": None, "new_work_id": None, "reassigned": [],
+            "hook_keys": {}, "new_work_turn": None, "new_work_id": None, "new_work_from": None, "reassigned": [], "missing_noted": [],
             **dict.fromkeys(SESSION_TURNS, 0)}  # in_turn (2.24.1): a model call of this turn has started. agy_pre/agy_stop (2.24.2): last PreInvocation/Stop event seen, so a hook registered twice (project + user hooks.json) acts once
     # hook_keys (2.25.0): the last SessionStart / UserPromptSubmit / Stop key of claude·codex hooks (a second identical call is a
     # duplicate registration and does nothing). new_work_turn (2.25.0): the turn of this session's last new-work.
     # new_work_id (2.26.0): the id that new-work was creating, written with new_work_turn before index.json (retry marker).
     # reassigned (2.26.0): ["<right id>:<refiled event id>@<turn>", …] (last REASSIGNED_MAX) written with current_work by
-    # reassign's session step
+    # reassign's session step. missing_noted (2.27.0): ["<work id>:path(Eid)", …] missing artifacts already reported to this
+    # session (an entry without the work id, from a pre-release 2.27.0 build, matches nothing: that file is reported once more).
+    # new_work_from (2.27.0): "<wrong id>:<E0001,E0002>" when reassign --new wrote new_work_id (None for new-work): a re-run of the
+    # same command by this session continues only the work this marker names
 
 
 def load_session(d, tool, sid):
@@ -258,8 +287,12 @@ def load_session(d, tool, sid):
         s["new_work_turn"] = None
     if not isinstance(s["new_work_id"], str):
         s["new_work_id"] = None
+    if not isinstance(s["new_work_from"], str):
+        s["new_work_from"] = None  # a bad value only refuses a reassign --new re-run as a slug clash
     if not (isinstance(s["reassigned"], list) and all(isinstance(x, str) for x in s["reassigned"])):
         s["reassigned"] = []  # a bad value only loses the "user moved on" judgement of a reassign re-run
+    if not (isinstance(s["missing_noted"], list) and all(isinstance(x, str) for x in s["missing_noted"])):
+        s["missing_noted"] = []  # a bad value only reports a missing artifact once more
     if (any(type(s[k]) is not int for k in SESSION_TURNS)
             or not (s["current_work"] is None or isinstance(s["current_work"], str))
             or not isinstance(s["last_seen"], dict) or any(type(v) is not int for v in s["last_seen"].values())
@@ -285,6 +318,12 @@ def update_session(d, tool, sid, seen=None, **changes):
     path.parent.mkdir(exist_ok=True)
     write_atomic(path, json.dumps(s, ensure_ascii=False) + "\n")
     return s
+
+
+def mark_seen_if_current(d, tool, sid, wid, before, after):
+    """A session that had read this work up to `before` has read its own event too (archive/reopen, reassign, rename)."""
+    if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == before:
+        update_session(d, tool, sid, seen=(wid, after))
 
 
 def mark_hook(d, who, name):  # SessionStart also resets in_turn (2.24.1): a new or resumed session starts outside a turn
@@ -523,10 +562,24 @@ def own_missing_artifacts(d, events, state, who):
     return out
 
 
+def note_once(d, who, wid, missing):
+    """Inside locked(d), 2.27.0 (U12 A): the entries of `missing` ("path(Eid)") of work `wid` not yet reported to this session,
+    recorded in its missing_noted as "<wid>:path(Eid)" so show·use·SessionStart·save·skip report each one once per session; the
+    work id keeps another work's same path(Eid) apart (N-2). A file that comes back and goes again is
+    not reported again in that session (simple rule); verify still checks every artifact."""
+    if not (who and missing):
+        return []
+    s = session_or_new(d, *who)
+    new = [m for m in missing if f"{wid}:{m}" not in s["missing_noted"]]
+    if new:
+        update_session(d, *who, missing_noted=s["missing_noted"] + [f"{wid}:{m}" for m in new])
+    return new
+
+
 def artifacts_note(missing):
     """Text line for show·use·SessionStart (output only, never in state.md)."""
-    return (f"[Worklog 산출물 없음] {ARTIFACTS_MISSING}: {', '.join(missing)}. 되감기(rewind) 코드 복원이나 삭제가 원인일 수 있다. "
-            "사용자에게 알린다.\n") if missing else ""
+    return (f"[Worklog 산출물 없음] {ARTIFACTS_MISSING}: {', '.join(missing)}. 되감기(rewind) 코드 복원이나 이동·삭제가 원인일 수 있다. "
+            "사용자에게 한 번 알린다(이 세션에는 다시 보이지 않는다). 옮겼거나 지웠다고 확인하면 save의 artifacts_moved·artifacts_gone으로 적는다.\n") if missing else ""
 
 
 def artifacts_check(d, state):
@@ -678,10 +731,15 @@ def work_dir(d, wid):
     return contained(works_root(d) / wid, d / "works")
 
 
+def title_slug(title):
+    """Title → ASCII slug (a-z, 0-9, '-', ≤40), '' when nothing ASCII is left (make_id's base before the 'work' fallback)."""
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-")
+
+
 def make_id(title, taken):
     """Title → ASCII slug (a-z, 0-9, '-', ≤40); 'work' when nothing ASCII or only digits is left ("던전디펜스 1화" → "1" is
     not a usable id); '-2', '-3' on collision."""
-    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:ID_MAX].strip("-")
+    base = title_slug(title)
     if not base or base.replace("-", "").isdigit():
         base = "work"
     wid, n = base, 1
@@ -789,6 +847,12 @@ def apply(state, ev):
     if moved:  # 2.26.0: {"<old path>": {"path", "sha256"}}, the whole mapping at once on the list before the move (order-free)
         moves_problem({old: new["path"] for old, new in moved.items()}, [x["path"] for x in s["artifacts"]])
         s["artifacts"] = [dict(moved[x["path"]], event=eid) if x["path"] in moved else x for x in s["artifacts"]]
+    gone = {g["path"] for g in c.get("artifacts_gone") or []}
+    if gone:  # 2.27.0 (U12 B′): files the user confirmed deleted leave the list, so missing checks and verify skip them
+        absent = sorted(gone - {x["path"] for x in s["artifacts"]})
+        if absent:
+            raise Reject(f"artifacts_gone: 산출물 목록에 없는 경로입니다: {absent}")
+        s["artifacts"] = [x for x in s["artifacts"] if x["path"] not in gone]
     for a in c.get("artifacts", []):
         s["artifacts"] = [x for x in s["artifacts"] if x["path"] != a["path"]] + [dict(a, event=eid)]
     s["seq"], s["updated_at"], s["updated_by"] = ev["seq"], ev["at"], {"tool": ev["tool"], "session_id": ev["session_id"]}
@@ -903,7 +967,7 @@ def validate(p, root, state):
     if not isinstance(p, dict):
         raise Reject("입력은 JSON 객체여야 합니다. `wl.py help` 참고.")
     unknown = set(p) - {"work", "type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
-                        "waiting", "next_action", "status", "artifacts", "artifacts_moved", "check", "refs", "takeover",
+                        "waiting", "next_action", "status", "artifacts", "artifacts_moved", "artifacts_gone", "check", "refs", "takeover",
                         "occurred_at", "source"}
     if unknown:
         raise Reject(f"알 수 없는 필드: {sorted(unknown)}. `wl.py help` 참고.")
@@ -952,6 +1016,14 @@ def validate(p, root, state):
     if moved_in is not None and (not isinstance(moved_in, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v
                                                                            for k, v in moved_in.items())):
         raise Reject('artifacts_moved는 {"옛 경로": "새 경로"}처럼 문자열 값을 가진 객체여야 합니다.')
+    gone_in = p.get("artifacts_gone")
+    if gone_in is not None and (not isinstance(gone_in, list) or any(not isinstance(g, dict) or set(g) - {"path", "reason"}
+                                                                    or not isinstance(g.get("path"), str) or not g["path"]
+                                                                    or not isinstance(g.get("reason", ""), str) for g in gone_in)):
+        raise Reject('artifacts_gone은 [{"path": "기록된 경로", "reason": "지운 이유 한 구절"}] 형식이어야 합니다.')
+    empty = [g["path"] for g in gone_in or [] if not str(g.get("reason") or "").strip()]
+    if empty:
+        raise Reject(f"artifacts_gone: reason이 비어 있습니다: {empty}. 사용자가 지웠다고 확인한 내용을 한 구절로 적으세요.")
     arts, bodies = [], []
     for a in arts_in:
         path = (Path(root) / a.get("path", "")).resolve()
@@ -1004,6 +1076,50 @@ def moved_artifacts(p, root, state):
             raise Reject(f"artifacts_moved: 새 경로의 파일이 없습니다: {new}")
         out[old] = {"path": new, "sha256": sha(path.read_bytes())}
     return out
+
+
+def path_key(root, path):
+    """One file's key for comparing artifact paths (2.27.0, N03): the project-based real path, so b.md, ./b.md and the absolute
+    path are one file. Only for comparing; the recorded spelling is not changed."""
+    return os.path.realpath(os.path.join(str(root), path))
+
+
+def gone_artifacts(p, root, state):
+    """save input artifacts_gone [{"path", "reason"}] → changes.artifacts_gone (2.27.0, U12 B′): recorded files the user confirmed
+    deleted for good. Paths are compared by path_key (N03): each must be a recorded artifact and appear once, and a file this
+    save also records or moves is refused. The change names the recorded artifact's own spelling (what apply removes). The file
+    may still be on disk (the user's word is the evidence)."""
+    key = lambda x: path_key(root, x)
+    have = {}
+    for x in state["artifacts"]:
+        have.setdefault(key(x["path"]), []).append(x["path"])
+    gone, keys = [], []
+    for g in p.get("artifacts_gone") or []:
+        k = key(g["path"])
+        if k not in have:
+            raise Reject(f"artifacts_gone: 산출물 목록에 없는 경로입니다: {g['path']}. 현재: {sorted(x['path'] for x in state['artifacts'])}")
+        keys.append(k)
+        gone += [{"path": path, "reason": g["reason"].strip()} for path in have[k]]
+    dup = sorted({g["path"] for g, k in zip(p.get("artifacts_gone") or [], keys) if keys.count(k) > 1})
+    if dup:
+        raise Reject(f"artifacts_gone: 같은 경로가 두 번 있습니다: {dup}")
+    moved = p.get("artifacts_moved") or {}
+    others = {key(x) for x in list(moved) + list(moved.values()) + [a["path"] for a in p.get("artifacts", [])]}
+    both = sorted(g["path"] for g, k in zip(p.get("artifacts_gone") or [], keys) if k in others)
+    if both:
+        raise Reject(f"artifacts_gone: 같은 save의 artifacts·artifacts_moved에도 있는 경로입니다: {both}")
+    return gone
+
+
+def gone_list(events, state, root):
+    """verify (2.27.0): ["path(Eid)"] of artifacts recorded as gone (Eid = the event that recorded it), except a path recorded
+    again afterwards."""
+    key = lambda x: path_key(root, x)  # N03: ./b.md or the absolute path recorded again after b.md went is the same file
+    live, out = {key(a["path"]) for a in state["artifacts"]}, {}
+    for ev in events:
+        for g in (ev.get("changes") or {}).get("artifacts_gone") or []:
+            out[key(g["path"])] = f"{g['path']}({ev['id']})"
+    return [v for path, v in out.items() if path not in live]
 
 
 def drop_repeats(changes, state):
@@ -1077,7 +1193,7 @@ def check_quotes(p, arts, bodies, state):
 
 def cmd_save(args):
     root = Path(args.root).resolve()
-    tool, sid = identity(args)
+    tool, sid, how = identity_how(args)
     raw = sys.stdin.read()
     try:
         p = json.loads(raw)
@@ -1106,9 +1222,9 @@ def cmd_save(args):
         # 신선도: 이 세션이 이 작업에서 마지막으로 본 seq 뒤에 다른 저장이 있으면 거부(읽기 전 쓰기 방지)
         seen = (sess or {}).get("last_seen", {}).get(wid)
         if seen is None and events:
-            raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다.")
+            raise Reject(f"show 먼저 실행하세요(작업 {wid}). 이 세션은 아직 이 작업의 현재 기록을 읽지 않았습니다." + call_note(tool, sid, how))
         if seen is not None and seen < len(events):
-            raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요.")
+            raise Reject(f"기록이 바뀌었습니다(seq {seen}→{len(events)}). show 후 다시 저장하세요." + call_note(tool, sid, how))
         # 같은 세션이 직전 사건과 같은 내용을 다시 저장하면 거부: 되감기(rewind) 뒤 기억만 되돌아간 경우(신선도 검사는 통과한다)
         last = events[-1] if events else None
         if last and (last.get("tool"), last.get("session_id"), last.get("type")) == (tool, sid, p["type"]) \
@@ -1131,6 +1247,9 @@ def cmd_save(args):
         moved = moved_artifacts(p, root, state)
         if moved:
             changes["artifacts_moved"] = moved
+        gone = gone_artifacts(p, root, state)
+        if gone:
+            changes["artifacts_gone"] = gone
         ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
         for k in ("occurred_at", "source"):
             if k in p:
@@ -1151,7 +1270,7 @@ def cmd_save(args):
         rebuilt = commit(d, index, wid, ev)
         write_atomic(wpath, json.dumps({"tool": tool, "session_id": sid, "seq": ev["seq"]}) + "\n")
         update_session(d, tool, sid, seen=(wid, ev["seq"]), saved_turn=(sess or {}).get("turn", 0))
-        missing = own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid))
+        missing = note_once(d, (tool, sid), wid, own_missing_artifacts(d, events + [ev], rebuilt, (tool, sid)))
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
                       "self_quoted": self_quoted, **({"artifacts_missing": missing} if missing else {}),
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
@@ -1178,7 +1297,7 @@ def cmd_skip(args):
         if cur and work_dir(d, cur).is_dir():
             try:
                 evs, _ = read_events(work_dir(d, cur))
-                missing = own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid))
+                missing = note_once(d, (tool, sid), cur, own_missing_artifacts(d, evs, fold(evs)[0], (tool, sid)))
             except (Reject, OSError, ValueError):
                 pass
     print(json.dumps({"ok": True, "turn": turn, **({"artifacts_missing": missing} if missing else {}), **off_flag(d),
@@ -1241,6 +1360,42 @@ def other_constraints(d, index, wid):
     return parts
 
 
+def new_work_refusal(sess, index, force):
+    """Inside locked(d): refuse a second new work of one session in one turn (new-work, and reassign --new since 2.27.0).
+    It is usually a retry after an unclear result, and would make "<id>-2" (2.25.0). 2.26.0: turn 0 too (the first connection
+    turn is the one that matters most), and the marker new_work_turn/new_work_id is written before index.json: a retry after a
+    failed index write is let through (the id is not in the index), a retry after a failed session write is refused (the work exists)."""
+    made = sess["new_work_id"]
+    if sess["new_work_turn"] == sess["turn"] and (made is None or made in index["works"]) and not force:
+        made = made or sess["current_work"]
+        raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {made}를 만들었습니다. 재시도라면 works로 확인하고 그 작업을 그대로 쓰세요"
+                     f"(현재 작업이 {made}가 아니면 use {made} --quote). 정말 하나 더 만들려면 --force를 붙이세요.")
+
+
+def create_work(d, index, who, sess, title, origin=None, **session_changes):
+    """Inside locked(d): a new index entry and an empty work folder (no event: the first save or reassign writes the ledger).
+    The session's retry marker (new_work_turn, new_work_id, new_work_from = origin, plus session_changes) is written before
+    index.json. Returns the id. Shared by new-work (origin None) and reassign --new (2.27.0, origin = new_work_origin(…))."""
+    made = sess["new_work_id"]
+    works = works_root(d)
+    taken = set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set())
+    if made and made not in index["works"] and (works / made).is_dir() and not any((works / made).iterdir()):
+        taken.discard(made)  # the empty folder an earlier attempt of this turn made before its index write failed: reuse the id
+    wid = make_id(title, taken)
+    update_session(d, *who, new_work_turn=sess["turn"], new_work_id=wid, new_work_from=origin, **session_changes)
+    at = now()
+    index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
+    work_dir(d, wid).mkdir(parents=True, exist_ok=True)
+    write_index(d, index)
+    return wid
+
+
+def others_notice(others):
+    """new-work's (and reassign --new's) notice part: the other works' constraints do not apply to the new one."""
+    return ("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
+            + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+
+
 def cmd_new_work(args):
     title = NEW_WORK_PREFIX.sub("", str(args.arg or "")).strip()  # "새 작업: 제목"을 그대로 넣어도 제목만 남긴다
     if not title:
@@ -1253,27 +1408,10 @@ def cmd_new_work(args):
     with locked(d):
         sess = session_or_new(d, tool, sid)
         index = index_or_new(d)
-        # A second new-work of one session in one turn is usually a retry after an unclear result, and would make "<id>-2"
-        # (2.25.0). 2.26.0: turn 0 too (the first connection turn is the one that matters most), and the marker
-        # new_work_turn/new_work_id is written before index.json: a retry after a failed index write is let through (the id is
-        # not in the index), a retry after a failed session write is refused (the work exists).
-        made = sess["new_work_id"]
-        if sess["new_work_turn"] == sess["turn"] and (made is None or made in index["works"]) and not getattr(args, "force", False):
-            made = made or sess["current_work"]
-            raise Reject(f"이 세션은 이번 턴에 이미 new-work로 작업 {made}를 만들었습니다. 재시도라면 works로 확인하고 그 작업을 그대로 쓰세요"
-                         f"(현재 작업이 {made}가 아니면 use {made} --quote). 정말 하나 더 만들려면 --force를 붙이세요.")
-        works = works_root(d)
-        taken = set(index["works"]) | ({p.name for p in works.iterdir()} if works.is_dir() else set())
-        if made and made not in index["works"] and (works / made).is_dir() and not any((works / made).iterdir()):
-            taken.discard(made)  # the empty folder an earlier attempt of this turn made before its index write failed: reuse the id
-        wid = make_id(title, taken)
+        new_work_refusal(sess, index, getattr(args, "force", False))
         # fresh: the hooks of this session ran while the folder was not connected and could not leave a record, so the
         # "Hook 미작동 의심" warning would be wrong here; "connect" in hooks_seen stands for them until a hook records itself.
-        update_session(d, tool, sid, new_work_turn=sess["turn"], new_work_id=wid, **({"hooks_seen": {"connect": now()}} if fresh else {}))
-        at = now()
-        index["works"][wid] = {"title": title, "status": "ACTIVE", "created_at": at, "updated_at": at, "last_seq": 0}
-        work_dir(d, wid).mkdir(parents=True, exist_ok=True)
-        write_index(d, index)
+        wid = create_work(d, index, (tool, sid), sess, title, **({"hooks_seen": {"connect": now()}} if fresh else {}))
         update_session(d, tool, sid, current_work=wid, selected_turn=sess["turn"])
         others = other_constraints(d, index, wid)
     result = {"ok": True, "id": wid, "title": title, "current_work": wid}
@@ -1282,8 +1420,7 @@ def cmd_new_work(args):
         result.update(connected=True, connected_changed=changed, connected_notes=notes)
     notices = []
     if others:
-        notices.append("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: " + ", ".join(others)
-                       + ". 이어받을 결정·제약은 이 작업을 맡긴 프롬프트에 적힌 것만 다시 저장하세요. 프롬프트에 없으면 사용자에게 확인하세요.")
+        notices.append(others_notice(others))
     above = next((p for p in d.parent.parents if (p / ".worklog" / "index.json").is_file()), None)  # works there, not ~/.worklog (WL_HOME) or an empty connection
     if above:  # 상위 폴더에 이미 기록이 있으면 하위에 따로 기록하는 것이 맞는지 확인한다(기록이 갈라진다)
         notices.append(f"상위 폴더 {above}에 Worklog가 있습니다. 이 하위 폴더에 따로 기록하려는 것이 맞는지 사용자에게 확인하세요.")
@@ -1322,6 +1459,8 @@ def cmd_reopen(args):
 
 
 # --- 잘못 고른 작업의 정정 (2.25.0). 원장은 작업별 추가 전용: 사건을 옮기지 않고 양쪽에 서로를 가리키는 CORRECTION을 남긴다 ---
+# 바깥 의존 함수(27, 2.27.0): commit connected create_work entry fold identity index_or_new locked mark_seen_if_current need_quote new_event new_work_refusal norm not_connected_text other_constraints others_notice project projection_ok read_events session_or_new sha store tag title_slug update_session work_dir write_index (+ 상수 NEW_WORK_PREFIX·REASSIGNED_MAX, 예외 Reject·SessionCorrupt)
+# 이 구역은 `import wl`·형제 파일 분리를 전제하지 않는다(분리는 보류, 2026-10-22 결정). 위 목록은 경계 표시이며 옮길 때의 비용 기준이다.
 
 EVENT_ID = re.compile(r"E(\d{1,6})")
 
@@ -1339,12 +1478,6 @@ def event_ids(spec, events):
     if missing:
         raise Reject(f"작업에 없는 사건: {missing}. show의 사건 목록에서 범위를 고르세요.")
     return sorted(set(out))
-
-
-def mark_seen_if_current(d, tool, sid, wid, before, after):
-    """A session that had read this work up to `before` has read its own event too (archive/reopen, reassign, rename)."""
-    if session_or_new(d, tool, sid)["last_seen"].get(wid, 0) == before:
-        update_session(d, tool, sid, seen=(wid, after))
 
 
 def ref_ids(e, kind, work=None):
@@ -1428,15 +1561,60 @@ def refile_changes(rstate, decs, cons):
     return changes, already, upgraded
 
 
+def new_work_origin(wrong, ids):
+    """The session marker new_work_from of reassign --new (2.27.0): which work and events this creation is for."""
+    return f"{wrong}:{','.join(ids)}"
+
+
+def new_target_resume(d, index, who, title, wrong, ids):
+    """reassign --new re-run (2.27.0): the work an earlier run of the same command created. Only when this session's marker says
+    so — new_work_id is that work and new_work_from names `wrong` and exactly these events — and the work has this title and a
+    ledger that is empty or holds only this session's CORRECTIONs refiled from `wrong` with exactly these events. Any other work
+    (another session's empty work too) is not continued: the caller refuses it as a slug clash. None if none."""
+    sess = session_or_new(d, *who)
+    wid = sess["new_work_id"]
+    if not wid or wid == wrong or sess["new_work_from"] != new_work_origin(wrong, ids) or (index["works"].get(wid) or {}).get("title") != title:
+        return None
+    for e in read_events(work_dir(d, wid))[0]:
+        if not (e.get("type") == "CORRECTION" and (e.get("tool"), e.get("session_id")) == tuple(who)
+                and sorted(ref_ids(e, "refiled_from", wrong)) == ids):
+            return None
+    return wid
+
+
+def new_work_probe(d, who, origin, wrong, ids):
+    """reassign --new failed while creating the work (2.27.0, N02): read the disk again. Returns (the work id if this session's
+    marker names it and it is in index.json, else None; reassign_progress of it or None)."""
+    try:
+        sess, index = session_or_new(d, *who), index_or_new(d)
+    except (Reject, SessionCorrupt, OSError, ValueError):
+        return None, None
+    wid = sess["new_work_id"] if sess["new_work_from"] == origin else None
+    if not wid or wid not in index["works"]:
+        return None, None
+    try:
+        return wid, reassign_progress(d, wrong, wid, ids, who)
+    except (Reject, OSError, ValueError):
+        return wid, None
+
+
 def cmd_reassign(args):
     """reassign <wrong> <right> --events E0003-E0005 --quote (2.26.0 order): ⒜ CORRECTION in the right work that records the
     decisions and constraints those events added (new D/C ids, their source kept or upgraded, artifacts rehashed, original quotes
     in refs, refs point only at the wrong work's existing events), ⒝ CORRECTION in the wrong work that removes them, its refiled_to
     naming the id ⒜ really got, ⒞ the right work becomes this session's current work. One .lock. A failure anywhere is reported as
-    partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones."""
+    partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones.
+    2.27.0 (U15): `--new "<title>"` in place of <right> first creates the right work like new-work (same id rule, same same-turn
+    refusal and marker, same notice; ⒜ carries goal = title) inside the same lock; a re-run finds that work by its title."""
     wrong, right = args.arg, getattr(args, "arg2", None)
-    usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"'
-    if not (wrong and right and getattr(args, "events", None)):
+    new = getattr(args, "new", None)
+    title = NEW_WORK_PREFIX.sub("", str(new or "")).strip() if new is not None else None
+    usage = 'reassign <잘못된 id> <맞는 id> --events E0003-E0005 --quote "<사용자 원문>"(맞는 작업이 아직 없으면 <맞는 id> 대신 --new "<제목>")'
+    if new is not None and right:
+        raise Reject(f"<맞는 id>({right})와 --new를 함께 쓸 수 없습니다. {usage}")
+    if new is not None and not title:
+        raise Reject(f"--new의 제목이 비어 있습니다. {usage}")
+    if not (wrong and (right or title) and getattr(args, "events", None)):
         raise Reject(f"{usage} 형식입니다.")
     if wrong == right:
         raise Reject("잘못된 작업과 맞는 작업이 같습니다.")
@@ -1445,12 +1623,26 @@ def cmd_reassign(args):
     d = store(args.root)
     if not connected(d):
         raise Reject(not_connected_text(args, d, "reassign"))
-    who, result, failed, after = (tool, sid), None, None, None
+    who, result, failed, after, created = (tool, sid), None, None, None, None
     with locked(d):
         index = index_or_new(d)
-        entry(index, wrong), entry(index, right)
+        entry(index, wrong)
         wevents, _ = read_events(work_dir(d, wrong))
         ids = event_ids(args.events, wevents)
+        origin = new_work_origin(wrong, ids)
+        if title:  # --new (2.27.0): an earlier run's work, else checks now and creation after the double-refile checks below
+            right = new_target_resume(d, index, who, title, wrong, ids)
+            if not right:
+                slug = title_slug(title)
+                if slug == wrong:  # N-3: the clash advice below would say "reassign recipe recipe"
+                    raise Reject(f"--new 제목으로 만들 작업 id가 잘못된 작업의 id({wrong})와 같습니다. 다른 제목을 쓰세요.")
+                if slug and not slug.replace("-", "").isdigit() and slug in index["works"]:
+                    raise Reject(f"--new 제목의 작업 id {slug}가 이미 있습니다(제목: {index['works'][slug]['title']}). 그 작업으로 옮기려면 "
+                                 f"reassign {wrong} {slug} --events {args.events} --quote \"<원문>\", 새 작업이 맞으면 다른 제목을 쓰세요.")
+                sess = session_or_new(d, tool, sid)
+                new_work_refusal(sess, index, getattr(args, "force", False))
+        else:
+            entry(index, right)
         span = ids[0] if len(ids) == 1 else (f"{ids[0]}-{ids[-1]}" if len(ids) == int(ids[-1][1:]) - int(ids[0][1:]) + 1 else ", ".join(ids))
         sel = set(ids)
         # An event already refiled to another work is not refiled again (its rules left this work then). 2.26.0: judged from
@@ -1471,7 +1663,16 @@ def cmd_reassign(args):
                           and r.get("work") != right), None)
             if hit and other:
                 raise Reject(f"이미 {other}로 옮긴 사건입니다: {', '.join(sorted(hit))}({wrong} {e['id']}). show --work {other}로 확인하세요.")
-        pr = reassign_progress(d, wrong, right, ids, who)
+        if title and not right:  # N02 (2.27.0): a failure from here on has changed the disk, so it is reported as partial
+            try:
+                right = created = create_work(d, index, who, sess, title, origin=origin)
+                pr = reassign_progress(d, wrong, right, ids, who)
+            except (Reject, SessionCorrupt, OSError, ValueError) as e:
+                failed = f"{type(e).__name__}: {e}" if not isinstance(e, Reject) else str(e)
+                created, after = new_work_probe(d, who, origin, wrong, ids)
+                reassign_partial(failed, after, created, title)
+        else:
+            pr = reassign_progress(d, wrong, right, ids, who)
         steps, index, ev_b, ev_a = pr["steps"], pr["index"], pr["refiled"], pr["misfiled"]
         (wevents, wprev), (revents, rprev) = pr["wrong"], pr["right"]
         if all(steps.values()):
@@ -1484,6 +1685,8 @@ def cmd_reassign(args):
         try:
             if not ev_b:  # ⒜ the right work first
                 changes = refile_changes(fold(revents)[0], decs, cons)[0]
+                if title and not revents:  # --new: the new work's first event sets its goal like a first save would
+                    changes["goal"] = title
                 new_a = [{"path": a["path"], "sha256": sha((d.parent / a["path"]).read_bytes())} for a in arts if (d.parent / a["path"]).is_file()]
                 if new_a:
                     changes["artifacts"] = new_a
@@ -1536,19 +1739,30 @@ def cmd_reassign(args):
                       **({"upgraded": upgraded} if upgraded else {}),     # 2.26.0: a model item there became the user item moved here
                       **({"resumed": resumed} if resumed else {}),        # 2.26.0: steps an earlier run had done (this run did the rest)
                       **({"corrected_ref": True, "ref_correction": corrected["id"]} if corrected else {}),  # 2.26.0 (F05)
+                      **({"created": created} if created else {}),  # 2.27.0: --new made this work in this run
                       "current_work": right,
                       "decisions": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["decisions"]],
                       "constraints": [f"{x['id']}: {x['text']}{tag(x)}" for x in rebuilt["constraints"]]}
+            others = other_constraints(d, index, right) if title else []
+            if others:  # 2.27.0: the same notice as new-work
+                result["notice"] = others_notice(others)
     if failed:
-        done = [k for k in REASSIGN_STEPS if after["steps"][k]] if after else None
-        b_id = (after["refiled"] or {}).get("id") if after else None
-        a_id = (after["misfiled"] or {}).get("id") if after else None
-        print(json.dumps({"ok": False, "partial": True, "done": done, "refiled": b_id, "misfiled": a_id, "error": failed,
-                          "next": "원인을 고친 뒤 같은 reassign 명령을 다시 실행한다(끝난 단계는 건너뛰고 빠진 단계만 한다).",
-                          "message": f"reassign이 중간에 멈췄습니다(끝난 단계: {', '.join(done) if done else ('없음' if done is not None else '확인 못함')}). "
-                                     "원인을 고친 뒤 같은 reassign 명령을 다시 실행하면 빠진 단계만 합니다."}, ensure_ascii=False))
-        sys.exit(2)
+        reassign_partial(failed, after, created, title)
     print(json.dumps(result, ensure_ascii=False))
+
+
+def reassign_partial(failed, after, created, title=None):
+    """reassign's partial JSON (exit 2). done = the five steps on disk, None when they could not be read. --new (2.27.0, N02):
+    created = the new work when it is in index.json; a failure before that has done none of the steps (done [])."""
+    done = [k for k in REASSIGN_STEPS if after["steps"][k]] if after else ([] if title and not created else None)
+    b_id = (after["refiled"] or {}).get("id") if after else None
+    a_id = (after["misfiled"] or {}).get("id") if after else None
+    print(json.dumps({"ok": False, "partial": True, "done": done, "refiled": b_id, "misfiled": a_id, "error": failed,
+                      **({"created": created} if created else {}),
+                      "next": "원인을 고친 뒤 같은 reassign 명령을 다시 실행한다(끝난 단계는 건너뛰고 빠진 단계만 한다).",
+                      "message": f"reassign이 중간에 멈췄습니다(끝난 단계: {', '.join(done) if done else ('없음' if done is not None else '확인 못함')}). "
+                                 "원인을 고친 뒤 같은 reassign 명령을 다시 실행하면 빠진 단계만 합니다."}, ensure_ascii=False))
+    sys.exit(2)
 
 
 def cmd_rename(args):
@@ -1608,11 +1822,11 @@ def cmd_show(args):
     if not connected(d):  # 2.26.0: the hook's NOT_CONNECTED line (root·auto·git and what to do), after the plain first line
         print(not_connected_text(args, d, "show"))
         return
+    who = try_identity(args)  # N-1 (2.27.0): before the no-work text, so two tool session variables are refused with or without works
     index = load_index(d)
     if not index or not index["works"]:  # 2.26.0: the SessionStart EMPTY text (auto=on: create without asking; off: wait)
         print(off_note(d) + "Worklog 작업 없음. " + no_work_guide(index or {"works": {}}))
         return
-    who = try_identity(args)
     wid = args.work or current_work(d, who, index)
     if not wid:
         print(off_note(d) + "현재 작업 없음. " + NO_WORK_GUIDE + "\n작업 목록:\n"
@@ -1659,7 +1873,7 @@ def read_work(d, wid, title, who, **session_changes):
     newer = core_report(events)
     if newer:
         note += f"[Worklog 코어 경고] {newer['warning_core']}\n"
-    note += artifacts_note(own_missing_artifacts(d, events, state, who))
+    note += artifacts_note(note_once(d, who, wid, own_missing_artifacts(d, events, state, who)))
     unseen = unseen_section(d, who, wid, events)  # 갱신 전에 계산한다
     if who:  # 세션을 모르는 사람의 show는 읽기만 한다
         update_session(d, *who, seen=(wid, len(events)), **session_changes)
@@ -1671,8 +1885,11 @@ def check_work(d, wid, title):
     events, _ = read_events(wd)
     state, _ = fold(events)
     ok_json, ok_md = projection_ok(wd, state, wid, title, events)
+    arts, gone = artifacts_check(d, state), gone_list(events, state, d.parent)
+    if gone:  # 2.27.0: shown apart from missing, only when there is one (older results unchanged)
+        arts["gone"] = gone
     return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
-            "state_json": ok_json, "state_md": ok_md, "artifacts": artifacts_check(d, state), **core_report(events)}
+            "state_json": ok_json, "state_md": ok_md, "artifacts": arts, **core_report(events)}
 
 
 def cmd_verify(args):
@@ -1869,13 +2086,14 @@ def injection(d, who):
     if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
         out.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
                                                               for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
-    cur, unseen = None, ""
+    cur, unseen, missing = None, "", []
     if who:
         with locked(d):
             cur = current_work(d, who, index)
             if cur:
                 events, _ = read_events(work_dir(d, cur))
                 unseen = unseen_section(d, who, cur, events)
+                missing = note_once(d, who, cur, own_missing_artifacts(d, events, fold(events)[0], who))  # 2.27.0: inside the lock
                 update_session(d, *who, seen=(cur, len(events)))
             mark_hook(d, who, "SessionStart")
     if cur:
@@ -1883,7 +2101,7 @@ def injection(d, who):
         out.append(f"## 현재 작업: {cur} · {title}")
         if events:
             st = fold(events)[0]
-            out += [x for x in (artifacts_note(own_missing_artifacts(d, events, st, who)).rstrip("\n"),) if x]
+            out += [x for x in (artifacts_note(missing).rstrip("\n"),) if x]
             out.append(render(st, cur, title).rstrip("\n"))
             if unseen:
                 out.append(unseen.rstrip("\n"))
@@ -2106,7 +2324,8 @@ def main(argv=None):
     ap.add_argument("--work", help="show·verify: 대상 작업 id")
     ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
-    ap.add_argument("--force", action="store_true", help="new-work: 같은 턴의 두 번째 new-work 거부를 풀어 하나 더 만든다")
+    ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
+    ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
