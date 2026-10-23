@@ -4092,6 +4092,16 @@ class Release2280Test(Base):
             spec.loader.exec_module(mod)
         return mod
 
+    def test_update_py_module_tag_names(self):
+        """Only whole tag names v1.2.3 or 1.2.3 count: vv999.0.0, v1.2, release-1.0.0, 1.0.0-rc1 and non-ASCII digits are skipped."""
+        up = self.load_update(Path(tempfile.mkdtemp()))
+        names = ["vv999.0.0", "v1.2", "release-1.0.0", "v9.0.0-rc1", "v\u0661.0.0", "v0.3.0", "0.2.9", "v0.3.0^{}"]
+        out = "".join(f"{i}\trefs/tags/{n}\n" for i, n in enumerate(names))
+        with mock.patch.object(up, "git", lambda *a, timeout=None: (0, out, "")):
+            self.assertEqual(up.module_tags("https://example.invalid/m"), ("0.3.0", None))
+        with mock.patch.object(up, "git", lambda *a, timeout=None: (0, "a\trefs/tags/vv999.0.0\nb\trefs/tags/v1.2\n", "")):
+            self.assertEqual(up.module_tags("https://example.invalid/m"), (None, None))
+
     def test_update_py_checks_module_tags(self):
         home = Path(tempfile.mkdtemp())
         up = self.load_update(home)
