@@ -427,6 +427,9 @@ def update_note():
     return core_update_line(cache) + module_update_lines(cache)
 
 
+CHANGELOG_URL = "https://github.com/BUGGIEEEEE/worklog/blob/{tag}/CHANGELOG.md"  # 2.28.0: the new-version line's "바뀐 것"
+
+
 def core_update_line(cache):
     cmd = f"python3 -B {shlex.quote(str(Path(__file__).resolve()))} update"
     changelog = UPDATE_PY.parents[1] / "CHANGELOG.md"
@@ -442,7 +445,9 @@ def core_update_line(cache):
         if cache.get("error"):
             return (f"[Worklog 갱신 실패] v{latest} 갱신 실패: {cache['error']}. 에이전트는 다시 시도하지 않는다. "
                     f"사용자가 원인을 확인한 뒤 실행: {cmd}\n")
-        return (f"[Worklog 갱신 안내] v{latest} 사용 가능(현재 {VERSION}). 바뀐 것: {changelog} {latest} 절. "
+        tag = "v" + ".".join(map(str, parse_version(latest)))  # before the update the local CHANGELOG lacks that section (fetch --tags
+        # leaves the work tree as is, a copied install has no git at all), so the line points at the tagged file on GitHub
+        return (f"[Worklog 갱신 안내] v{latest} 사용 가능(현재 {VERSION}). 바뀐 것: {CHANGELOG_URL.format(tag=tag)}. "
                 f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
     return ""
 

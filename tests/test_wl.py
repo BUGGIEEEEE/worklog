@@ -4088,8 +4088,8 @@ class Release2280Test(Base):
         """U17: [Worklog …] head and one thing to do, for the new version, applied, major and failure lines."""
         wl, note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0"}})
         cmd = f"python3 -B {shlex.quote(str(WL.resolve()))} update"
-        changelog = WL.resolve().parents[1] / "CHANGELOG.md"
-        self.assertEqual(note, f"[Worklog 갱신 안내] v99.0.0 사용 가능(현재 {wl.VERSION}). 바뀐 것: {changelog} 99.0.0 절. "
+        self.assertEqual(note, f"[Worklog 갱신 안내] v99.0.0 사용 가능(현재 {wl.VERSION}). "            # 갱신 전 로컬 CHANGELOG에는 그 절이 없다
+                               "바뀐 것: https://github.com/BUGGIEEEEE/worklog/blob/v99.0.0/CHANGELOG.md. "
                                f"에이전트는 자동 갱신하지 않는다. 사용자가 실행: {cmd}\n")
         note = self.note_with({"config.json": {"update": "notify"}, "update.json": {"checked_at": "x", "latest": "99.0.0", "error": "e"}})[1]
         self.assertEqual(note, f"[Worklog 갱신 실패] v99.0.0 갱신 실패: e. 에이전트는 다시 시도하지 않는다. 사용자가 원인을 확인한 뒤 실행: {cmd}\n")
