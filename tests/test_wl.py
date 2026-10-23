@@ -3905,6 +3905,19 @@ class Release2280Test(Base):
                 out = self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "z", "next_action": "z"}))
                 self.assertEqual((out["next_action"], self.state()["next_action"]), ("z", "z"))   # 새 사건은 맨 뒤
 
+    def test_only_exact_occurred_at_counts(self):
+        """refs occurred_at counts only as a string of exactly YYYY-MM-DDTHH:MM:SSZ (ASCII digits); other values a ledger may hold
+        from before 2.28.0 (refs were not read then) leave the event in append order."""
+        wl = load_wl()
+        for odd in ("어제", "2026-10-23", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", 20261023, None,
+                    "\u0662\u0660\u0662\u0666-10-23T10:00:00Z", "2026-10-23T10:00:00Z\n"):
+            evs = [mem_event(1, "2026-10-23T10:00:05Z", {"next_action": "a"}), mem_event(2, "2026-10-23T10:00:06Z", {"next_action": "b"},
+                                                                                   refs=[{"occurred_at": odd}])]
+            self.assertIsNone(wl.occurred_at(evs[1]), odd)
+            self.assertEqual(wl.fold(evs)[0]["next_action"], "b", odd)
+        evs[1]["refs"] = [{"occurred_at": "2026-10-23T10:00:01Z"}]
+        self.assertEqual(wl.fold(evs)[0]["next_action"], "a")                        # 정확한 형식이면 그 시각으로 끼어든다
+
     def test_fixture_ledgers_fold_unchanged(self):
         """Ledgers without occurred_at keep their projections byte for byte (fixture sample-v2, two works)."""
         wl = load_wl()
@@ -3923,7 +3936,8 @@ class Release2280Test(Base):
     def test_save_ts_refusals(self):
         self.ok(new_work(self.root, "t"))
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
-        for bad in ("2026-10-23 10:00:00", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", "2026-13-01T00:00:00Z", "어제"):
+        for bad in ("2026-10-23 10:00:00", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", "2026-13-01T00:00:00Z", "어제",
+                    "\u0662\u0660\u0662\u0666-10-23T10:00:00Z"):                     # 아랍 숫자: strptime은 받지만 정렬이 맞지 않는다
             self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", bad]), "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)")
         for ahead in (3600, 30):                                                 # 유예 없음: 지금보다 뒤면 거부
             self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", self.ts_ago(-ahead)]), "--ts가 미래 시각입니다")

@@ -893,11 +893,13 @@ def apply(state, ev):
     return s
 
 
-STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")  # now()'s UTC form: the only form save --ts takes and the sort reads
+STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", re.ASCII)  # now()'s UTC form: the only form save --ts takes and the sort
+# reads. ASCII digits only: other Unicode digits (\u0662\u0660\u0662\u0666-…) pass strptime and would sort after every ASCII time
 
 
 def occurred_at(ev):
-    """2.28.0 (U20): when an imported event happened — the refs item {"occurred_at": "<UTC>"} that `save --ts` writes — else None."""
+    """2.28.0 (U20): when an imported event happened — the refs item {"occurred_at": "<UTC>"} that `save --ts` writes — else None.
+    Only a string of exactly the STAMP form counts; any other value (also one written by hand before 2.28.0) is ignored."""
     for r in ev.get("refs") or []:
         if isinstance(r, dict) and isinstance(r.get("occurred_at"), str) and STAMP.fullmatch(r["occurred_at"]):
             return r["occurred_at"]
