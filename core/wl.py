@@ -2473,7 +2473,8 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
     ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
     ap.add_argument("--ts", help="save(가져오기 전용): 사건이 실제로 일어난 UTC 시각 YYYY-MM-DDTHH:MM:SSZ. "
-                                 "refs에 occurred_at으로 남고 상태는 이 시각 순서로 계산된다. --session <도구>:<원래 세션 id>와 함께 쓴다")
+                                 "refs에 occurred_at으로 남고 상태는 이 시각 순서로 계산된다. --tool <도구> --session <원래 세션 id>와 함께 쓴다 "
+                                 "(예: save --tool codex --session 01a1… --ts 2026-10-23T09:00:00Z)")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
