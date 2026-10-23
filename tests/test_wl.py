@@ -3872,3 +3872,52 @@ class Release2280Test(Base):
             title = json.loads((SAMPLE_V2 / ".worklog/index.json").read_text())["works"][wd.name]["title"]
             self.assertEqual(s, json.loads((wd / "state.json").read_text()), wd.name)
             self.assertEqual(wl.render(s, wd.name, title), (wd / "state.md").read_text(), wd.name)
+
+    # --- U20 ---
+    def ts_ago(self, seconds):
+        import datetime
+        return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_save_ts_refusals(self):
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q"}))
+        for bad in ("2026-10-23 10:00:00", "2026-10-23T10:00:00+00:00", "2026-10-23T10:00:00.5Z", "2026-13-01T00:00:00Z", "어제"):
+            self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", bad]), "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)")
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y"}, extra=["--ts", self.ts_ago(-3600)]), "미래 시각")
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "y", "refs": [{"occurred_at": self.ts_ago(60)}]}),
+                     "save --ts")
+        self.assertEqual(len(self.events()), 1)
+
+    def test_save_ts_records_refs_and_folds_in_time_order(self):
+        self.ok(new_work(self.root, "t"))
+        old = self.ts_ago(3600)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "최신 결정"}],
+                                        "next_action": "최신"}))
+        out = self.ok(run(self.root, "save", {"type": "D_USER", "summary": "가져온 사건", "quote": "옛 원문", "next_action": "옛것",
+                                              "decisions": [{"text": "옛 결정"}], "refs": [{"kind": "block", "id": "B1"}]},
+                          extra=["--ts", old]))
+        ev = self.events()[-1]
+        self.assertEqual(ev["refs"], [{"kind": "block", "id": "B1"}, {"occurred_at": old}])
+        self.assertNotEqual(ev["at"], old)                                       # at = 기록 시각
+        s = self.state()
+        self.assertEqual(s["next_action"], "최신")                               # 나중에 저장됐지만 더 이른 사건: 상태를 덮지 않는다
+        self.assertEqual([(x["id"], x["text"]) for x in s["decisions"]], [("D2", "옛 결정"), ("D1", "최신 결정")])
+        self.assertEqual((s["seq"], out["seq"], out["next_action"]), (2, 2, "최신"))
+        self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
+        r, text = use(self.root, "t", session="s2")
+        self.assertIn(f"E0002 · codex:s1 · D_USER (가져옴 {old}) · 가져온 사건", text)
+        lines = text.split("## 이 세션이 아직 못 본 사건")[1].splitlines()
+        self.assertTrue(lines[1].startswith("- E0002") and lines[2].startswith("- E0001"), lines)  # 못 본 사건도 시각순
+        self.assertIn("현재 범위(최신 결정): D1: 최신 결정", text)
+
+    def test_save_ts_refused_where_a_reference_breaks(self):
+        """An imported event placed before the decision it replaces, or one that takes a later event's target, is refused before the append."""
+        self.ok(new_work(self.root, "t"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}]}))
+        before = (self.d / "works/t/events.jsonl").read_bytes()
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "y", "quote": "q", "decisions": [{"text": "b", "replaces": "D1"}]},
+                         extra=["--ts", self.ts_ago(3600)]), "자리에 놓으면 기록이 맞지 않습니다: replaces=D1")
+        self.assertEqual((self.d / "works/t/events.jsonl").read_bytes(), before)
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "q", "decisions": [{"text": "c", "replaces": "D1"}]}))
+        self.refused(run(self.root, "save", {"type": "D_USER", "summary": "w", "quote": "q", "decisions": [{"text": "d", "replaces": "D1"}]},
+                         extra=["--ts", self.ts_ago(1)]), "자리에 놓으면")  # z 앞이면 z의 대상을 빼앗고, 뒤면 D1이 이미 대체됐다: 어느 쪽이든 거부

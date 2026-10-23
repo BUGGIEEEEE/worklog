@@ -1034,6 +1034,8 @@ def validate(p, root, state):
     refs = p.get("refs", [])
     if not isinstance(refs, list) or any(not isinstance(r, dict) or not all(isinstance(v, str) for v in r.values()) for r in refs):
         raise Reject('refs는 [{"kind": "block", "id": "B03"}]처럼 문자열 값만 가진 객체 목록입니다.')
+    if any("occurred_at" in r for r in refs):  # 2.28.0 (U20): the sort reads it, so only the checked `save --ts` writes it
+        raise Reject("refs의 occurred_at은 save --ts <YYYY-MM-DDTHH:MM:SSZ>로만 넣습니다.")
     if "status" in p and p["status"] not in STATUSES:
         raise Reject(f"status는 {STATUSES} 중 하나여야 합니다.")
     decisions = p.get("decisions", [])
@@ -1224,9 +1226,29 @@ def check_quotes(p, arts, bodies, state):
     return need, unreflected, self_quoted
 
 
+TS_FORMAT = "--ts 형식: YYYY-MM-DDTHH:MM:SSZ(UTC)"
+TS_FUTURE = 60  # seconds of clock difference save --ts allows
+
+
+def import_ts(value):
+    """2.28.0 (U20): the checked `save --ts` value (None without it). Only now()'s UTC form, a real date, not in the future."""
+    if value is None:
+        return None
+    try:
+        at = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise Reject(TS_FORMAT)
+    if not STAMP.fullmatch(value):
+        raise Reject(TS_FORMAT)
+    if at > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=TS_FUTURE):
+        raise Reject(f"--ts가 미래 시각입니다({value}, 지금 {now()}). 가져오는 사건이 실제로 일어난 UTC 시각을 넣으세요.")
+    return value
+
+
 def cmd_save(args):
     root = Path(args.root).resolve()
     tool, sid, how = identity_how(args)
+    ts = import_ts(getattr(args, "ts", None))
     raw = sys.stdin.read()
     try:
         p = json.loads(raw)
@@ -1283,7 +1305,8 @@ def cmd_save(args):
         gone = gone_artifacts(p, root, state)
         if gone:
             changes["artifacts_gone"] = gone
-        ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), p.get("refs", []), changes)
+        refs = list(p.get("refs", [])) + ([{"occurred_at": ts}] if ts else [])  # 2.28.0 (U20): at stays the time of this save
+        ev = new_event(events, prev, p["type"], tool, sid, p["summary"], p.get("quote"), refs, changes)
         for k in ("occurred_at", "source"):
             if k in p:
                 ev[k] = p[k]
@@ -1294,6 +1317,10 @@ def cmd_save(args):
             render(new_state, wid, title)
         except (TypeError, ValueError, KeyError, AttributeError) as e:
             raise Reject(f"상태를 만들 수 없는 입력입니다({type(e).__name__}: {e}). `wl.py help` 참고.")
+        except Reject as e:
+            if ts:  # the event goes where its time puts it, so a reference may not exist yet there or a later event may lose its target
+                raise Reject(f"--ts {ts} 자리에 놓으면 기록이 맞지 않습니다: {e}")
+            raise
         need, unreflected, self_quoted = check_quotes(p, arts, bodies, new_state)
         check = p.get("check") or {}
         if need:
@@ -2370,6 +2397,8 @@ def main(argv=None):
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
     ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
     ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
+    ap.add_argument("--ts", help="save(가져오기 전용): 사건이 실제로 일어난 UTC 시각 YYYY-MM-DDTHH:MM:SSZ. "
+                                 "refs에 occurred_at으로 남고 상태는 이 시각 순서로 계산된다. --session <도구>:<원래 세션 id>와 함께 쓴다")
     args = ap.parse_intermixed_args(argv)  # 3.9 argparse도 `skip --tool claude "이유" --root …`처럼 섞인 순서를 받는다
     args.root_explicit = bool(args.root)  # hooks: an explicit --root wins over the event's cwd (2.25.0)
     args.root = args.root or str(candidate_root(os.getcwd()))  # 2.25.0: --root wins; otherwise the git top level / nearest records
