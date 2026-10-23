@@ -50,6 +50,8 @@ python3 -B worklog/tools/install_project.py --tool codex  --user
 
 `git pull` updates the core, which the hooks run directly. Re-running the installer refreshes the rules block and the skill. An unchanged hook is left byte-for-byte, so Codex does not ask for trust again; only if the clone was moved are the hooks rewritten, and then the user must re-trust them in `/hooks`. `wl.py update` does the pull (same major version, tags only) and the `--user` reinstall together; a project installed with `--root` is reinstalled with `--root` again (or by `wl.py update --root <project>`).
 
+The session-start notice (since 2.28.0) is one line per thing to do, e.g. `[Worklog 갱신 안내] v2.28.0 사용 가능(현재 2.27.0). 바뀐 것: <clone>/CHANGELOG.md 2.28.0 절. 에이전트는 자동 갱신하지 않는다. 사용자가 실행: python3 -B <clone>/core/wl.py update`. Tell the user and let them decide; do not run `update` on your own. Extension modules registered in `~/.worklog/modules.json` get their own line (`모듈 <name> v<x> 사용 가능`); they are updated with that module's own installer, never by `wl.py update`.
+
 When an update changes how `state.md`/`state.json` are rendered (2026-10-09 did: source tags, current scope line, artifact summary), `verify` reports the old projections as mismatched until the next `show`, `use` or save rebuilds them from the ledger. The ledgers themselves are untouched; run `python3 -B worklog/core/wl.py show --work <id> --root /path/to/project` once per work if you want `verify --all` clean right away.
 
 ## Uninstall
