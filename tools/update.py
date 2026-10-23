@@ -76,7 +76,8 @@ def git(*args, timeout=FETCH_TIMEOUT):
     return p.returncode, p.stdout, p.stderr
 
 
-MODULE_TAG = re.compile(r"v?(\d+)\.(\d+)\.(\d+)", re.ASCII)  # whole tag name only: vv1.0.0, v1.2, 1.0.0-rc1, release-1.0.0 are skipped
+MODULE_TAG = re.compile(r"v?(\d+)\.(\d+)\.(\d+)", re.ASCII)  # whole tag name only: vv1.0.0, v1.2, 1.0.0-rc1, release-1.0.0,
+# releases/v1.0.0 are skipped
 
 
 def module_tags(source):
@@ -84,7 +85,7 @@ def module_tags(source):
     rc, out, err = git("ls-remote", "--tags", "--refs", source)
     if rc:
         return None, f"git ls-remote 실패: {err.strip()[:200]}"
-    found = (MODULE_TAG.fullmatch(t.rsplit("/", 1)[-1]) for t in re.findall(r"refs/tags/(\S+)", out))
+    found = (MODULE_TAG.fullmatch(t) for t in re.findall(r"refs/tags/(\S+)", out))  # the whole name: releases/v1.0.0 is skipped
     tags = [tuple(int(x) for x in m.groups()) for m in found if m]
     return (".".join(map(str, max(tags))) if tags else None), None
 
