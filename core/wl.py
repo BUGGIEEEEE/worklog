@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.28.1"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.29.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -80,7 +80,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
                 {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],
   "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],
   "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
-  "waiting": ["note-guide.md는 다음 요청까지 작성 보류", "확인 필요: 2화는 원작 282행부터라고 가정"],  # 전체 교체. 생략하면 유지, []면 비움. 확인 안 된 가정도 여기에
+  "waiting": ["note-guide.md는 다음 요청까지 작성 보류", "확인 필요: 2화는 원작 282행부터라고 가정(원작 목차로 확인)", "확인 필요: 운영 DB에서 같은 결과(사용자가 접근 권한을 주면 실행)"],  # 전체 교체. 생략하면 유지, []면 비움. 확인 안 된 가정·결과와 사용자 사정으로 못 한 확인도 constraints·next_action이 아니라 여기에 '확인 필요: <무엇>(무엇으로 확인되는지)'로. COMPLETED·HANDOFF 뒤 수용한 항목만 빼고 나머지는 다시 적는다
   "next_action": "다음 행동",
   "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
   "artifacts": [{"path": "note-guide.md"}],

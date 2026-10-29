@@ -562,7 +562,9 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(out["hookEventName"], "SessionStart")
         self.assertIn("| PROVIDED |", out["additionalContext"])  # 설치된 Hook이 기록 있는 현재 작업을 주입
         self.assertIn("C1: 게시 금지", out["additionalContext"])
-        self.assertTrue((self.root / ".claude/skills/worklog/SKILL.md").exists())
+        skill = (self.root / ".claude/skills/worklog/SKILL.md").read_text()
+        self.assertTrue(skill.endswith("규칙은 CLAUDE.md/AGENTS.md(agy는 rules/worklog.md)의 Worklog 블록을 따른다.\n"))  # 2.29.0 U25
+        self.assertNotIn("save 입력 형식", skill)                                                 # 규칙 사본 없음
         manifest = json.loads((self.root / ".worklog/install.json").read_text())["claude"]  # 2단계: 설치 원본 해시 기록
         self.assertEqual(manifest["rules_src_sha"], hashlib.sha256((inst.parents[1] / "adapters/rules.md").read_bytes()).hexdigest())
         self.assertEqual(manifest["version"], json.loads(run(self.root, "version")[1])["version"])
@@ -2268,7 +2270,9 @@ class AgyPiTest(Base):
         self.assertEqual(hooks["herdr"], self.other)  # 다른 이름의 훅은 그대로
         self.assertEqual(sorted(hooks["worklog"]), ["PreInvocation", "SessionStart", "Stop"])
         self.assertTrue(hooks["worklog"]["Stop"][0]["command"].endswith("stop-hook --tool agy"))
-        self.assertTrue((self.home / ".gemini/config/skills/worklog/SKILL.md").exists())
+        skill = (self.home / ".gemini/config/skills/worklog/SKILL.md").read_text()
+        self.assertIn("--tool agy` — 프로젝트 루트에서 실행한다.\n규칙은 CLAUDE.md/AGENTS.md(agy는 rules/worklog.md)의 Worklog 블록을 따른다.", skill)
+        self.assertNotIn("save 입력 형식", skill)                                                 # 2.29.0 U25: 규칙 사본 없음
         self.assertEqual(len(list((self.home / ".gemini/config").glob("hooks.json.bak-worklog-*"))), 1)
         code, out = self.script(INST, "--tool", "agy", "--user")  # 재실행: 매니페스트만
         self.assertEqual([Path(c).name for c in out["changed"]], ["install.json"])
@@ -2277,6 +2281,8 @@ class AgyPiTest(Base):
         ext = (self.home / ".pi/agent/extensions/worklog.ts").read_text()
         self.assertIn(f"const WL = {json.dumps(str(WL))};", ext)
         self.assertIn("agent_before_settle", ext)
+        self.assertIn("entries: [...earlier, {", ext)                                            # 2.29.0 U24: 앞 확장의 항목 보존
+        self.assertNotIn("save 입력 형식", (self.home / ".pi/agent/skills/worklog/SKILL.md").read_text())
         manifest = json.loads((self.wl_home / "install.json").read_text())
         self.assertEqual(sorted(manifest), ["agy", "pi"])
         code, out = self.script(UNINST, "--user", "--tool", "agy")
@@ -3069,7 +3075,9 @@ class AutoConnectTest(Base):
             self.assertEqual(h in have, n not in self.REPLACED, f"2.24.2 rules.md {n}행")  # 교체한 두 줄 외에는 글자 하나 바뀌지 않았다
         text = "\n".join(lines)
         for part in ("`auto=on`이면 첫 기록 대상 요청", "④ 기존 작업이 하나도 없으면", "`reassign <잘못된 id> <맞는 id>", "`| FORK`가 보이면",
-                     '"기록하지 마"·"워크로그 꺼"는 `off --quote', "`기록: <id> 새 작업으로 시작(제목 자동)`"):
+                     '"기록하지 마"·"워크로그 꺼"는 `off --quote', "`기록: <id> 새 작업으로 시작(제목 자동)`",
+                     "- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채 '남은 한계: …' 항목을 따로 더한다",  # 2.29.0 U26
+                     "원래 범위에서 할 확인을 같은 형식으로 `waiting`에 둔다. next_action에는 지금 할 수 있는 일만 적는다"):  # 2.29.0 U27 v3
             self.assertIn(part, text)
         wl = self.wl
         for gone in ("위임한 턴은 첫머리에", "지금 고른 방법·범위", "모델이 제안한 것은 사용자 발언과 같은 save에", "계속 지킬 금지·자료 범위만",
@@ -3080,7 +3088,8 @@ class AutoConnectTest(Base):
         self.assertEqual(len(tail), 4)
         self.assertTrue(tail[-1].startswith("명령: works(JSON 목록) · use <id> --quote · new-work"))  # 명령 목록 한 줄
         for back in ("id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2", "show [--work <id>](현재 작업이 없으면 목록)",
-                     "archive/reopen <id>(COMPLETED/ACTIVE로)", '"artifacts_moved": {'):           # 2.26.0 (F09): 되살린 안내
+                     "archive/reopen <id>(COMPLETED/ACTIVE로)", '"artifacts_moved": {',            # 2.26.0 (F09): 되살린 안내
+                     "확인 안 된 가정·결과와 사용자 사정으로 못 한 확인도"):                            # 2.29.0 U27: waiting 설명 강화
             self.assertIn(back, wl.SAVE_HELP)
         r, out = run(self.root, "help")
         self.assertEqual(out, f"worklog core {wl.VERSION} (format worklog/2)\n{wl.SAVE_HELP}\n")
@@ -4193,3 +4202,128 @@ class Release2280Test(Base):
         self.assertEqual(len(asked), 4)
         self.assertEqual(cache["modules"], found)                                                     # check()·background의 캐시에 들어간다
         self.assertEqual(json.loads((home / "update.json").read_text())["modules"], found)
+
+
+def load_installer():
+    spec = importlib.util.spec_from_file_location("inst_2290", INST)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Release2290Test(Base):
+    """2.29.0: U25 skill reduced to arguments + a pointer to the block, U26·U27 rule sentences, U24 pi entries kept."""
+    TOOLS = ("claude", "codex", "agy", "pi")
+    SKILLS = {"claude": ".claude/skills/worklog/SKILL.md", "codex": ".agents/skills/worklog/SKILL.md",
+              "agy": ".gemini/config/skills/worklog/SKILL.md", "pi": ".pi/agent/skills/worklog/SKILL.md"}
+
+    def setUp(self):
+        super().setUp()
+        self.home = self.root / "home"
+        for d in (".claude", ".gemini/config", ".pi/agent"):
+            (self.home / d).mkdir(parents=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+
+    def install(self, *argv):
+        p = subprocess.run([sys.executable, "-B", str(INST), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return json.loads(p.stdout)
+
+    # --- U25 ---
+    def test_skill_is_arguments_and_block_pointer_only(self):
+        inst = load_installer()
+        for tool in self.TOOLS:
+            text = inst.skill(tool)
+            self.assertTrue(text.startswith("---\nname: worklog\ndescription: "), tool)
+            self.assertIn("\n## 인자: on / off [이유]\n", text)
+            self.assertIn(f"명령: `python3 -B {shlex.quote(str(WL))} <명령> --tool {tool}` — 프로젝트 루트에서 실행한다.\n", text)
+            self.assertIn(inst.rules(tool).split("\n")[1], text)                     # 명령 줄 = 설치 블록 2행
+            self.assertTrue(text.endswith("\n규칙은 CLAUDE.md/AGENTS.md(agy는 rules/worklog.md)의 Worklog 블록을 따른다.\n"))
+            for gone in ("무엇으로 기록할지는 세 질문", "save 입력 형식", "| NOT_CONNECTED |", "위임(별도 세션)"):
+                self.assertNotIn(gone, text)                                           # 규칙 사본은 넣지 않는다
+            self.assertLess(len(text.encode()), 1500)
+        old = {}
+        for tool in self.TOOLS:
+            self.install("--tool", tool, "--user")
+            sk = self.home / self.SKILLS[tool]
+            self.assertEqual(sk.read_text(), inst.skill(tool))
+            old[tool] = inst.skill(tool).replace("규칙은 CLAUDE.md", inst.rules(tool) + "\n규칙은 CLAUDE.md")  # 2.28.x처럼 규칙 사본이 든 스킬
+            sk.write_text(old[tool])
+        hooks = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file() and p.name in ("settings.json", "hooks.json", "worklog.ts")}
+        guides = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file() and p.name in ("CLAUDE.md", "AGENTS.md", "worklog.md")}
+        self.assertEqual(len(hooks), 4)
+        self.assertEqual(len(guides), 4)
+        for tool in self.TOOLS:
+            out = self.install("--tool", tool, "--user", "--dry-run")
+            self.assertEqual(sorted(Path(c).name for c in out["changed"]), ["SKILL.md"], tool)  # 블록·Hook은 그대로(dry-run은 매니페스트를 세지 않는다)
+            self.install("--tool", tool, "--user")
+            self.assertEqual((self.home / self.SKILLS[tool]).read_text(), inst.skill(tool))
+        self.assertEqual({p: p.read_bytes() for p in hooks}, hooks)                    # Hook 파일 바이트 불변
+        self.assertEqual({p: p.read_bytes() for p in guides}, guides)                  # 블록 불변
+
+    # --- U26·U27 ---
+    def test_rules_u26_u27_sentences_in_block_and_save_help(self):
+        lines = (WL.parents[1] / "adapters/rules.md").read_text().split("\n")
+        status = next(i for i, l in enumerate(lines) if l.startswith("- `status`는 사용자가 작업이 끝났다고 말하기 전까지"))
+        u26 = lines[status + 1]
+        self.assertEqual(u26, "- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채 '남은 한계: …' 항목을 따로 더한다"
+                              "(기존 항목을 '남은 한계'로 바꿔 적거나 합치지 않는다). 그 항목은 해소되거나 사용자가 그대로 두기로 할 때까지 "
+                              "지우지 않고, 그대로 두기로 하면 그 항목만 빼고 decisions에 수용으로 남긴다(waiting은 전체 교체이므로 나머지 "
+                              "대기 항목은 다시 적는다). 남은 한계를 둔 채 완료하면 답변 끝에 \"1. 이어 갈 작업이 있나요?\"처럼 번호를 붙인 "
+                              "질문문으로 한 번 묻는다. 아래 project.md 권유도 하는 턴이면 \"2. project.md에 넣을까요?\"를 같은 목록에 더한다.")
+        self.assertTrue(lines[status + 2].startswith("- 작업을 COMPLETED로 바꾸는 턴이나"))          # project.md 권유 줄은 바로 다음
+        u27 = ("확인되지 않은 가정·결과는 `waiting`에 `확인 필요: <무엇>(무엇으로 확인되는지)`로 둔다. "
+               "사용자가 자료·권한을 지금 줄 수 없다고 해서 범위를 좁혀 일했으면(예: 실제 자료 대신 예시, 운영 환경 대신 로컬) 그 사실은 제약이 아니고, "
+               "원래 범위에서 할 확인을 같은 형식으로 `waiting`에 둔다. next_action에는 지금 할 수 있는 일만 적는다.")  # U27 v3(A+B)
+        self.assertIn("② 다음 요청이 오면 저절로 끝나거나, 사용자가 자료·답·권한을 줘야 할 수 있는 일인가 → `waiting`.", "\n".join(lines))
+        self.assertIn(u27, "\n".join(lines))
+        self.assertNotIn("확인되지 않은 가정은 `waiting`에 `확인 필요: …`로 둔다", "\n".join(lines))
+        wl = load_wl()
+        self.assertIn("확인 안 된 가정·결과와 사용자 사정으로 못 한 확인도 constraints·next_action이 아니라 여기에 "
+                      "'확인 필요: <무엇>(무엇으로 확인되는지)'로. COMPLETED·HANDOFF 뒤 수용한 항목만 빼고 나머지는 다시 적는다\n",
+                      wl.SAVE_HELP)                                                    # U26 v2: waiting 주석 끝 구절
+        self.assertIn('"확인 필요: 2화는 원작 282행부터라고 가정(원작 목차로 확인)", "확인 필요: 운영 DB에서 같은 결과(사용자가 접근 권한을 주면 실행)"', wl.SAVE_HELP)  # U27 v3(C)
+        block = load_installer().rules("claude")
+        for part in (u26[2:], u27):
+            self.assertIn(part, block)                                                 # 설치 블록에 그대로 들어간다
+
+    # --- U24 ---
+    def test_pi_extension_keeps_earlier_entries(self):
+        """Runs adapters/pi/worklog.ts under node with a stub core: a blocking Stop appends Worklog's item to the entries
+        earlier extensions returned (pi 1.3.0 emitBoundary replaces the list with each return value); no block → nothing."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 없음")
+        d = self.root / "pi"
+        d.mkdir()
+        (d / "package.json").write_text('{"type": "module"}')
+        stub = d / "core_stub.py"
+        stub.write_text("import pathlib, sys\nsys.stdin.read()\nprint(pathlib.Path(__file__).with_name('reply.json').read_text())\n")
+        (d / "worklog.ts").write_text((WL.parents[1] / "adapters/pi/worklog.ts").read_text().replace("__WL__", json.dumps(str(stub))))
+        (d / "harness.mjs").write_text(
+            "const ext = (await import(new URL('./worklog.ts', import.meta.url))).default;\n"
+            "const h = {};\n"
+            "ext({ on: (name, fn) => { h[name] = fn; }, sendMessage() {} });\n"
+            "const ctx = { cwd: '/x', sessionManager: { getSessionId: () => 's1' } };\n"
+            "const out = [];\n"
+            "for (const ev of JSON.parse(process.argv[2])) { const r = await h.agent_before_settle(ev, ctx); out.push(r === undefined ? null : r); }\n"
+            "console.log(JSON.stringify(out));\n")
+        review = {"type": "custom_message", "customType": "critic", "content": "검토하라", "display": True}
+        events = json.dumps([{"entries": [review], "continue": True}, {"entries": []}, {}])
+
+        def settle(reply):
+            (d / "reply.json").write_text(json.dumps(reply))
+            p = subprocess.run([node, str(d / "harness.mjs"), events], capture_output=True, text=True, cwd=str(d))
+            if p.returncode and ("ERR_UNKNOWN_FILE_EXTENSION" in p.stderr or "strip-types" in p.stderr):
+                self.skipTest("이 node는 .ts를 직접 읽지 못한다")
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return json.loads(p.stdout)
+
+        ours = {"type": "custom_message", "customType": "worklog", "content": "save하라", "display": True}
+        self.assertEqual(settle({"decision": "block", "reason": "save하라"}),
+                         [{"entries": [review, ours], "continue": True},                  # 앞 확장의 항목 뒤에 이어 붙인다
+                          {"entries": [ours], "continue": True}, {"entries": [ours], "continue": True}])
+        self.assertEqual(settle({}), [None, None, None])                                # 차단 없음: 아무것도 돌려주지 않아 앞 목록 유지
