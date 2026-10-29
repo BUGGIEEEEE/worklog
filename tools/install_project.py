@@ -80,10 +80,16 @@ SKILL_ARGS = """## 인자: on / off [이유]
 """
 
 
+SKILL_RULES = "규칙은 CLAUDE.md/AGENTS.md(agy는 rules/worklog.md)의 Worklog 블록을 따른다.\n"
+
+
 def skill(tool):
+    """2.29.0 (U25): frontmatter + the on/off arguments + one line pointing at the block. The rules themselves are not
+    copied here: the block is read every turn (also while off and after compaction), so a copy in the skill went unused."""
+    command = f"명령: `python3 -B {shlex.quote(str(WL))} <명령> --tool {tool}` — 프로젝트 루트에서 실행한다."  # = the block's line 2
     return ("---\nname: worklog\ndescription: 이 프로젝트의 작업 기록(.worklog)을 읽고 턴마다 저장해, 압축·새 세션 뒤에도 "
             "목표·결정·제약·대기·다음 행동을 이어간다. 인자 on/off로 이 프로젝트의 Worklog를 켜고 끈다.\n---\n\n"
-            + SKILL_ARGS + rules(tool))
+            + SKILL_ARGS + command + "\n" + SKILL_RULES)
 
 
 def inside(root, path):

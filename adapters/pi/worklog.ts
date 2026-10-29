@@ -42,10 +42,13 @@ export default function worklog(pi: any) {
 		core("turn-start", { ...who(ctx), prompt: event.prompt });
 	});
 
-	pi.on("agent_before_settle", async (_event: any, ctx: any) => {
+	// pi replaces the entries list with what each extension returns, so the entries of earlier extensions (e.g. a review
+	// request) are carried over and Worklog's item is appended (2.29.0, U24). Nothing is returned when there is no block.
+	pi.on("agent_before_settle", async (event: any, ctx: any) => {
 		const r = core("stop-hook", who(ctx));
 		if (r?.decision === "block" && typeof r.reason === "string") {
-			return { entries: [{ type: "custom_message", customType: "worklog", content: r.reason, display: true }], continue: true };
+			const earlier = Array.isArray(event?.entries) ? event.entries : [];
+			return { entries: [...earlier, { type: "custom_message", customType: "worklog", content: r.reason, display: true }], continue: true };
 		}
 	});
 }
