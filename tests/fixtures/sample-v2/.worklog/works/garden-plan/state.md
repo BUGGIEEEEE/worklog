@@ -5,11 +5,11 @@
 ※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.
 상태: ACTIVE
 
-## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단
-- D1: Use only containers under 40 cm [사용자]
+## 유효 결정 — [U] 사용자 발언, [M] 모델 판단
+- D1: Use only containers under 40 cm [U]
 
-## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지
-- C1: Do not order seeds or supplies [사용자]
+## 유지 제약 — [U] 제약은 사용자가 바꾸기 전까지, [M] 제약은 모델이 사유를 적고 해제할 때까지 유지
+- C1: Do not order seeds or supplies [U]
 
 ## 대기
 - (없음)
