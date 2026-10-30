@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Worklog shared core (format 2): several works per project, one append-only event log per work.
 
-Commands:  works | use | new-work | show | save | skip | verify | archive | reopen | reassign | rename | off | on | version | update | help
+Commands:  works | use | new-work | show | save | skip | close | verify | archive | reopen | reassign | rename | find | off | on | version
+           | update | help
            | hook | turn-start | stop-hook
 Storage:   <root>/.worklog/{index.json, project.md?, works/<id>/{events.jsonl, state.json, state.md, writer.json},
            sessions/<tool>_<session>.json, install.json?, .lock, off?}   (off = 이 프로젝트의 Worklog가 꺼짐. 원장 아님)
@@ -12,12 +13,12 @@ Root:      --root as given (hooks too); without it, commands use candidate_root(
            folder with .worklog/index.json up to the git top level, else the git top level, else (not git) cwd.
 Standard library only. Never runs business commands.
 """
-import argparse, datetime, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time, uuid
+import argparse, datetime, fcntl, fnmatch, hashlib, json, os, re, shlex, subprocess, sys, time, uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.29.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.30.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -52,7 +53,14 @@ PROJECT_MAX = 4000
 LIST_MAX = 10
 DONE_MAX = 3      # SessionStart 목록 뒤에 보여 주는 최근 COMPLETED 작업 수
 UNSEEN_MAX = 20   # show·use·주입의 "못 본 사건" 절에 보이는 최대 사건 수(2.23.0, 가정값)
+UNSEEN_SUMMARY_MAX = 80  # 그 절의 summary 표시 글자 상한(2.23.0부터 80. U28 B9의 "200자 상한"보다 좁아 그대로 둔다). 전문은 show --json
 ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
+# 2.30.0 (U28 B5): SessionStart 주입 상한(훅 출력 하나마다). chars = 글자, bytes = UTF-8 바이트, None = 검사 안 함. 실측 2026-10-28
+# (Claude 9,731자 통과·10,312자 잘림, Codex 약 10KB, agy 약 49KB, pi 없음). WL_HOME/config.json "inject_limit"로 도구별 재정의·끄기
+INJECT_LIMITS = {"claude": {"chars": 10000, "bytes": None}, "codex": {"chars": None, "bytes": 10000},
+                 "agy": {"chars": 49000, "bytes": None}, "pi": {"chars": None, "bytes": None}}
+KEEP_OPEN = 20    # 상한을 넘을 때 주입에 남기는 최근 열린 결정 수(Map: 결정은 따로 보호)
+ALIAS_MAX = 2     # 주입의 경로 별칭 수(②⑧, D142)
 NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
 WORKTREE_WARNING = ("git worktree 안입니다. 여기서 저장한 기록은 본 저장소와 갈라져 병합 때 .worklog/works/*/events.jsonl이 충돌합니다. "
                     "기록은 본 저장소 세션에서 하고, 여기서 저장했다면 병합 전에 충돌을 사람이 정리하세요.")
@@ -79,7 +87,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "decisions": [{"text": "11분으로 변경(집중 유지)", "replaces": "D1"},
                 {"text": "3·5·3분 배분(모델 제안)", "source": "model"}],
   "constraints": ["다른 프로젝트 자료 조회 금지(사용자 변경 전까지)"],
-  "constraints_remove": {"C2": "해제 근거"},   # [사용자] 제약: type D_USER/APPROVAL/CORRECTION + quote. [모델] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
+  "constraints_remove": {"C2": "해제 근거"},   # [U] 제약: type D_USER/APPROVAL/CORRECTION + quote. [M] 제약: 사유만으로 해제. 같은 제약 재입력은 자동 무시
   "waiting": ["note-guide.md는 다음 요청까지 작성 보류", "확인 필요: 2화는 원작 282행부터라고 가정(원작 목차로 확인)", "확인 필요: 운영 DB에서 같은 결과(사용자가 접근 권한을 주면 실행)"],  # 전체 교체. 생략하면 유지, []면 비움. 확인 안 된 가정·결과와 사용자 사정으로 못 한 확인도 constraints·next_action이 아니라 여기에 '확인 필요: <무엇>(무엇으로 확인되는지)'로. COMPLETED·HANDOFF 뒤 수용한 항목만 빼고 나머지는 다시 적는다
   "next_action": "다음 행동",
   "status": "ACTIVE",                      # ACTIVE PAUSED BLOCKED COMPLETED CANCELLED. 사용자가 작업이 끝났다고 말하기 전까지 COMPLETED로 바꾸지 않는다
@@ -87,14 +95,14 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "artifacts_moved": {"note-guide.md": "docs/note-guide.md"},  # 기록한 산출물 파일을 옮겼을 때 옛 경로 → 새 경로(새 경로 파일이 있어야 한다)
   "artifacts_gone": [{"path": "draft.md", "reason": "사용자가 지웠다고 확인"}],  # 기록한 산출물을 영구히 지웠을 때(사용자 확인 뒤). 누락 보고·verify missing에서 빠진다
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
-                                           # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수. 값은 둘 중 하나:
+                                           # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수(close로 닫은 결정은 빠진다). 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
                                            # ② "미반영: <이유>" — 작업 방식 제약이나 그림·압축 파일처럼 인용할 수 없는 것. 정상이며 결과의 unreflected에 표시
 }
 필드는 필요한 것만 넣는다.
 "직전 사건과 같은 세션·같은 summary" 거부는 되감기(rewind) 뒤 재저장일 수 있다: show로 확인하고 이미 저장됐으면 skip, 새 내용이면 summary를 바꾼다.
 결과의 artifacts_missing(또는 show의 "[Worklog 산출물 없음]"): 이 세션이 기록한 산출물이 실제 파일에 없다(되감기 코드 복원·이동·삭제). 같은 세션에는 한 번만 보인다.
-명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · reassign <잘못된 id> (<맞는 id> | --new "<제목>") --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
+명령: works(JSON 목록) · use <id> --quote · new-work "<제목>" --quote [--root <root>] [--force](id는 제목의 영문·숫자 슬러그, 한글만·숫자만이면 work·work-2) · show [--work <id>](현재 작업이 없으면 목록) · save · skip "이유"(원장에 쓰지 않음) · verify [--work <id> | --all] · archive/reopen <id>(COMPLETED/ACTIVE로) · close(stdin JSON {"ids": "D54-D65, D67", "label": "2.27.0", "note": "주요 주제 두세 개", "artifacts": [".review/*"]}, 대체된 결정은 자동 제외) · reopen --closed <label> · show --closed [<label> | --all] · find · reassign <잘못된 id> (<맞는 id> | --new "<제목>") --events E0003-E0005 --quote · rename <id> "<새 제목>" --quote · off --quote [--reason] · on"""
 QUOTE = re.compile(r"'(.+?)'|\"(.+?)\"|‘(.+?)’|“(.+?)”", re.DOTALL)
 MIN_QUOTE = 4
 
@@ -559,7 +567,8 @@ ARTIFACTS_MISSING = "이 세션이 기록한 산출물이 실제 파일에 없�
 
 def own_missing_artifacts(d, events, state, who):
     """["path(Eid)"] for artifacts this session recorded whose file is gone (rewind code restore, deletion).
-    Only this session's: a file another session or the user removed on purpose is not nagged every turn (verify checks all)."""
+    Only this session's: a file another session or the user removed on purpose is not nagged every turn (verify checks all).
+    2.30.0 (U28 B10): a closed artifact is not reported either (it stays in state.json; verify still checks it)."""
     if not who or not state.get("artifacts"):
         return []
     tool, sid = who
@@ -567,7 +576,7 @@ def own_missing_artifacts(d, events, state, who):
     out = []
     for a in state["artifacts"]:
         ev = by_id.get(a.get("event"))
-        if ev and ev.get("tool") == tool and ev.get("session_id") == sid and not (d.parent / a["path"]).is_file():
+        if ev and ev.get("tool") == tool and ev.get("session_id") == sid and not a.get("closed") and not (d.parent / a["path"]).is_file():
             out.append(f"{a['path']}({a['event']})")
     return out
 
@@ -883,8 +892,49 @@ def apply(state, ev):
         s["artifacts"] = [x for x in s["artifacts"] if x["path"] not in gone]
     for a in c.get("artifacts", []):
         s["artifacts"] = [x for x in s["artifacts"] if x["path"] != a["path"]] + [dict(a, event=eid)]
+    close_groups(s, c, ev)
     s["seq"], s["updated_at"], s["updated_by"] = ev["seq"], ev["at"], {"tool": ev["tool"], "session_id": ev["session_id"]}
     return s
+
+
+def close_groups(s, c, ev):
+    """2.30.0 (U28 B2·B3): the optional fields decisions_close {label, ids, note, artifacts?} and decisions_reopen {label} (written
+    only by `close` and `reopen --closed`). Closed is a mark beside validity: a closed decision stays valid (replaces may name it,
+    the new decision is open), and reopen only takes the mark away. state: the item's "closed": label, and "closed_groups"
+    [{label, ids, note, at, event, artifacts, count}] (count = closed decisions still valid), present only when not empty."""
+    groups = s.get("closed_groups") or []
+    shut = c.get("decisions_close")
+    if shut:
+        label = shut["label"]
+        if any(g["label"] == label for g in groups):
+            raise Reject(f"decisions_close: 이미 닫힌 묶음 라벨입니다: {label}")
+        valid = {x["id"]: x for x in s["decisions"]}
+        bad = [i for i in shut.get("ids") or [] if i not in valid or valid[i].get("closed")]
+        paths = {x["path"]: x for x in s["artifacts"]}
+        bad += [a for a in shut.get("artifacts") or [] if a not in paths or paths[a].get("closed")]
+        if bad:
+            raise Reject(f"decisions_close {label}: 열린 유효 결정·산출물이 아닙니다: {bad}")
+        for i in shut.get("ids") or []:
+            valid[i]["closed"] = label
+        for a in shut.get("artifacts") or []:
+            paths[a]["closed"] = label
+        groups.append({"label": label, "ids": list(shut.get("ids") or []), "note": shut["note"], "at": ev["at"], "event": ev["id"],
+                       "artifacts": list(shut.get("artifacts") or []), "count": 0})
+    again = c.get("decisions_reopen")
+    if again:
+        label = again["label"]
+        if not any(g["label"] == label for g in groups):
+            raise Reject(f"decisions_reopen: 닫힌 묶음에 없는 라벨입니다: {label}")
+        for x in s["decisions"] + s["artifacts"]:
+            if x.get("closed") == label:
+                del x["closed"]
+        groups = [g for g in groups if g["label"] != label]
+    for g in groups:  # a decision replaced or removed after the close leaves its group: only the count goes down
+        g["count"] = sum(1 for x in s["decisions"] if x.get("closed") == g["label"])
+    if groups:
+        s["closed_groups"] = groups
+    else:
+        s.pop("closed_groups", None)
 
 
 STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", re.ASCII)  # now()'s UTC form: the only form save --ts takes and the sort
@@ -933,41 +983,129 @@ def fold(events):
 
 
 def tag(item):
-    """' [사용자]' / ' [모델]' from an item's source (older state files without source show nothing)."""
-    return {"user": " [사용자]", "model": " [모델]"}.get(item.get("source"), "")
+    """' [U]' / ' [M]' from an item's source (older state files without source show nothing). 2.30.0 (§2): was [사용자]/[모델]."""
+    return {"user": " [U]", "model": " [M]"}.get(item.get("source"), "")
 
 
-def render(s, wid, title):
+TAG_LEGEND = "[U] 사용자 발언, [M] 모델 판단"  # 2.30.0: the legend in the decisions heading
+
+
+def is_map(d):
+    """2.23.0: "무엇을 먼저 보라"는 안내 결정. 범위가 아니므로 현재 범위 줄에서는 뺀다."""
+    return str(d["text"]).lstrip().startswith("Map:")
+
+
+def decision_line(d):
+    return f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d)
+
+
+def d_num(i):
+    return int(str(i)[1:]) if re.fullmatch(r"D\d+", str(i)) else 0
+
+
+def group_line(g, s):
+    """2.30.0 (U28): one closed group as `- <label> (D54–D86 중 32건, 2026-10-23 닫음): <note>` (산출물 k개 when it closed some)."""
+    ids = sorted(g["ids"], key=d_num)
+    span = (ids[0] if len(ids) == 1 else f"{ids[0]}–{ids[-1]}") + f" 중 {g.get('count', 0)}건" if ids else "결정 없음"
+    arts = sum(1 for a in s["artifacts"] if a.get("closed") == g["label"])
+    return f"- {g['label']} ({span}" + (f", 산출물 {arts}개" if arts else "") + f", {str(g.get('at'))[:10]} 닫음): {g['note']}"
+
+
+def live_groups(s):
+    """2.30.0: the closed groups state.md·show·SessionStart list — a group whose decisions were all replaced or moved out after
+    the close and that holds no closed artifact is left out there (its line would say "중 0건"); show --closed lists every group."""
+    return [g for g in s.get("closed_groups") or []
+            if g.get("count") or any(a.get("closed") == g["label"] for a in s["artifacts"])]
+
+
+def reopened_artifacts(g, s):
+    """2.30.0: paths a group closed that are no longer closed under it, by where they are now: (open — recorded again and in
+    the artifacts section, {path: other label} — recorded again and then closed in another group, moved or gone)."""
+    now = {a["path"]: a for a in s["artifacts"]}
+    left = [p for p in g.get("artifacts") or [] if not (p in now and now[p].get("closed") == g["label"])]
+    return ([p for p in left if p in now and not now[p].get("closed")],
+            {p: now[p]["closed"] for p in left if p in now and now[p].get("closed")}, [p for p in left if p not in now])
+
+
+def close_hint(events, s):
+    """2.30.0 (U28, M19 test "C 2안"): the [Worklog 닫기 후보] line of SessionStart·use·show, or None. Candidates = the open
+    decisions (not Map:) made after the last REQUEST before the last RESULT/CHECKPOINT, up to it; None when there is none or
+    a close came after that event. Events are taken in time order (as fold), the same as append order without save --ts.
+    The range lists runs of consecutive numbers ("D2–D4", "D2, D4", "D2–D3, D5"); the count is the number of candidates."""
+    opens = [x for x in open_decisions(s) if not is_map(x)]
+    if not opens:
+        return None
+    evs = [events[i] for i in time_order(events)]
+    last = next((i for i in range(len(evs) - 1, -1, -1) if evs[i].get("type") in ("RESULT", "CHECKPOINT")), None)
+    if last is None or any((e.get("changes") or {}).get("decisions_close") for e in evs[last + 1:]):
+        return None
+    req = next((i for i in range(last - 1, -1, -1) if evs[i].get("type") == "REQUEST"), -1)
+    seg = {evs[i].get("id") for i in range(req + 1, last + 1)}
+    cand = [x for x in opens if x.get("event") in seg]
+    if not cand:
+        return None
+    runs = []  # consecutive numbers as one run: D2·D3·D5 → "D2–D3, D5", so a Map:/closed/replaced id between is not named
+    for x in sorted(cand, key=lambda x: d_num(x["id"])):
+        if runs and d_num(x["id"]) == d_num(runs[-1][-1]) + 1:
+            runs[-1].append(x["id"])
+        else:
+            runs.append([x["id"]])
+    rng = ", ".join(r[0] if len(r) == 1 else f"{r[0]}–{r[-1]}" for r in runs)
+    return (f"[Worklog 닫기 후보] 마지막 결과 {evs[last].get('id')}까지의 하위 작업 결정 {rng}({len(cand)}건)이 아직 열려 있다. "
+            f"그 하위 작업이 끝났으면 다른 일을 하기 전에 \"{rng}({len(cand)}건)을 <라벨>로 닫을까요? 계속 쓰는 결정은 뺍니다\"를 먼저 묻는다.")
+
+
+def open_decisions(s):
+    return [d for d in s["decisions"] if not d.get("closed")]
+
+
+def render(s, wid, title, keep=None, artifacts=True):
+    """state.md (and the state part of show, use and SessionStart). 2.30.0 (U28): only open decisions are listed; closed groups
+    are one line each. keep/artifacts are the SessionStart safety net only (B5): keep = the most recent open decisions kept
+    (Map: decisions always stay), artifacts=False leaves the artifacts section out."""
     by = s["updated_by"] or {}
     out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
            f"최초 목표(원문): {s['goal'] or '(미정)'}"]
-    is_map = lambda d: str(d["text"]).lstrip().startswith("Map:")  # 2.23.0: "무엇을 먼저 보라"는 안내 결정. 범위가 아니므로 현재 범위 줄에서는 뺀다
-    scope = [d for d in s["decisions"] if not is_map(d)]
+    live = open_decisions(s)
+    scope = [d for d in live if not is_map(d)]
     if scope:
         last = scope[-1]
         out.append(f"현재 범위(최신 결정): {last['id']}: {last['text']}")
     out += ["※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.",
             f"상태: {s['status']}", ""]
-    line = lambda d: f"- {d['id']}: {d['text']}" + (f" (대체: {d['replaces']})" if d.get("replaces") else "") + tag(d)
-    maps = [d for d in s["decisions"] if is_map(d)]
+    maps = [d for d in live if is_map(d)]
     if maps:  # 2.23.0: Map 결정은 결정 목록 위에도 따로 보인다. 목록에서 빼지 않으며, 없으면 절도 없다(기존 state.md와 바이트 동일)
-        out += ["## 안내 — 먼저 볼 것(Map: 결정)"] + [line(d) for d in maps] + [""]
-    out += ["## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단"]
-    out += [line(d) for d in s["decisions"]] or ["- (없음)"]
-    out += ["", "## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
+        out += ["## 안내 — 먼저 볼 것(Map: 결정)"] + [decision_line(d) for d in maps] + [""]
+    if keep is not None:  # safety net: the oldest open decisions go first, Map: decisions are protected
+        kept = {d["id"] for d in scope[-keep:]} if keep else set()
+        live = [d for d in live if is_map(d) or d["id"] in kept]
+    out += [f"## 유효 결정 — {TAG_LEGEND}"]
+    out += [decision_line(d) for d in live] or ["- (없음)"]
+    if live_groups(s):
+        out += ["", "## 닫힌 묶음(끝난 하위 작업) — 전문은 show --closed <label>"] + [group_line(g, s) for g in live_groups(s)]
+    out += ["", "## 유지 제약 — [U] 제약은 사용자가 바꾸기 전까지, [M] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
     out += [f"- {c['id']}: {c['text']}{tag(c)}" for c in s["constraints"]] or ["- (없음)"]
     out += ["", "## 대기"] + ([f"- {w}" for w in s["waiting"]] or ["- (없음)"])
     out += ["", f"## 다음 행동", s["next_action"] or "(미정)"]
-    if len(s["artifacts"]) > ART_MAX:  # 긴 작업: 폴더별 개수와 최근 사건만. 전체 목록은 state.json
+    arts = [a for a in s["artifacts"] if not a.get("closed")]
+    shut = [a for a in s["artifacts"] if a.get("closed")]
+    if not artifacts:
+        pass
+    elif len(arts) > ART_MAX:  # 긴 작업: 폴더별 개수와 최근 사건만. 전체 목록은 state.json
         groups = {}
-        for a in s["artifacts"]:
+        for a in arts:
             g = groups.setdefault(os.path.dirname(a["path"]) or ".", {"n": 0, "event": ""})
             g["n"] += 1
             g["event"] = max(g["event"], a["event"])
-        out += ["", f"## 산출물 — {len(s['artifacts'])}개, 폴더별 요약(전체 목록·해시는 state.json)"]
+        out += ["", f"## 산출물 — {len(arts)}개, 폴더별 요약(전체 목록·해시는 state.json)"]
         out += [f"- {folder}/ · {g['n']}개 · 최근 {g['event']}" for folder, g in groups.items()]
-    elif s["artifacts"]:
-        out += ["", "## 산출물"] + [f"- {a['path']} sha256:{a['sha256'][:12]} ({a['event']})" for a in s["artifacts"]]
+    elif arts:
+        out += ["", "## 산출물"] + [f"- {a['path']} sha256:{a['sha256'][:12]} ({a['event']})" for a in arts]
+    if artifacts and shut:  # 2.30.0 (B10): closed artifacts stay in state.json, one line here
+        if not arts:
+            out += ["", "## 산출물"]
+        folders = {os.path.dirname(a["path"]) or "." for a in shut}
+        out.append(f"- 닫힘: 폴더 {len(folders)}개·산출물 {len(shut)}개 → show --closed")
     if s["superseded"] or s["removed_constraints"]:
         out += ["", f"대체된 결정 {len(s['superseded'])}개·해제된 제약 {len(s['removed_constraints'])}개는 events.jsonl에 보존."]
     return "\n".join(out) + "\n"
@@ -1189,11 +1327,12 @@ def gone_list(events, state, root):
     return [v for path, v in out.items() if path not in live]
 
 
-SOURCE_TAG = re.compile(r"^(?:\s*\[(?:사용자|모델)\]\s*)+|(?:\s*\[(?:사용자|모델)\]\s*)+$")
+SOURCE_TAG = re.compile(r"^(?:\s*\[(?:사용자|모델|U|M)\]\s*)+|(?:\s*\[(?:사용자|모델|U|M)\]\s*)+$")  # 2.30.0: [U]/[M] too
 
 
 def strip_source_tag(text):
-    """F6: the core adds [사용자]/[모델] itself; literal tags at either end of a decision/constraint text are dropped."""
+    """F6: the core adds the source tag itself; literal tags at either end of a decision/constraint text are dropped — [U]/[M]
+    (2.30.0) and the older [사용자]/[모델]."""
     return SOURCE_TAG.sub("", text).strip()
 
 
@@ -1205,7 +1344,7 @@ def drop_repeats(changes, state):
     if "constraints" in changes:  # F6: 출처 태그는 코어가 붙인다
         changes["constraints"] = [strip_source_tag(t) for t in changes["constraints"]]
         if any(not t for t in changes["constraints"]):
-            raise Reject("제약 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+            raise Reject("제약 내용이 비어 있습니다(출처 태그 [U]/[M]는 코어가 붙이므로 글자에 쓰지 않는다).")
         have = {norm(x["text"]) for x in state["constraints"]}
         keep = []
         for t in changes["constraints"]:
@@ -1216,7 +1355,7 @@ def drop_repeats(changes, state):
         for item in changes["decisions"]:
             item["text"] = strip_source_tag(item["text"])
             if not item["text"]:
-                raise Reject("결정 내용이 비어 있습니다(출처 태그 [사용자]/[모델]는 코어가 붙이므로 글자에 쓰지 않는다).")
+                raise Reject("결정 내용이 비어 있습니다(출처 태그 [U]/[M]는 코어가 붙이므로 글자에 쓰지 않는다).")
         have = {norm(x["text"]) for x in state["decisions"]}
         keep = []
         for item in changes["decisions"]:
@@ -1232,7 +1371,7 @@ def check_quotes(p, arts, bodies, state):
     check is optional and takes only 미반영. Returns (need: the checked ids, unreflected, self_quoted) or raises Reject (same
     texts and order as before). No disk, no lock."""
     unreflected, self_quoted = [], []
-    rules = state["decisions"] + state["constraints"]
+    rules = open_decisions(state) + state["constraints"]  # 2.30.0 (U28 B3): closed decisions need no check
     check = p.get("check") or {}
     if arts and bodies:  # 텍스트 산출물: 모든 유효 결정·제약이 본문에 인용으로 있거나 "미반영: 이유"여야 한다
         need = [x["id"] for x in rules]
@@ -1326,7 +1465,7 @@ def save_changes(p, root, state, events, title, arts):
 
 
 def rule_lines(items):
-    """Decisions or constraints as "D1: text [사용자]" lines (save and reassign results)."""
+    """Decisions or constraints as "D1: text [U]" lines (save and reassign results)."""
     return [f"{x['id']}: {x['text']}{tag(x)}" for x in items]
 
 
@@ -1394,7 +1533,8 @@ def cmd_save(args):
     print(json.dumps({"ok": True, "work": wid, "saved": ev["id"], "seq": ev["seq"], "verified": True, "unreflected": unreflected,
                       "self_quoted": self_quoted, **({"artifacts_missing": missing} if missing else {}),
                       "ignored_duplicates": [x if isinstance(x, str) else x["text"] for x in ignored],
-                      "decisions": rule_lines(rebuilt["decisions"]), "constraints": rule_lines(rebuilt["constraints"]),
+                      "decisions": rule_lines(open_decisions(rebuilt)), "constraints": rule_lines(rebuilt["constraints"]),
+                      **({"closed_groups": len(rebuilt["closed_groups"])} if rebuilt.get("closed_groups") else {}),
                       "waiting": rebuilt["waiting"], "next_action": rebuilt["next_action"], **off_flag(d),
                       **core_report(events), **hooks_report(d, tool, sid)}, ensure_ascii=False))
 
@@ -1586,7 +1726,211 @@ def cmd_archive(args):
 
 
 def cmd_reopen(args):
+    if getattr(args, "closed", None) is not None:  # 2.30.0 (U28 B1): reopen --closed <label> reopens a closed group, not the work
+        return reopen_closed(args)
     set_status(args, "ACTIVE", "작업 재개")
+
+
+# --- 닫기·열기 (2.30.0, U28). 끝난 하위 작업의 결정을 묶음으로 닫아 주입·show에서 한 줄로 접는다. 원장은 CHANGE의 선택 필드 ---
+
+DECISION_ID = re.compile(r"D(\d{1,6})")
+CLOSE_FIELDS = {"work", "ids", "label", "note", "artifacts"}
+LABEL_MAX = 60
+
+
+def decision_ids(spec, next_d):
+    """"D54-D65, D67" or ["D54-D65", "D67"] → those decision ids, sorted by number. Every id must have been given out
+    (D1..D<next_d - 1>); whether it is still valid or open is the caller's question."""
+    parts = spec if isinstance(spec, list) else str(spec).split(",")
+    out = set()
+    for part in parts:
+        lo, _, hi = str(part).replace(" ", "").partition("-")
+        a, b = DECISION_ID.fullmatch(lo), DECISION_ID.fullmatch(hi or lo)
+        if not (a and b) or int(a.group(1)) < 1 or int(a.group(1)) > int(b.group(1)):
+            raise Reject(f'close의 ids 형식: "D54-D65, D67" 또는 ["D54-D65", "D67"] (받은 값: {json.dumps(spec, ensure_ascii=False)})')
+        out.update(range(int(a.group(1)), int(b.group(1)) + 1))
+    unknown = sorted(n for n in out if n >= next_d)
+    if unknown:
+        raise Reject(f"작업에 없는 결정: {['D%d' % n for n in unknown]}(마지막 번호 D{next_d - 1}).")
+    return [f"D{n}" for n in sorted(out)]
+
+
+def close_input(raw):
+    """close's stdin JSON, checked: (work or None, ids spec or None, label, note, artifact globs)."""
+    try:
+        p = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise Reject(f"JSON 해석 실패: {e}. `wl.py help` 참고.")
+    if not isinstance(p, dict):
+        raise Reject('close 입력은 JSON 객체입니다. 예: {"ids": "D54-D65, D67", "label": "2.27.0", "note": "주요 주제 두세 개"}')
+    unknown = set(p) - CLOSE_FIELDS
+    if unknown:
+        raise Reject(f"알 수 없는 필드: {sorted(unknown)}. close 필드: {sorted(CLOSE_FIELDS)}")
+    label = p.get("label")
+    if not isinstance(label, str) or not label.strip() or "\n" in label or len(label.strip()) > LABEL_MAX:
+        raise Reject(f"label은 {LABEL_MAX}자 이내의 한 줄 문자열이어야 합니다(예: \"2.27.0\").")
+    note = p.get("note")
+    if not isinstance(note, str) or not note.strip():
+        raise Reject("note가 필요합니다: 그 묶음의 주요 주제 두세 개(나중에 어느 묶음을 열지 고르는 단서).")
+    ids = p.get("ids")
+    if ids is not None and not (isinstance(ids, str) and ids.strip()
+                                or isinstance(ids, list) and ids and all(isinstance(x, str) for x in ids)):
+        raise Reject('ids는 "D54-D65, D67" 같은 문자열이나 문자열 목록입니다.')
+    globs = p.get("artifacts", [])
+    if not isinstance(globs, list) or not all(isinstance(g, str) and g.strip() for g in globs):
+        raise Reject('artifacts는 [".review/*", "runs/*"] 같은 경로·글롭 문자열 목록입니다.')
+    if ids is None and not globs:
+        raise Reject("ids나 artifacts 중 하나는 있어야 합니다.")
+    work = p.get("work")
+    if work is not None and not (isinstance(work, str) and work.strip()):
+        raise Reject("work는 비어 있지 않은 문자열(작업 id)이어야 합니다.")
+    return work, ids, label.strip(), " ".join(note.split()), [g.strip() for g in globs]
+
+
+def glob_match(root, path, pattern):
+    """An artifact path against a close glob: the recorded spelling, or the path relative to the project for an absolute path
+    inside it. A pattern ending in / means everything under that folder."""
+    pattern = pattern + "*" if pattern.endswith("/") else pattern
+    names = [path]
+    if os.path.isabs(path):
+        rel = os.path.relpath(path, root)
+        if rel != ".." and not rel.startswith(".." + os.sep):
+            names.append(rel)
+    return any(fnmatch.fnmatchcase(n, pattern) for n in names)
+
+
+def closed_work(d, args, index, who, wid=None):
+    """The work close·reopen --closed·show --closed act on: the JSON's work, --work, else this session's current work."""
+    wid = wid or getattr(args, "work", None) or current_work(d, who, index)
+    if not wid:
+        raise Reject(no_work_msg(index))
+    return wid, entry(index, wid)["title"]
+
+
+def cmd_close(args):
+    """2.30.0 (U28 B1·B4·B10): close a finished sub-work's decisions (and artifacts) as one labelled group. Run after the user
+    approved. Decisions in the range that were already replaced (or moved out) are left out and reported, so are ones already
+    closed under another label. A label is unique among the closed groups of the work (correct a range: reopen --closed, then
+    close again). Writes one CHANGE event with changes.decisions_close; no quote (the approval is the user's turn)."""
+    work, spec, label, note, globs = close_input(sys.stdin.read())
+    tool, sid = identity(args)
+    d = store(args.root)
+    if not connected(d):
+        raise Reject(no_work_msg({"works": {}}))
+    with locked(d):
+        index = index_or_new(d)
+        wid, _ = closed_work(d, args, index, (tool, sid), work)
+        events, prev = read_events(work_dir(d, wid))
+        state, n = fold(events)
+        labels = [g["label"] for g in state.get("closed_groups") or []]
+        if label in labels:
+            raise Reject(f"이미 닫힌 묶음 라벨입니다: {label}. 범위를 고치려면 reopen --closed \"{label}\" 뒤 같은 라벨로 다시 close합니다.")
+        wanted = decision_ids(spec, n["next_d"]) if spec is not None else []
+        valid = {x["id"]: x for x in state["decisions"]}
+        ids = [i for i in wanted if i in valid and not valid[i].get("closed")]
+        replaced = [i for i in wanted if i not in valid]
+        already = [i for i in wanted if i in valid and valid[i].get("closed")]
+        arts = []
+        for g in globs:
+            hit = [a for a in state["artifacts"] if glob_match(d.parent, a["path"], g)]
+            if not hit:
+                raise Reject(f"artifacts {g!r}에 맞는 산출물이 없습니다. 기록된 경로(show의 산출물 절)로 다시 적으세요.")
+            arts += [a["path"] for a in hit if not a.get("closed") and a["path"] not in arts]
+        if not ids and not arts:
+            raise Reject(f"닫을 열린 결정·산출물이 없습니다(대체됨 {replaced or '없음'}, 이미 닫힘 {already or '없음'}).")
+        span = (ids[0] if len(ids) == 1 else f"{ids[0]}–{ids[-1]}") + f", {len(ids)}건" if ids else "결정 없음"
+        summary = f"묶음 닫기: {label} ({span}" + (f", 산출물 {len(arts)}개" if arts else "") + f"): {note}"
+        ev = new_event(events, prev, "CHANGE", tool, sid, summary, None, [],
+                       {"decisions_close": dict({"label": label, "ids": ids, "note": note}, **({"artifacts": arts} if arts else {}))})
+        commit(d, index, wid, ev)
+        mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])
+    print(json.dumps({"ok": True, "work": wid, "label": label, "closed": ids, "count": len(ids), "artifacts": len(arts),
+                      **({"skipped_replaced": replaced} if replaced else {}), **({"skipped_closed": already} if already else {}),
+                      "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
+
+
+def reopen_closed(args):
+    """reopen --closed <label> (2.30.0, U28 B1·B3): take the closed mark off a group — its decisions show and need check again;
+    a decision replaced while closed stays replaced. One CHANGE event with changes.decisions_reopen."""
+    label = args.closed
+    if label is True or not str(label).strip():
+        raise Reject("reopen --closed <label> 형식입니다. 라벨은 show --closed로 확인합니다.")
+    label = str(label).strip()
+    tool, sid = identity(args)
+    d = store(args.root)
+    if not connected(d):
+        raise Reject(no_work_msg({"works": {}}))
+    with locked(d):
+        index = index_or_new(d)
+        wid, _ = closed_work(d, args, index, (tool, sid), args.arg)
+        events, prev = read_events(work_dir(d, wid))
+        state, _ = fold(events)
+        group = next((g for g in state.get("closed_groups") or [] if g["label"] == label), None)
+        if not group:
+            raise Reject(f"닫힌 묶음에 없는 라벨입니다: {label}. 현재: {[g['label'] for g in state.get('closed_groups') or []]}")
+        ids = [x["id"] for x in state["decisions"] if x.get("closed") == label]
+        arts = [a["path"] for a in state["artifacts"] if a.get("closed") == label]
+        ev = new_event(events, prev, "CHANGE", tool, sid, f"묶음 열기: {label} (결정 {len(ids)}건, 산출물 {len(arts)}개)", None, [],
+                       {"decisions_reopen": {"label": label}})
+        commit(d, index, wid, ev)
+        mark_seen_if_current(d, tool, sid, wid, len(events), ev["seq"])
+    print(json.dumps({"ok": True, "work": wid, "reopened": label, "decisions": ids, "artifacts": len(arts),
+                      "saved": ev["id"], "seq": ev["seq"]}, ensure_ascii=False))
+
+
+def closed_text(s, wid, title, label=None, every=False):
+    """show --closed (the group lines), show --closed <label> (that group in full), show --closed --all (every closed decision)."""
+    groups = s.get("closed_groups") or []
+    if label is None and not every:
+        out = [f"# 닫힌 묶음 — {wid} · {title} ({len(groups)}개)"]
+        for g in groups:
+            again, other, away = reopened_artifacts(g, s)
+            out.append(group_line(g, s) + ("" if g in live_groups(s) else " — 남은 항목 없음(state.md·주입에서는 접힘)"))
+            if again or other or away:
+                out.append(f"  - 닫은 뒤 다시 열린 산출물 {len(again)}개·다른 묶음으로 닫힌 산출물 {len(other)}개·"
+                           f"옮겨지거나 지워진 산출물 {len(away)}개 → show --closed {g['label']}")
+        if not groups:
+            out.append("- (없음)")
+        if groups:
+            out.append("전문: show --closed <label> · 닫힌 결정 전부: show --closed --all · 다시 손댈 때: reopen --closed <label>")
+        return "\n".join(out) + "\n"
+    if label is not None:
+        chosen = [g for g in groups if g["label"] == label]
+        if not chosen:
+            raise Reject(f"닫힌 묶음에 없는 라벨입니다: {label}. 현재: {[g['label'] for g in groups]}")
+    else:
+        chosen = groups
+    by_id = {x["id"]: x for x in s["decisions"]}
+    replaced = {x["id"]: x.get("by_event") for x in s["superseded"]}
+    out = [f"# 닫힌 결정 — {wid} · {title}" + (f" · {label}" if label is not None else f" · 전부 {len(chosen)}묶음")]
+    for g in chosen:
+        out += ["", f"## {g['label']} — {str(g.get('at'))[:10]} 닫음({g.get('event')}): {g['note']}"]
+        out += [decision_line(x) for x in s["decisions"] if x.get("closed") == g["label"]] or ["- (남은 결정 없음)"]
+        gone = [i for i in g["ids"] if i not in by_id or by_id[i].get("closed") != g["label"]]
+        if gone:
+            out.append("- 닫은 뒤 대체·이관된 결정: " + ", ".join(f"{i}({replaced[i]})" if replaced.get(i) else i for i in gone)
+                       + " → events.jsonl")
+        arts = [a for a in s["artifacts"] if a.get("closed") == g["label"]]
+        if arts:
+            out += [f"- 산출물 {a['path']} sha256:{a['sha256'][:12]} ({a['event']})" for a in arts]
+        again, other, away = reopened_artifacts(g, s)
+        if again:
+            out.append("- 닫은 뒤 다시 기록돼 열린 산출물(지금 산출물 절에 있음): " + ", ".join(again))
+        for lab in dict.fromkeys(other.values()):  # 다른 묶음의 라벨별 한 줄, 이 묶음의 산출물 경로 순서대로
+            out.append(f"- 닫은 뒤 다시 기록돼 다른 묶음에 닫힌 산출물 [{lab}]: " + ", ".join(p for p, x in other.items() if x == lab)
+                       + f" → show --closed {lab}")
+        if away:
+            out.append("- 닫은 뒤 옮겨지거나 지워진 산출물: " + ", ".join(away) + " → events.jsonl")
+    return "\n".join(out) + "\n"
+
+
+def cmd_find(args):
+    """2.30.0 (U28 B6): stub for the search module call (U29). Without the module one line and exit 0 (not an error); with
+    worklog-global registered in WL_HOME/modules.json, a line that the call comes in a later version."""
+    if "worklog-global" in installed_modules():
+        print("검색 모듈(worklog-global)이 설치돼 있지만 코어의 모듈 호출은 다음 버전에서 연결됩니다. 지금은 옛 근거를 show --closed로 찾습니다.")
+    else:
+        print("검색 모듈이 없습니다(worklog-global). 옛 근거는 show --closed로 찾습니다.")
 
 
 # --- 잘못 고른 작업의 정정 (2.25.0). 원장은 작업별 추가 전용: 사건을 옮기지 않고 양쪽에 서로를 가리키는 CORRECTION을 남긴다 ---
@@ -1987,6 +2331,12 @@ def cmd_show(args):
               + "\n".join(f"- {i} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}" for i, w in works))
         return
     title = entry(index, wid)["title"]
+    closed = getattr(args, "closed", None)
+    if closed is not None:  # 2.30.0 (U28 D151): read only — no projection repair, no session update
+        with locked(d):
+            state = fold(read_events(work_dir(d, wid))[0])[0]
+        print(closed_text(state, wid, title, None if closed is True else str(closed).strip(), getattr(args, "all", False)), end="")
+        return
     with locked(d):  # 잠금 뒤에 읽어야 동시 저장 이후의 투영을 과거 seq로 되돌리지 않는다
         v = work_view(d, wid, title, who)  # text and --json: the same reads and session update (last_seen, one-time notices)
         if not as_json:
@@ -2017,12 +2367,6 @@ def imported_mark(e):
     return f" (가져옴 {occ})" if occ else ""
 
 
-def unseen_section(d, who, wid, events):
-    """2.23.0: the events this session has not seen yet (after its last_seen seq for this work), as one text block, '' when none or
-    the session is unknown. Lets a delegating session tell a sub-session's events apart without reading the ledger file."""
-    return unseen_text(*unseen_events(d, who, wid, events), len(events))
-
-
 def unseen_text(seen, unseen, total):
     if not unseen:
         return ""
@@ -2030,7 +2374,7 @@ def unseen_text(seen, unseen, total):
     for e in unseen[-UNSEEN_MAX:]:
         summary = norm(e.get("summary") or "")
         lines.append(f"- {e.get('id')} · {e.get('tool')}:{str(e.get('session_id') or '')[:8]} · {e.get('type')}{imported_mark(e)} · "
-                     + (summary if len(summary) <= 80 else summary[:80] + "…"))
+                     + (summary if len(summary) <= UNSEEN_SUMMARY_MAX else summary[:UNSEEN_SUMMARY_MAX] + "…"))
     if len(unseen) > UNSEEN_MAX:
         lines.append(f"- …외 {len(unseen) - UNSEEN_MAX}건(오래된 것부터 생략)")
     return "\n".join(lines) + "\n"
@@ -2043,8 +2387,9 @@ def read_work(d, wid, title, who, **session_changes):
 
 
 def work_text(v, wid, title):
-    """A work_view as the text of show and use: notes, the state (or "기록 없음"), the events not seen yet."""
-    return v["note"] + (render(v["state"], wid, title) if v["events"] else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") \
+    """A work_view as the text of show and use: notes, the close hint (2.30.0), the state (or "기록 없음"), the events not seen yet."""
+    hint = close_hint(v["events"], v["state"]) if v["events"] else None  # 2.30.0: after the notes, before the state
+    return v["note"] + (hint + "\n" if hint else "") + (render(v["state"], wid, title) if v["events"] else f"# Worklog 현재 상태 — {wid} · {title}\n기록 없음. 첫 save가 기록을 만든다.\n") \
         + unseen_text(v["seen"], v["unseen"], len(v["events"]))
 
 
@@ -2243,57 +2588,182 @@ def hook_input(args):
     return d, try_identity(args), event
 
 
-def list_line(d, wid, w):
+def list_line(d, wid, w, nxt=True):
+    """A work list line of the SessionStart injection. 2.30.0 (U28 B11): '다음:' only while the session has no current work
+    (NO_CURRENT_WORK, the model asks which work); with one (PROVIDED) id·title·status·updated_at only."""
+    line = f"- {wid} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')}"
+    if not nxt:
+        return line
     try:
         nxt = fold(read_events(work_dir(d, wid))[0])[0]["next_action"] or "(미정)"
     except (Reject, OSError, ValueError):
         nxt = "(읽기 실패)"
     nxt = nxt if len(nxt) <= 60 else nxt[:60] + "…"
-    return f"- {wid} · {w.get('title')} · {w.get('status')} · {w.get('updated_at')} · 다음: {nxt}"
+    return f"{line} · 다음: {nxt}"
+
+
+ABS_DIR = re.compile(r"(?<![\w./~-])/(?:[^\s/`'\"()<>,]+/)+")  # the folder part of an absolute path (ends in /)
+
+
+def path_aliases(texts):
+    """2.30.0 (②⑧, D142): up to ALIAS_MAX absolute folder prefixes that repeat in `texts`, each with its alias «A»/, «B»/ —
+    picked greedily by the characters they save (a longer prefix wins a tie). Nothing is fixed in the code. [(prefix, alias)]."""
+    found = [m.group(0) for t in texts for m in ABS_DIR.finditer(t)]
+    chosen = []
+    for alias in ("«A»/", "«B»/", "«C»/")[:ALIAS_MAX]:
+        best, gain = None, 0
+        for cand in {f[:i + 1] for f in found for i, ch in enumerate(f) if ch == "/" and f[:i + 1].count("/") >= 3}:
+            n = sum(1 for f in found if f.startswith(cand))
+            g = n * (len(cand) - len(alias)) - len(cand) - len(alias) - 4
+            if n >= 2 and (g > gain or g == gain and best and len(cand) > len(best)):
+                best, gain = cand, g
+        if not best:
+            break
+        chosen.append((best, alias))
+        found = [f for f in found if not f.startswith(best)]
+    return chosen
+
+
+def alias_text(text, aliases):
+    for prefix, alias in aliases:
+        text = re.sub(r"(?<![\w./~-])" + re.escape(prefix), alias, text)
+    return text
+
+
+def inject_limit(tool):
+    """2.30.0 (U28 B5): {"chars", "bytes"} for this tool's SessionStart output, or None (no check). WL_HOME/config.json
+    "inject_limit": "off" turns the safety net off; {"<tool>": {"chars": n, "bytes": n}} overrides a value (null = no check),
+    {"<tool>": "off"} turns it off for that tool."""
+    name = tool if tool in INJECT_LIMITS else "claude"
+    conf = home_json("config.json").get("inject_limit")
+    if conf in ("off", False):
+        return None
+    lim = dict(INJECT_LIMITS[name])
+    mine = conf.get(name) if isinstance(conf, dict) else None
+    if mine in ("off", False):
+        return None
+    if isinstance(mine, dict):
+        for k in ("chars", "bytes"):
+            v = mine.get(k, lim[k])
+            if v is None or isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                lim[k] = v
+    return lim if lim["chars"] or lim["bytes"] else None
+
+
+def over_limit(text, lim):
+    return bool(lim) and (bool(lim["chars"]) and len(text) > lim["chars"] or bool(lim["bytes"]) and len(text.encode("utf-8")) > lim["bytes"])
+
+
+def limit_name(tool, lim):
+    return f"{tool or 'claude'} " + " · ".join(f"{lim[k]:,}{'자' if k == 'chars' else 'B'}" for k in ("chars", "bytes") if lim[k])
+
+
+def over_note(tool, lim, omitted, omit, head, text):
+    """2.30.0 fix (F2): the [Worklog 생략] line when the text is still over the limit after every step. The sizes count the
+    whole output, this line included (a second pass settles a digit count that changes)."""
+    def note(size):
+        over = " · ".join(f"{size[k]:,}{u}/{lim[k]:,}{u}" for k, u in (("chars", "자"), ("bytes", "B")) if lim[k] and size[k] > lim[k])
+        tail = f"상한 초과({over}): 긴 결정을 닫거나(close) config로 상한 조정\n"
+        if omitted:
+            return omit(omitted).rstrip("\n") + ". 생략 후에도 " + tail
+        return f"[Worklog 생략] 주입 상한({limit_name(tool, lim)}): 생략할 절이 없어 " + tail
+    size = {"chars": 0, "bytes": 0}
+    for _ in range(3):
+        whole = head + note(size) + text
+        new = {"chars": len(whole), "bytes": len(whole.encode("utf-8"))}
+        if new == size:
+            break
+        size = new
+    return note(size)
 
 
 def injection(d, who):
-    """SessionStart text → (status, body). Marks the current work as seen by this session."""
+    """SessionStart text → (status, build, mark_seen). build(level) → (body, omitted): level 0 is the whole text; the safety net
+    (2.30.0, U28 B5) asks for 1 = the open decisions down to the most recent KEEP_OPEN, 2 = also no artifacts section (only when
+    some are open), 3 = also no unseen events. Map: decisions, closed group lines, constraints and waiting are never left out.
+    mark_seen(level) marks the current work as seen once the level is chosen: at level 3 the unseen events were left out of the
+    text, so they stay unseen and show·use·the next injection list them again (2.30.0 fix: before, they were marked first)."""
     index = load_index(d) or {"works": {}}
-    works, out = index["works"], []
+    works, project_part = index["works"], []
     pm = d / "project.md"
     if pm.is_file():
         text = pm.read_text(encoding="utf-8", errors="replace").strip()
-        out += ["## 프로젝트 공통 (project.md)",
-                text[:PROJECT_MAX] + (f"\n…({PROJECT_MAX:,}자에서 잘림)" if len(text) > PROJECT_MAX else "")]
-    live = sorted(((i, w) for i, w in works.items() if w.get("status") in ("ACTIVE", "PAUSED")),
-                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
-    out.append(f"## 작업 목록 (ACTIVE·PAUSED, 최근 갱신순 최대 {LIST_MAX}개 / 전체 {len(works)}개)")
-    out += [list_line(d, i, w) for i, w in live[:LIST_MAX]] or ["- (없음)"]
-    done = sorted(((i, w) for i, w in works.items() if w.get("status") == "COMPLETED"),
-                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
-    if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
-        out.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
-                                                              for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
-    cur, unseen, missing = None, "", []
+        project_part = ["## 프로젝트 공통 (project.md)",
+                        text[:PROJECT_MAX] + (f"\n…({PROJECT_MAX:,}자에서 잘림)" if len(text) > PROJECT_MAX else "")]
+    cur, unseen, unseen_n, unseen_ids, missing, events = None, "", 0, "", [], []
     if who:
         with locked(d):
             cur = current_work(d, who, index)
             if cur:
                 events, _ = read_events(work_dir(d, cur))
-                unseen = unseen_section(d, who, cur, events)
+                seen, later = unseen_events(d, who, cur, events)
+                unseen, unseen_n = unseen_text(seen, later, len(events)), len(later)
+                if later:  # by append position, like the set itself: E(seen+1) … E(total)
+                    first, last = events[seen].get("id"), events[-1].get("id")
+                    unseen_ids = first if first == last else f"{first}~{last}"
                 missing = missing_once(d, who, cur, events, fold(events)[0])  # 2.27.0: inside the lock
-                update_session(d, *who, seen=(cur, len(events)))
             mark_hook(d, who, "SessionStart")
-    if cur:
-        title = works[cur]["title"]
-        out.append(f"## 현재 작업: {cur} · {title}")
-        if events:
-            st = fold(events)[0]
-            out += [x for x in (artifacts_note(missing).rstrip("\n"),) if x]
-            out.append(render(st, cur, title).rstrip("\n"))
-            if unseen:
-                out.append(unseen.rstrip("\n"))
+    status = "EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"
+    live = sorted(((i, w) for i, w in works.items() if w.get("status") in ("ACTIVE", "PAUSED")),
+                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
+    head = [f"## 작업 목록 (ACTIVE·PAUSED, 최근 갱신순 최대 {LIST_MAX}개 / 전체 {len(works)}개)"]
+    head += [list_line(d, i, w, nxt=status == "NO_CURRENT_WORK") for i, w in live[:LIST_MAX]] or ["- (없음)"]
+    done = sorted(((i, w) for i, w in works.items() if w.get("status") == "COMPLETED"),
+                  key=lambda x: x[1].get("updated_at") or "", reverse=True)
+    if done:  # 끝난 작업도 "<id> 이어서"로 바로 이을 수 있으니 최근 것은 보여 준다
+        head.append(f"- 그 외 COMPLETED {len(done)}개: " + ", ".join(f"{i} · {w.get('title')} ({(w.get('updated_at') or '')[:10]})"
+                                                               for i, w in done[:DONE_MAX]) + (" …" if len(done) > DONE_MAX else ""))
+    st = fold(events)[0] if cur and events else None
+    hint = close_hint(events, st) if st else None  # 2.30.0: under the current work line, never left out by the safety net
+
+    def build(level):
+        omitted, out, text, sect = [], list(head), "", ""
+        if cur:
+            title = works[cur]["title"]
+            out.append(f"## 현재 작업: {cur} · {title}")
+            if hint:
+                out.append(hint)
+            if st:
+                out += [x for x in (artifacts_note(missing).rstrip("\n"),) if x]
+                scope = [x for x in open_decisions(st) if not is_map(x)]
+                cut = max(0, len(scope) - KEEP_OPEN) if level >= 1 else 0
+                open_arts = sum(1 for a in st["artifacts"] if not a.get("closed"))
+                drop = level >= 2 and open_arts > 0  # all closed: the section is the one "닫힘" line, kept
+                text = render(st, cur, title, keep=KEEP_OPEN if cut else None, artifacts=not drop).rstrip("\n")
+                if cut:
+                    omitted.append(f"오래된 열린 결정 {cut}건(최근 {KEEP_OPEN}건만 남김)")
+                if drop:
+                    omitted.append(f"산출물 절(열린 산출물 {open_arts}개)")
+                if "\n## 산출물" in text:
+                    text, _, rest = text.partition("\n## 산출물")
+                    sect, sep, tail = rest.partition("\n\n")
+                    sect, rest = "\n## 산출물" + sect, sep + tail
+                    text = (text, rest)
+            else:
+                out.append("기록 없음. 첫 save가 기록을 만든다.")
         else:
-            out.append("기록 없음. 첫 save가 기록을 만든다.")
-    else:
-        out += ["## 현재 작업 없음", no_work_guide(index)]
-    return ("EMPTY" if not works else "PROVIDED" if cur else "NO_CURRENT_WORK"), "\n".join(out) + "\n"
+            out += ["## 현재 작업 없음", no_work_guide(index)]
+        aliases = path_aliases(project_part[1:] + [sect])  # ②⑧ (D142): only project.md and the artifacts section
+        proj = [alias_text(x, aliases) for x in project_part]
+        if isinstance(text, tuple):
+            text = text[0] + alias_text(sect, aliases) + text[1]
+        out = (["경로 별칭(글자 그대로 바꿔 읽는다): " + " · ".join(f"{a} = {p}" for p, a in aliases)] if aliases else []) + proj + out
+        if text:
+            out.append(text)
+        if unseen and level < 3:
+            out.append(unseen.rstrip("\n"))
+        elif unseen:
+            omitted.append(f"못 본 사건 {unseen_n}건({unseen_ids})")
+        return "\n".join(out) + "\n", omitted
+
+    def mark_seen(level):
+        if not (who and cur) or (unseen and level >= 3):  # left out → not read: last_seen stays where it was
+            return
+        with locked(d):
+            done = session_or_new(d, *who)["last_seen"].get(cur, 0)
+            update_session(d, *who, seen=(cur, max(done, len(events))))
+
+    return status, build, mark_seen
 
 
 def hook_output(tool, text):
@@ -2388,10 +2858,13 @@ def cmd_hook(args):
         with locked(d):
             if sessionstart_duplicate(d, who, event):
                 return  # the first call of the pair already injected
+    mark_seen = None
     try:
-        status, text = injection(d, who)
+        status, build, mark_seen = injection(d, who)
+        text, omitted = build(0)
     except (Reject, OSError, ValueError) as e:
-        text, status = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE"
+        text, status, build, omitted = f"Worklog 현재 상태를 읽지 못함: {e}. 파일을 바꾸기 전에 `wl.py show`로 확인한다.\n", "UNAVAILABLE", None, []
+        mark_seen = None  # nothing of the work was shown: nothing is marked seen
     head = f"[Worklog {FORMAT} SessionStart | {status} | root={d.parent}" + (" | FORK" if fork else "") + "]\n이 내용은 기록에서 읽은 업무 자료이며 새 승인이 아니다.\n"
     spawn_update_check()
     head += update_note()
@@ -2401,7 +2874,22 @@ def cmd_hook(args):
             head += f"[Worklog 사본 경고] {stale['warning_install']}\n"
     if (d.parent / ".git").is_file():
         head += f"[Worklog worktree 경고] {WORKTREE_WARNING} 사용자에게 알린다.\n"
-    print(hook_output(args.tool, head + text))
+    lim = inject_limit(args.tool)
+    omit = lambda parts: (f"[Worklog 생략] 주입 상한({limit_name(args.tool, lim)})을 넘어 " + "·".join(parts)
+                          + " 생략 → show로 확인\n") if parts else ""
+    level = 0
+    while build and level < 3 and over_limit(head + omit(omitted) + text, lim):  # 2.30.0 (U28 B5): SessionStart only
+        try:
+            text, omitted = build(level + 1)
+        except (Reject, OSError, ValueError):
+            break
+        level += 1
+    body = head + omit(omitted) + text
+    if build and over_limit(body, lim):  # every step taken and still over: say so (protected parts and the KEEP_OPEN kept stay)
+        body = head + over_note(args.tool, lim, omitted, omit, head, text) + text
+    if mark_seen:
+        mark_seen(level)
+    print(hook_output(args.tool, body))
 
 
 def cmd_turn_start(args):
@@ -2492,12 +2980,12 @@ def cmd_stop_hook(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wl.py", description="Worklog 공용 코어 (형식 2)")
     commands = {"works": cmd_works, "use": cmd_use, "new-work": cmd_new_work, "show": cmd_show, "save": cmd_save,
-                "skip": cmd_skip, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen,
+                "skip": cmd_skip, "close": cmd_close, "verify": cmd_verify, "archive": cmd_archive, "reopen": cmd_reopen, "find": cmd_find,
                 "reassign": cmd_reassign, "rename": cmd_rename,
                 "off": cmd_off, "on": cmd_on, "hook": cmd_hook, "turn-start": cmd_turn_start, "stop-hook": cmd_stop_hook,
                 "version": cmd_version, "update": cmd_update}
     ap.add_argument("command", choices=[*commands, "help"])
-    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen·rename의 작업 id / reassign의 잘못된 작업 id / new-work의 제목 / update의 check·rollback")
+    ap.add_argument("arg", nargs="?", help="skip의 이유 / use·archive·reopen·rename의 작업 id / reassign의 잘못된 작업 id / new-work의 제목 / update의 check·rollback / find의 검색어")
     ap.add_argument("arg2", nargs="?", help="reassign의 맞는 작업 id / rename의 새 제목")
     ap.add_argument("--mode", choices=UPDATE_MODES, help="update: 갱신 알림 방식 설정(notify·off)")
     ap.add_argument("--root")
@@ -2505,9 +2993,11 @@ def main(argv=None):
     ap.add_argument("--session")
     ap.add_argument("--quote", help="use·new-work·reassign·rename: 사용자가 작업을 지정하거나 고치라고 한 원문 / off: 사용자가 끄라고 한 원문")
     ap.add_argument("--reason", help="off: 끄는 이유(선택)")
-    ap.add_argument("--work", help="show·verify: 대상 작업 id")
+    ap.add_argument("--work", help="show·verify·close·reopen --closed: 대상 작업 id")
+    ap.add_argument("--closed", nargs="?", const=True, help="show: 닫힌 묶음 목록, show --closed <label>: 그 묶음 전문, show --closed --all: "
+                                                           "닫힌 결정 전부 / reopen --closed <label>: 닫힌 묶음 열기 (2.30.0)")
     ap.add_argument("--json", action="store_true", help="show: 사람용 텍스트 대신 JSON 한 덩이(format·core·work·title·state·unseen·project, 필드 잠정)")
-    ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성")
+    ap.add_argument("--all", action="store_true", help="verify: 모든 작업 + index 일관성 / show --closed --all: 닫힌 결정 전부")
     ap.add_argument("--events", help="reassign: 옮길 사건 범위(E0003-E0005 또는 E0003,E0007)")
     ap.add_argument("--force", action="store_true", help="new-work·reassign --new: 같은 턴의 두 번째 새 작업 거부를 풀어 하나 더 만든다")
     ap.add_argument("--new", help="reassign: 맞는 작업이 아직 없을 때 <맞는 id> 대신 새 작업 제목(새 작업을 만들며 옮긴다)")
@@ -2521,7 +3011,7 @@ def main(argv=None):
         print(f"worklog core {VERSION} (format {FORMAT})\n" + SAVE_HELP)
         return
     try:
-        if args.command in ("archive", "reopen") and not args.arg:
+        if args.command in ("archive", "reopen") and not args.arg and not (args.command == "reopen" and args.closed is not None):
             raise Reject(f"{args.command} <id> 형식입니다.")
         commands[args.command](args)
     except (Reject, OSError, ValueError) as e:  # traceback 대신 구조화된 거부

@@ -808,14 +808,14 @@ class CoreTest(unittest.TestCase):
         md = (self.wd / "state.md").read_text()
         guide, valid = md.index("## 안내 — 먼저 볼 것(Map: 결정)"), md.index("## 유효 결정")
         self.assertLess(guide, valid)  # ① 절이 생기고 유효 결정보다 앞
-        self.assertEqual(md.count("- D2: Map: docs/spec.md §3을 먼저 본다 [사용자]"), 2)  # ① 안내 절 + 결정 목록
+        self.assertEqual(md.count("- D2: Map: docs/spec.md §3을 먼저 본다 [U]"), 2)  # ① 안내 절 + 결정 목록
         self.assertEqual(md.count("- D1: 저녁 11분"), 1)
         self.assertIn("현재 범위(최신 결정): D1: 저녁 11분\n", md)  # ③ 마지막 결정이 Map이어도 현재 범위는 그 앞의 비Map 결정
         self.assertEqual(run(self.root, "verify")[0], 0)  # 재계산해도 같은 투영
         run(self.root, "save", {"type": "D_USER", "summary": "변경", "quote": "spec 말고 readme",
                                 "decisions": [{"text": "Map: README.md를 먼저 본다", "replaces": "D2"}]})
         md = (self.wd / "state.md").read_text()
-        self.assertIn("- D3: Map: README.md를 먼저 본다 (대체: D2) [사용자]", md.split("## 유효 결정")[0])  # ④ 대체된 D2는 절에서 사라진다
+        self.assertIn("- D3: Map: README.md를 먼저 본다 (대체: D2) [U]", md.split("## 유효 결정")[0])  # ④ 대체된 D2는 절에서 사라진다
         self.assertNotIn("docs/spec.md", md)
         run(self.root, "save", {"type": "D_USER", "summary": "시간 결정 철회", "quote": "11분은 없던 걸로",
                                 "decisions": [{"text": "Map: 시간은 docs/plan.md를 따른다", "replaces": "D1"}]})
@@ -947,7 +947,7 @@ class InstallWarningTest(Base):
         self.assertNotIn("사본 경고", self.ctx(tool="codex"))
 
     def test_strip_source_tags_in_text(self):
-        """F6: 글자로 적힌 [사용자]/[모델]은 지우고 코어가 출처를 붙인다."""
+        """F6: 글자로 적힌 [사용자]/[모델](2.30.0부터 [U]/[M]도)은 지우고 코어가 출처를 붙인다."""
         self.ok(new_work(self.root, "t"))
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q",
                                         "decisions": [{"text": "[사용자] 11분"}, {"text": "3·5·3분 [모델]", "source": "model"}],
@@ -956,9 +956,16 @@ class InstallWarningTest(Base):
         self.assertEqual([(x["text"], x["source"]) for x in st["decisions"]], [("11분", "user"), ("3·5·3분", "model")])
         self.assertEqual([(x["text"], x["source"]) for x in st["constraints"]], [("게시 금지", "user")])
         md = (self.d / "works/t/state.md").read_text()
-        self.assertIn("- D1: 11분 [사용자]", md)
-        self.assertIn("- C1: 게시 금지 [사용자]", md)
+        self.assertIn("- D1: 11분 [U]", md)
+        self.assertIn("- C1: 게시 금지 [U]", md)
         self.refused(run(self.root, "save", {"type": "RESULT", "summary": "y", "decisions": [{"text": "[모델]"}]}), "비어 있습니다")
+        # 2.30.0 (§2): the short tags [U]/[M] are stripped too, and the old ones still are
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "z", "decisions": [{"text": "[U] 9분 [M]"}, {"text": "4컷 [사용자]"}],
+                                        "constraints": ["[M] 외부 공유 금지"]}))
+        st = json.loads((self.d / "works/t/state.json").read_text())
+        self.assertEqual([x["text"] for x in st["decisions"]][2:], ["9분", "4컷"])
+        self.assertEqual(st["constraints"][-1]["text"], "외부 공유 금지")
+        self.refused(run(self.root, "save", {"type": "RESULT", "summary": "w", "decisions": [{"text": " [U] "}]}), "출처 태그 [U]/[M]")
 
 
 class CoreWarningTest(Base):
@@ -2464,7 +2471,8 @@ class AutoConnectTest(Base):
                     7: "22fc65f3ab7e8b9e", 8: "2308274279d90633", 9: "eeab50635b48198f", 10: "3385bef279bf3858", 11: "dcc8129b563ce938",
                     12: "a5865adb6b96621d", 13: "9f29b4a6c8ecf04e", 14: "6838a8a38ec8acf4", 15: "eff8a02e99ac056d", 16: "7486ca233ae3ffa5",
                     17: "349c6f0508465c04"}
-    REPLACED = {3, 6, 9, 13, 16}  # 2.27.0: 9 (U11) 결정 이유 한 구절, 13 (U12 C) 산출물 누락 처리, 16 (U14) 하위 사건 채택 문장
+    REPLACED = {3, 6, 9, 12, 13, 16}  # 2.27.0: 9 (U11) 결정 이유 한 구절, 13 (U12 C) 산출물 누락 처리, 16 (U14) 하위 사건 채택 문장
+    # 2.30.0: 12 출처 꼬리표 [사용자]/[모델] → [U]/[M] (U28 §2)
 
     def setUp(self):
         super().setUp()
@@ -2855,7 +2863,7 @@ class AutoConnectTest(Base):
         self.assertEqual([r["kind"] for r in eb["refs"]], ["refiled_from", "refiled_from"])     # 2.26.0: 맞는 작업이 먼저, a의 기존 사건만 가리킨다
         self.assertIn({"kind": "refiled_from", "work": "a", "id": "E0001", "quote": "3장까지, 게시 금지"}, eb["refs"])
         self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
-        self.assertIn("[모델]", (self.d / "works/b/state.md").read_text())
+        self.assertIn("[M]", (self.d / "works/b/state.md").read_text())
         self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "b 이어감"}))           # 현재 작업 b, 읽은 것으로 침
         self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0001-E0002", "--quote", "다시"]), "이미 옮겼습니다")
         self.refused(run(self.root, "reassign", extra=["a", "b", "--events", "E0009", "--quote", "q"]), "작업에 없는 사건")
@@ -3077,7 +3085,8 @@ class AutoConnectTest(Base):
         for part in ("`auto=on`이면 첫 기록 대상 요청", "④ 기존 작업이 하나도 없으면", "`reassign <잘못된 id> <맞는 id>", "`| FORK`가 보이면",
                      '"기록하지 마"·"워크로그 꺼"는 `off --quote', "`기록: <id> 새 작업으로 시작(제목 자동)`",
                      "- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채 '남은 한계: …' 항목을 따로 더한다",  # 2.29.0 U26
-                     "원래 범위에서 할 확인을 같은 형식으로 `waiting`에 둔다. next_action에는 지금 할 수 있는 일만 적는다"):  # 2.29.0 U27 v3
+                     "원래 범위에서 할 확인을 같은 형식으로 `waiting`에 둔다. next_action에는 지금 할 수 있는 일만 적는다",  # 2.29.0 U27 v3
+                     "- 결정·제약에는 출처가 붙는다. `[U]`는 사용자 발언(REQUEST·APPROVAL·D_USER), `[M]`은 모델 판단(D_AGENT 등)."):  # 2.30.0
             self.assertIn(part, text)
         wl = self.wl
         for gone in ("위임한 턴은 첫머리에", "지금 고른 방법·범위", "모델이 제안한 것은 사용자 발언과 같은 save에", "계속 지킬 금지·자료 범위만",
@@ -3290,8 +3299,8 @@ class FinalPlanTest(unittest.TestCase):
         s = self.state()
         self.assertEqual([(d["id"], d["source"]) for d in s["decisions"]], [("D1", "user"), ("D2", "model")])
         md = (self.d / "works/t/state.md").read_text()
-        self.assertIn("- D1: 11분 [사용자]", md)
-        self.assertIn("- D2: 3·5·3분 배분(모델 제안) [모델]", md)
+        self.assertIn("- D1: 11분 [U]", md)
+        self.assertIn("- D2: 3·5·3분 배분(모델 제안) [M]", md)
         r, out = run(self.root, "save", {"type": "RESULT", "summary": "y", "decisions": [{"text": "z", "source": "user"}]})
         self.assertEqual(r, 2)  # 모델 사건에서 사용자 출처를 꾸밀 수 없다
         self.assertIn('"model"만', json.loads(out)["error"])
@@ -3305,14 +3314,14 @@ class FinalPlanTest(unittest.TestCase):
         self.assertEqual([(c["id"], c["source"]) for c in s["constraints"]], [("C1", "user"), ("C2", "model")])
         self.assertEqual(s["decisions"][0]["source"], "model")
         md = (self.d / "works/t/state.md").read_text()
-        self.assertIn("- C1: 사용자 제약 [사용자]", md)
-        self.assertIn("- C2: 모델이 읽은 조건 [모델]", md)
-        self.assertIn("- D1: 3컷씩 나눔 [모델]", md)
+        self.assertIn("- C1: 사용자 제약 [U]", md)
+        self.assertIn("- C2: 모델이 읽은 조건 [M]", md)
+        self.assertIn("- D1: 3컷씩 나눔 [M]", md)
         r, out = run(self.root, "save", {"type": "RESULT", "summary": "z", "constraints_remove": {"C1": "불편"}})
         self.assertEqual(r, 2)  # 사용자 제약은 사용자 출처 + quote
         self.assertIn("사용자 제약 ['C1']", json.loads(out)["error"])
         out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "z", "constraints_remove": {"C2": "조건이 바뀜"}}))  # 모델 제약: 사유만
-        self.assertEqual(out["constraints"], ["C1: 사용자 제약 [사용자]"])
+        self.assertEqual(out["constraints"], ["C1: 사용자 제약 [U]"])
         out = self.ok(run(self.root, "save", {"type": "D_USER", "summary": "z", "quote": "풀어", "constraints_remove": {"C1": "사용자 해제"}}))
         self.assertEqual(out["constraints"], [])
 
@@ -3679,7 +3688,7 @@ class Release2270Test(Base):
         out = self.ok(run(self.root, argv[0], extra=argv[1:]))
         self.assertEqual((out["from"], out["to"], out["created"], out["current_work"], out["refiled"], out["misfiled"]),
                          ("recipe", "guide", "guide", "guide", "E0001", "E0003"))
-        self.assertEqual(out["decisions"], ["D1: 표는 3열(읽기 쉬움) [사용자]"])
+        self.assertEqual(out["decisions"], ["D1: 표는 3열(읽기 쉬움) [U]"])
         self.assertIn("다른 작업의 유효 제약은 이 작업에 적용되지 않습니다: memo 1개", out["notice"])
         w = self.index()["works"]["guide"]
         self.assertEqual((w["title"], w["status"], w["last_seq"]), ("Guide", "ACTIVE", 1))
@@ -4327,3 +4336,492 @@ class Release2290Test(Base):
                          [{"entries": [review, ours], "continue": True},                  # 앞 확장의 항목 뒤에 이어 붙인다
                           {"entries": [ours], "continue": True}, {"entries": [ours], "continue": True}])
         self.assertEqual(settle({}), [None, None, None])                                # 차단 없음: 아무것도 돌려주지 않아 앞 목록 유지
+
+
+class Release2300Test(Base):
+    """2.30.0 (U28): close·reopen --closed·show --closed, check exemption, SessionStart safety net, [U]/[M], path aliases,
+    '다음:' only without a current work, find stub."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+        self.ok(new_work(self.root, "t"))
+
+    def state(self, wid="t"):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    def events(self, wid="t"):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    def decide(self, *texts, **extra):
+        self.n = getattr(self, "n", 0) + 1
+        return self.ok(run(self.root, "save", dict({"type": "REQUEST", "summary": f"d{self.n}", "quote": "q",
+                                                    "decisions": [{"text": t} for t in texts]}, **extra)))
+
+    def close(self, **p):
+        return run(self.root, "close", p)
+
+    def home(self, **config):
+        h = Path(tempfile.mkdtemp())
+        (h / "config.json").write_text(json.dumps(dict({"update": "off"}, **config)))
+        return {"WL_HOME": str(h)}
+
+    def test_close_reopen_and_replaces(self):
+        self.decide("a", "b", "c", "d", "e")                                                      # D1~D5
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "rep", "quote": "q",
+                                        "decisions": [{"text": "b2", "replaces": "D2"}]}))        # D6 replaces D2
+        self.refused(self.close(ids="D1-D3", label="v1", note=" "), "note가 필요합니다")
+        self.refused(self.close(ids="D1-D9", label="v1", note="n"), "작업에 없는 결정")
+        self.refused(self.close(ids="1-3", label="v1", note="n"), "close의 ids 형식")
+        self.refused(self.close(ids="D0-D2", label="v1", note="n"), "close의 ids 형식")                     # D0은 없다
+        self.refused(self.close(label="v1", note="n"), "ids나 artifacts")
+        self.refused(self.close(ids="D1", label="a\nb", note="n"), "label은")
+        before = len(self.events())
+        out = self.ok(self.close(ids="D1-D3", label="v1", note="첫 묶음 주제"))
+        self.assertEqual((out["closed"], out["skipped_replaced"], out["count"]), (["D1", "D3"], ["D2"], 2))   # 대체된 D2 자동 제외
+        ev = self.events()[-1]
+        self.assertEqual((ev["type"], ev["changes"]), ("CHANGE", {"decisions_close": {"label": "v1", "ids": ["D1", "D3"], "note": "첫 묶음 주제"}}))
+        self.assertEqual(len(self.events()), before + 1)
+        st = self.state()
+        self.assertEqual([(x["id"], x.get("closed")) for x in st["decisions"]], [("D1", "v1"), ("D3", "v1"), ("D4", None), ("D5", None), ("D6", None)])
+        self.assertEqual([(g["label"], g["ids"], g["count"], g["event"]) for g in st["closed_groups"]], [("v1", ["D1", "D3"], 2, ev["id"])])
+        self.refused(self.close(ids="D4", label="v1", note="n"), "이미 닫힌 묶음 라벨입니다: v1")             # 라벨 유일
+        out = self.ok(self.close(ids="D3-D4", label="v2", note="둘째"))
+        self.assertEqual((out["closed"], out["skipped_closed"]), (["D4"], ["D3"]))                          # 이미 닫힌 D3 제외
+        self.refused(self.close(ids="D2-D3", label="v3", note="n"), "닫을 열린 결정·산출물이 없습니다")
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("## 닫힌 묶음(끝난 하위 작업) — 전문은 show --closed <label>\n- v1 (D1–D3 중 2건, ", md)
+        self.assertNotIn("- D1: a", md)
+        self.assertIn("- D5: e [U]", md)
+        # 닫힌 결정도 replaces 대상: 새 결정은 열려 있고 묶음 줄 건수만 준다
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "rep closed", "quote": "q", "decisions": [{"text": "a2", "replaces": "D1"}]}))
+        st = self.state()
+        self.assertEqual([(g["label"], g["count"]) for g in st["closed_groups"]], [("v1", 1), ("v2", 1)])
+        self.assertIn("- D7: a2 (대체: D1) [U]", (self.d / "works/t/state.md").read_text())
+        self.assertIn("- v1 (D1–D3 중 1건, ", (self.d / "works/t/state.md").read_text())
+        # reopen --closed: 표시만 복구하고 대체를 되살리지 않는다
+        self.refused(run(self.root, "reopen", extra=["--closed", "없음"]), "닫힌 묶음에 없는 라벨입니다")
+        self.refused(run(self.root, "reopen", extra=["--closed"]), "reopen --closed <label>")
+        out = self.ok(run(self.root, "reopen", extra=["--closed", "v1"]))
+        self.assertEqual((out["reopened"], out["decisions"]), ("v1", ["D3"]))
+        st = self.state()
+        self.assertEqual([x["id"] for x in st["decisions"] if not x.get("closed")], ["D3", "D5", "D6", "D7"])
+        self.assertEqual([g["label"] for g in st["closed_groups"]], ["v2"])
+        self.assertEqual(self.events()[-1]["changes"], {"decisions_reopen": {"label": "v1"}})
+        self.ok(self.close(ids="D3, D5", label="v1", note="범위 정정"))                                        # reopen 뒤 같은 라벨로 다시
+        self.ok(run(self.root, "reopen", extra=["--closed", "v1"]))
+        self.ok(run(self.root, "reopen", extra=["--closed", "v2"]))
+        self.assertNotIn("closed_groups", self.state())                                               # 전부 열면 키 없음
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+        self.assertEqual(self.index()["works"]["t"]["status"], "ACTIVE")                                # 작업 reopen과 별개
+
+    def test_close_check_exemption_save_and_verify(self):
+        self.decide("표는 3열", "제목은 굵게")
+        (self.root / "a.md").write_text("표는 3열로 만든다. 제목은 굵게 쓴다.\n")
+        self.ok(self.close(ids="D1", label="v1", note="표"))
+        out = self.ok(run(self.root, "save", {"type": "RESULT", "summary": "a", "artifacts": [{"path": "a.md"}],
+                                              "check": {"D2": "'제목은 굵게 쓴다'"}}))                  # 닫힌 D1은 check 대상 아님
+        self.assertEqual(out["decisions"], ["D2: 제목은 굵게 [U]"])
+        self.assertEqual(self.events()[-1]["check"], {"D2": "'제목은 굵게 쓴다'"})
+        self.ok(run(self.root, "reopen", extra=["--closed", "v1"]))
+        self.refused(run(self.root, "save", {"type": "RESULT", "summary": "b", "artifacts": [{"path": "a.md"}],
+                                             "check": {"D2": "'제목은 굵게 쓴다'"}}), "산출물 대조 누락: ['D1']")     # 열면 의무 복구
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "b", "artifacts": [{"path": "a.md"}],
+                                        "check": {"D1": "'표는 3열로 만든다'", "D2": "'제목은 굵게 쓴다'"}}))
+        r = self.ok(run(self.root, "verify", extra=["--all"]))                                          # 닫혀 있던 기간의 save도 통과
+        self.assertTrue(r["ok"], r)
+
+    def test_show_closed_three_forms(self):
+        self.decide("a", "b", "c")
+        self.ok(run(self.root, "save", {"type": "D_AGENT", "summary": "m", "decisions": [{"text": "d"}]}))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "rep", "quote": "q", "decisions": [{"text": "b2", "replaces": "D2"}]}))
+        self.ok(self.close(ids="D1, D2, D3", label="v1", note="첫"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "rep3", "quote": "q", "decisions": [{"text": "c2", "replaces": "D3"}]}))
+        self.ok(self.close(ids="D4", label="v2", note="둘째"))
+        r, out = run(self.root, "show", extra=["--closed"])
+        self.assertEqual(r, 0, out)
+        self.assertTrue(out.startswith("# 닫힌 묶음 — t · t (2개)\n- v1 (D1–D3 중 1건, "), out)
+        self.assertIn("): 첫\n- v2 (D4 중 1건, ", out)
+        self.assertNotIn("- D1:", out)                                                                 # 목록만
+        r, out = run(self.root, "show", extra=["--closed", "v1"])
+        self.assertIn("## v1 — ", out)
+        self.assertIn("- D1: a [U]", out)
+        self.assertIn("- 닫은 뒤 대체·이관된 결정: D3(E0005) → events.jsonl", out)
+        self.assertNotIn("- D4:", out)
+        r, out = run(self.root, "show", extra=["--closed", "--all"])
+        self.assertIn("- D1: a [U]", out)
+        self.assertIn("- D4: d [M]", out)
+        self.assertIn("전부 2묶음", out)
+        self.refused(run(self.root, "show", extra=["--closed", "v9"]), "닫힌 묶음에 없는 라벨입니다: v9")
+        seen = json.loads(session_file(self.root, "codex_s1").read_text())["last_seen"]["t"]
+        use(self.root, session="s2")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "other"}, session="s2"))
+        run(self.root, "show", extra=["--closed"])
+        self.assertEqual(json.loads(session_file(self.root, "codex_s1").read_text())["last_seen"]["t"], seen)  # 읽기 전용
+        r, out = run(self.root, "show")
+        self.assertIn("## 닫힌 묶음(끝난 하위 작업)", out)
+
+    def test_close_artifacts_folded_and_not_missing(self):
+        self.decide("a")
+        for p in (".review/x/r.md", ".review/y/r.md", "runs/m/RESULTS.md", "docs/keep.md"):
+            (self.root / p).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / p).write_text("본문 a\n")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "arts", "artifacts": [{"path": p} for p in
+                                        (".review/x/r.md", ".review/y/r.md", "runs/m/RESULTS.md", "docs/keep.md")], "check": {"D1": "미반영: x"}}))
+        self.refused(self.close(label="arts", note="보고", artifacts=["nothing/*"]), "맞는 산출물이 없습니다")
+        out = self.ok(self.close(label="arts", note="보고 폴더", artifacts=[".review/*", "runs/"]))
+        self.assertEqual((out["closed"], out["artifacts"]), ([], 3))
+        st = self.state()
+        self.assertEqual(len(st["artifacts"]), 4)                                                       # state.json에 보존
+        self.assertEqual(sorted(a["path"] for a in st["artifacts"] if a.get("closed") == "arts"), [".review/x/r.md", ".review/y/r.md", "runs/m/RESULTS.md"])
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("## 산출물\n- docs/keep.md sha256:", md)
+        self.assertIn("- 닫힘: 폴더 3개·산출물 3개 → show --closed", md)
+        self.assertNotIn(".review/x/r.md", md)
+        self.assertIn("- arts (결정 없음, 산출물 3개, ", md)
+        (self.root / ".review/x/r.md").unlink()
+        (self.root / "docs/keep.md").unlink()
+        r, out = run(self.root, "show")
+        self.assertIn("[Worklog 산출물 없음]", out)
+        self.assertIn("docs/keep.md(E0002)", out)
+        self.assertNotIn(".review/x/r.md", out)                                                        # 닫힌 산출물은 누락 경고에서 뺀다
+        self.assertEqual(json.loads(run(self.root, "verify")[1])["artifacts"]["missing"], [".review/x/r.md(E0002)", "docs/keep.md(E0002)"])
+        r, out = run(self.root, "show", extra=["--closed", "arts"])
+        self.assertIn("- 산출물 runs/m/RESULTS.md sha256:", out)
+
+    def test_injection_safety_net(self):
+        wl = load_wl()
+        self.decide("Map: README를 먼저 본다")
+        self.decide(*[f"결정 {i} " + "가" * 30 for i in range(2, 31)])                                # D2~D30
+        self.ok(self.close(ids="D2-D4", label="v1", note="닫은 묶음"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "c", "quote": "q", "constraints": ["게시 금지"], "waiting": ["답 대기"]}))
+        (self.root / "a.bin").write_bytes(b"\x00")                                                    # 비텍스트: check 선택
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "art", "artifacts": [{"path": "a.bin"}]}))
+        use(self.root, session="s2")
+        def ctx(tool, home, session):
+            r, out = hook(self.root, "hook", session=session, tool=tool, env=home)
+            self.assertEqual(r, 0, out)
+            return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        use(self.root, session="c0", tool="claude")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "새 사건"}, session="s2"))
+        full = ctx("claude", self.home(), "c0")
+        self.assertNotIn("[Worklog 생략]", full)                                                       # 상한 아래: 그대로
+        self.assertIn("- D30: 결정 30", full)
+        self.assertIn("- D5: 결정 5", full)
+        lim = len(full) - 100
+        for tool, conf, unit in (("claude", {"claude": {"chars": lim}}, f"claude {lim:,}자"),
+                                 ("codex", {"codex": {"bytes": len(full.encode()) - 100}}, f"codex {len(full.encode()) - 100:,}B")):
+            use(self.root, session=f"{tool}1", tool=tool)
+            self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": f"새 {tool}"}, session="s2"))
+            text = ctx(tool, self.home(inject_limit=conf), f"{tool}1")
+            line = next(x for x in text.splitlines() if x.startswith("[Worklog 생략]"))
+            self.assertEqual(line, f"[Worklog 생략] 주입 상한({unit})을 넘어 오래된 열린 결정 6건(최근 20건만 남김) 생략 → show로 확인")
+            self.assertNotIn("- D5: 결정 5", text)                                                       # 오래된 열린 결정부터
+            self.assertIn("- D11: 결정 11", text)
+            self.assertIn("- D1: Map: README를 먼저 본다", text.split("## 유효 결정")[1])                  # Map 보호(목록에도 남음)
+            self.assertIn("- v1 (D2–D4 중 3건", text)                                                      # 닫힌 묶음 줄 보호
+            self.assertIn("- C1: 게시 금지", text)
+            self.assertIn("- 답 대기", text)
+            self.assertIn("## 산출물", text)
+            self.assertIn("## 이 세션이 아직 못 본 사건", text)
+        # 더 좁으면 산출물 → 못 본 사건 순
+        use(self.root, session="c2", tool="claude")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "새 c2"}, session="s2"))
+        text = ctx("claude", self.home(inject_limit={"claude": {"chars": 500}}), "c2")
+        last = self.events()[-1]["id"]
+        self.assertIn(f"오래된 열린 결정 6건(최근 20건만 남김)·산출물 절(열린 산출물 1개)·못 본 사건 1건({last}) 생략 → show로 확인. "
+                      f"생략 후에도 상한 초과({len(text):,}자/500자): 긴 결정을 닫거나(close) config로 상한 조정", text)   # 잔여 초과 안내(F2)
+        self.assertNotIn("## 산출물", text)
+        self.assertNotIn("## 이 세션이 아직 못 본 사건", text)
+        self.assertIn("- C1: 게시 금지", text)
+        # 꺼짐: 전체, 도구별 끄기, pi는 상한 없음
+        for home in (self.home(inject_limit="off"), self.home(inject_limit={"claude": "off"}), self.home(inject_limit={"claude": {"chars": None}})):
+            sess = f"off{abs(hash(json.dumps(home)))}"
+            use(self.root, session=sess, tool="claude")
+            self.assertNotIn("[Worklog 생략]", ctx("claude", dict(home), sess))
+        with mock.patch.object(wl, "home_json", return_value={}):
+            self.assertEqual(wl.inject_limit("claude"), {"chars": 10000, "bytes": None})
+            self.assertEqual(wl.inject_limit("codex"), {"chars": None, "bytes": 10000})
+            self.assertEqual(wl.inject_limit("agy"), {"chars": 49000, "bytes": None})
+            self.assertIsNone(wl.inject_limit("pi"))
+            self.assertEqual(wl.inject_limit(None), {"chars": 10000, "bytes": None})
+        with mock.patch.object(wl, "home_json", return_value={"inject_limit": {"codex": {"bytes": 0, "chars": 5}}}):
+            self.assertEqual(wl.inject_limit("codex"), {"chars": 5, "bytes": 10000})                  # 0·잘못된 값은 무시
+        self.assertTrue(wl.over_limit("가" * 4, {"chars": None, "bytes": 11}))                          # 바이트: 한글 3B
+        self.assertFalse(wl.over_limit("가" * 4, {"chars": 4, "bytes": None}))
+        r, out = run(self.root, "show")
+        self.assertIn("- D5: 결정 5", out)                                                              # show는 전체
+        self.assertNotIn("[Worklog 생략]", out)
+
+    def hook_ctx(self, session, tool="claude", **config):
+        r, out = hook(self.root, "hook", session=session, tool=tool, env=self.home(**config))
+        self.assertEqual(r, 0, out)
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+    def unseen_ids(self, session, tool="claude"):
+        r, out = run(self.root, "show", session=session, tool=tool, extra=["--json"])
+        self.assertEqual(r, 0, out)
+        return [e["id"] for e in json.loads(out)["unseen"]]
+
+    def test_safety_net_omitted_unseen_stay_unseen(self):
+        """2.30.0 fix (F1): unseen events the safety net leaves out stay unseen — show, show --json, use and the next
+        injection list them again; the [Worklog 생략] line names their range. Shown ones are marked seen as before."""
+        self.decide(*[f"결정 {i}" for i in range(1, 6)])
+        use(self.root, session="s2")
+        for sess in ("c0", "c1", "c2"):
+            use(self.root, session=sess, tool="claude")
+        for i in range(3):
+            self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": f"남의 사건 {i}"}, session="s2"))
+        ids = [e["id"] for e in self.events()[-3:]]
+        tight = {"inject_limit": {"claude": {"chars": 300}}}
+        for _ in range(2):                                                                               # 생략 → 읽음 처리 안 함 → 다음 주입도 생략 안내
+            text = self.hook_ctx("c0", **tight)
+            self.assertIn(f"을 넘어 못 본 사건 3건({ids[0]}~{ids[-1]}) 생략 → show로 확인", text)
+            self.assertNotIn("## 이 세션이 아직 못 본 사건", text)
+        self.refused(run(self.root, "save", {"type": "CHECKPOINT", "summary": "c0 저장"}, session="c0", tool="claude"),
+                     "기록이 바뀌었습니다")                                                              # 안 읽은 채 저장은 신선도 거부(→ show)
+        self.assertEqual(self.unseen_ids("c0"), ids)                                                     # show --json이 회수
+        self.assertEqual(self.unseen_ids("c0"), [])                                                      # show가 읽음 처리
+        self.hook_ctx("c1", **tight)
+        r, out = run(self.root, "show", session="c1", tool="claude")
+        self.assertIn("## 이 세션이 아직 못 본 사건", out)
+        self.assertIn("남의 사건 2", out)
+        self.hook_ctx("c2", **tight)
+        r, out = use(self.root, session="c2", tool="claude")                                             # use도 같은 last_seen
+        self.assertIn("## 이 세션이 아직 못 본 사건", out)
+        self.assertIn("남의 사건 0", out)
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "하나 더"}, session="s2"))
+        one = self.events()[-1]["id"]
+        self.assertIn(f"을 넘어 못 본 사건 1건({one}) 생략", self.hook_ctx("c0", **tight))                       # 한 건이면 범위 대신 id 하나
+        text = self.hook_ctx("c0")                                                                       # 상한 아래: 보여 주고 읽음 처리
+        self.assertIn("## 이 세션이 아직 못 본 사건", text)
+        self.assertEqual(self.unseen_ids("c0"), [])
+
+    def test_safety_net_still_over_notice(self):
+        """2.30.0 fix (F2): 20 long open decisions are over the limit with nothing left to omit — the injection says so, with
+        the size of the whole output, and keeps the decisions, constraints and waiting."""
+        self.decide(*[f"결정 {i} " + "가" * 600 for i in range(1, 21)])
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "c", "quote": "q", "constraints": ["게시 금지"], "waiting": ["답 대기"]}))
+        for tool, unit, size, cap in (("claude", "claude 10,000자", len, "10,000자"), ("codex", "codex 10,000B", lambda t: len(t.encode()), "10,000B")):
+            use(self.root, session=f"{tool}9", tool=tool)
+            text = self.hook_ctx(f"{tool}9", tool=tool)
+            line = next(x for x in text.splitlines() if x.startswith("[Worklog 생략]"))
+            u = "자" if tool == "claude" else "B"
+            self.assertEqual(line, f"[Worklog 생략] 주입 상한({unit}): 생략할 절이 없어 상한 초과({size(text):,}{u}/{cap}): "
+                                   "긴 결정을 닫거나(close) config로 상한 조정")
+            self.assertIn("- D1: 결정 1 ", text)                                                         # 20건은 그대로(N 불변)
+            self.assertIn("- D20: 결정 20 ", text)
+            self.assertIn("- C1: 게시 금지", text)
+            self.assertIn("- 답 대기", text)
+
+    def test_closed_display_edges(self):
+        """2.30.0 fixes: a group with nothing left closed is folded in state.md·injection and marked in show --closed; with every
+        artifact closed the safety net does not report "열린 산출물 0개" and keeps the 닫힘 line; an artifact recorded again after
+        its close is named in show --closed."""
+        self.decide("a", "b", "c")                                                                       # D1~D3
+        self.ok(self.close(ids="D1-D2", label="v1", note="첫 묶음"))
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "rep", "quote": "q",
+                                        "decisions": [{"text": "a2", "replaces": "D1"}, {"text": "b2", "replaces": "D2"}]}))
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertNotIn("- v1 (", md)                                                                   # 0건 묶음은 접는다
+        r, out = run(self.root, "show", extra=["--closed"])
+        self.assertIn("- v1 (D1–D2 중 0건, ", out)
+        self.assertIn(" — 남은 항목 없음(state.md·주입에서는 접힘)", out)
+        (self.root / "x").mkdir()
+        (self.root / "x/r.bin").write_bytes(b"\x00")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "art", "artifacts": [{"path": "x/r.bin"}]}))
+        self.ok(self.close(label="arts", note="보고", artifacts=["x/*"]))
+        use(self.root, session="c0", tool="claude")
+        text = self.hook_ctx("c0", inject_limit={"claude": {"chars": 200}})                              # 모든 단계를 거친다
+        self.assertNotIn("열린 산출물 0개", text)
+        self.assertNotIn("산출물 절", text)
+        self.assertIn("- 닫힘: 폴더 1개·산출물 1개 → show --closed", text)
+        (self.root / "x/r.bin").write_bytes(b"\x00\x01")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "art2", "artifacts": [{"path": "x/r.bin"}]}))   # 다시 기록 → 열림
+        r, out = run(self.root, "show", extra=["--closed"])
+        self.assertIn("  - 닫은 뒤 다시 열린 산출물 1개·다른 묶음으로 닫힌 산출물 0개·옮겨지거나 지워진 산출물 0개 → show --closed arts", out)
+        r, out = run(self.root, "show", extra=["--closed", "arts"])
+        self.assertIn("- 닫은 뒤 다시 기록돼 열린 산출물(지금 산출물 절에 있음): x/r.bin", out)
+        self.assertNotIn("- arts (", (self.d / "works/t/state.md").read_text())                         # 남은 항목 없음 → 접힘
+        self.ok(self.close(label="g2", note="다시 닫음", artifacts=["x/r.bin"]))                            # 다시 연 것을 다른 묶음으로 닫기(R1)
+        r, out = run(self.root, "show", extra=["--closed", "arts"])
+        self.assertIn("- 닫은 뒤 다시 기록돼 다른 묶음에 닫힌 산출물 [g2]: x/r.bin → show --closed g2", out)
+        self.assertNotIn("지금 산출물 절에 있음", out)
+        r, out = run(self.root, "show", extra=["--closed"])
+        self.assertIn("  - 닫은 뒤 다시 열린 산출물 0개·다른 묶음으로 닫힌 산출물 1개·옮겨지거나 지워진 산출물 0개 → show --closed arts", out)
+        r, out = run(self.root, "show", extra=["--closed", "g2"])
+        self.assertIn("- 산출물 x/r.bin sha256:", out)
+        self.assertNotIn("닫은 뒤", out)                                                                 # g2 자신에는 재열림 언급 없음
+        self.assertNotIn("- x/r.bin", (self.d / "works/t/state.md").read_text())                       # 산출물 절에도 없음(닫힘 한 줄)
+
+    HINT = ("[Worklog 닫기 후보] 마지막 결과 {e}까지의 하위 작업 결정 {r}({n}건)이 아직 열려 있다. 그 하위 작업이 끝났으면 "
+            "다른 일을 하기 전에 \"{r}({n}건)을 <라벨>로 닫을까요? 계속 쓰는 결정은 뺍니다\"를 먼저 묻는다.")
+
+    def m19b(self, *texts):
+        """M19b seed: REQUEST(D1) → D_USER(texts) → RESULT."""
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "요청", "quote": "q", "decisions": [{"text": "4인분"}]}))
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "결정", "quote": "q", "decisions": [{"text": t} for t in texts]}))
+        return self.ok(run(self.root, "save", {"type": "RESULT", "summary": "1차 초안 끝"}))
+
+    def test_close_hint_use_show_injection(self):
+        """2.30.0 (U28, M19 C 2안): after the last RESULT/CHECKPOINT with no close after it, use·show·SessionStart name the open
+        decisions of that sub-task (after the last REQUEST before it) in one line; state.md, show --json and save results do not."""
+        saved = self.m19b("소금 7g", "굽기 20분", "그릇 둘")                                                # D2~D4, E0003
+        line = self.HINT.format(e="E0003", r="D2–D4", n=3)
+        self.assertNotIn("닫기 후보", json.dumps(saved, ensure_ascii=False))                              # save 결과에는 없다
+        out = self.used(use(self.root, session="c0", tool="claude"), "t")
+        self.assertIn("\n" + line + "\n# Worklog 현재 상태 — t · t (seq 3, ", out)                                 # use: note 다음, 본문 앞
+        r, out = run(self.root, "show")
+        self.assertTrue(out.startswith(line + "\n# Worklog 현재 상태 — t · t (seq 3, "), out)
+        use(self.root, session="c1", tool="claude")
+        ctx = self.hook_ctx("c1")
+        self.assertIn("\n## 현재 작업: t · t\n" + line + "\n", ctx)                                         # 현재 작업 줄 바로 아래
+        tight = self.hook_ctx("c1", inject_limit={"claude": {"chars": 200}})                              # 안전망이 빼지 않는다
+        lines = tight.splitlines()
+        omit, cur = next(i for i, x in enumerate(lines) if x.startswith("[Worklog 생략]")), lines.index("## 현재 작업: t · t")
+        self.assertLess(omit, cur)                                                                      # 생략 줄은 머리에
+        self.assertEqual(lines[cur + 1], line)                                                          # 후보 줄은 현재 작업 줄 바로 다음
+        self.assertNotIn("닫기 후보", (self.d / "works/t/state.md").read_text())
+        r, out = run(self.root, "show", extra=["--json"])
+        self.assertNotIn("닫기 후보", out)
+        # close 뒤에는 사라지고, 다음 RESULT·CHECKPOINT 뒤 새 구간만 다시 후보가 된다
+        self.ok(self.close(ids="D2-D4", label="1차 초안", note="초안 결정"))
+        for out in (run(self.root, "show")[1], self.used(use(self.root, session="c2", tool="claude"), "t"), self.hook_ctx("c2")):
+            self.assertNotIn("닫기 후보", out)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "2차", "quote": "q"}))
+        self.ok(run(self.root, "save", {"type": "D_AGENT", "summary": "m", "decisions": [{"text": "사진 한 장"}]}))      # D5
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "2차 중간"}))
+        last = self.events()[-1]["id"]
+        self.assertIn(self.HINT.format(e=last, r="D5", n=1), run(self.root, "show")[1])                 # 1건은 D5, CHECKPOINT도 결과
+
+    def test_close_hint_conditions(self):
+        """2.30.0: each exclusion is checked in the real show and SessionStart output after a positive control in the same ledger
+        (so removing the two calls fails here too): no line without a RESULT/CHECKPOINT or without open decisions in the segment;
+        Map: and closed ones are not candidates."""
+        use(self.root, session="c0", tool="claude")
+        def outs():
+            return run(self.root, "show")[1], self.hook_ctx("c0")
+        def has(line):
+            for out in outs():
+                self.assertIn(line, out)
+        def none():
+            for out in outs():
+                self.assertNotIn("[Worklog 닫기 후보]", out)
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "요청", "quote": "q", "decisions": [{"text": "4인분"}]}))         # E1 D1
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "결정", "quote": "q", "decisions": [{"text": "소금 7g"}, {"text": "굽기 20분"}]}))  # E2 D2·D3
+        none()                                                                                          # RESULT 없음
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "끝"}))                                  # E3
+        has(self.HINT.format(e="E0003", r="D2–D3", n=2))                                                # 양성 대조군
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "다음", "quote": "q", "decisions": [{"text": "그릇 둘"}]}))       # E4 D4
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "끝2"}))                                 # E5
+        none()                                                                                          # 구간(REQUEST 뒤~RESULT)에 결정 없음
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "셋째", "quote": "q"}))                  # E6
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "결정", "quote": "q", "decisions": [
+            {"text": "Map: 레시피 카드를 먼저 본다"}, {"text": "사진 한 장"}, {"text": "접시 흰색"}]}))                  # E7 D5(Map)·D6·D7
+        self.ok(self.close(ids="D6", label="사진", note="n"))                                              # E8
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "끝3"}))                                 # E9
+        has(self.HINT.format(e="E0009", r="D7", n=1))                                                   # Map:·닫힌 결정 제외, 1건 표기
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "넷째", "quote": "q"}))                  # E10
+        self.ok(run(self.root, "save", {"type": "D_USER", "summary": "안내", "quote": "q", "decisions": [{"text": "Map: 표를 먼저 본다"}]}))  # E11 D8
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "끝4"}))                                 # E12
+        none()                                                                                          # 구간에 Map:만
+        wl = load_wl()
+        ev = lambda i, t, ds=(), **c: {"id": f"E{i:04d}", "type": t, "changes": dict(c, **({"decisions": [{"text": x} for x in ds]} if ds else {}))}
+        events = [ev(1, "REQUEST", ["4인분"]), ev(2, "D_USER", ["Map: 레시피 카드를 먼저 본다", "소금 7g", "굽기 20분", "그릇 둘"]),
+                  ev(3, "CHANGE", decisions_close={"label": "g", "ids": ["D5"], "note": "n"}), ev(4, "RESULT")]
+        st = {"decisions": [{"id": "D1", "text": "4인분", "event": "E0001"}, {"id": "D2", "text": "Map: 레시피 카드를 먼저 본다", "event": "E0002"},
+                            {"id": "D3", "text": "소금 7g", "event": "E0002"}, {"id": "D4", "text": "굽기 20분", "event": "E0002"},
+                            {"id": "D5", "text": "그릇 둘", "event": "E0002", "closed": "g"}]}
+        self.assertEqual(wl.close_hint(events, st), self.HINT.format(e="E0004", r="D3–D4", n=2))         # Map:·닫힌 결정 제외
+        st["decisions"][3]["closed"] = "g"
+        self.assertEqual(wl.close_hint(events, st), self.HINT.format(e="E0004", r="D3", n=1))            # 1건 표기
+        st["decisions"][2]["closed"] = "g"
+        self.assertIsNone(wl.close_hint(events, st))                                                   # Map:만 남음
+        self.assertIsNone(wl.close_hint([], {"decisions": []}))
+
+    def test_close_hint_runs_skip_map_between(self):
+        """2.30.0: candidates that are not consecutive are named run by run, so a Map:/closed/replaced decision between them is not
+        inside the range (D2, D4 — not D2–D4); the question uses the same text."""
+        self.m19b("소금 7g", "Map: 레시피 카드를 먼저 본다", "굽기 20분")                                    # D2, D3(Map), D4
+        out = run(self.root, "show")[1]
+        self.assertIn(self.HINT.format(e="E0003", r="D2, D4", n=2), out)
+        self.assertNotIn("D2–D4", out.split("\n")[0])
+        wl = load_wl()
+        ev = lambda i, t: {"id": f"E{i:04d}", "type": t, "changes": {}}
+        st = {"decisions": [{"id": f"D{n}", "text": "x", "event": "E0002", **({"closed": "g"} if n == 4 else {})} for n in (2, 3, 4, 5)]}
+        self.assertEqual(wl.close_hint([ev(1, "REQUEST"), ev(2, "D_USER"), ev(3, "RESULT")], st),
+                         self.HINT.format(e="E0003", r="D2–D3, D5", n=3))                                  # 닫힌 D4가 가운데
+
+    def test_unseen_summary_length_cap(self):
+        self.decide("a")
+        use(self.root, session="c0", tool="claude")
+        use(self.root, session="s2")
+        self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": "가" * 300}, session="s2"))
+        r, out = hook(self.root, "hook", session="c0")
+        line = json.loads(out)["hookSpecificOutput"]["additionalContext"].split("## 이 세션이 아직 못 본 사건 (seq 2~2)\n")[1].splitlines()[0]
+        self.assertTrue(line.endswith(" · " + "가" * load_wl().UNSEEN_SUMMARY_MAX + "…"), line)
+
+    def test_work_list_next_only_without_current_work(self):
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "next_action": "표 만들기"}))
+        r, out = hook(self.root, "hook", session="fresh")                                               # NO_CURRENT_WORK
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("| NO_CURRENT_WORK |", ctx)
+        self.assertIn("- t · t · ACTIVE · ", ctx)
+        self.assertIn(" · 다음: 표 만들기", ctx)
+        use(self.root, session="c1", tool="claude")
+        r, out = hook(self.root, "hook", session="c1")                                                  # PROVIDED
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("| PROVIDED |", ctx)
+        line = next(x for x in ctx.splitlines() if x.startswith("- t · t · ACTIVE · "))
+        self.assertNotIn("다음:", line)
+        self.assertIn("## 다음 행동\n표 만들기", ctx)                                                       # 현재 작업 절에는 그대로
+
+    def test_path_aliases(self):
+        wl = load_wl()
+        pre = "/Users/x/Documents/Codex/worklog-control/shared/"
+        texts = [f"- {pre}runs/a/ · 1개", f"- {pre}runs/b/ · 2개", f"- {pre}tools/ · 1개", "- /Users/x/rel/one/ · 1개", "- docs/ · 3개"]
+        self.assertEqual(wl.path_aliases(texts), [(pre, "«A»/")])
+        self.assertEqual(wl.alias_text(texts[0], wl.path_aliases(texts)), "- «A»/runs/a/ · 1개")
+        self.assertEqual(wl.path_aliases(["- /a/b/ · 1개", "- docs/ · 1개"]), [])                         # 반복 없으면 별칭 없음
+        two = wl.path_aliases(texts + [f"- /Users/y/other/project/{n}/ · 1개" for n in "abc"])
+        self.assertEqual([a for _, a in two], ["«A»/", "«B»/"])
+        self.assertEqual(two[1][0], "/Users/y/other/project/")
+        # 주입: project.md와 산출물 절만, 머리에 별칭 표 한 줄. state.md·show는 그대로
+        far = Path(tempfile.mkdtemp()).resolve() / "shared"
+        for n in range(17):
+            (far / f"runs/r{n}").mkdir(parents=True)
+            (far / f"runs/r{n}/R.md").write_text("x")
+        self.ok(run(self.root, "save", {"type": "RESULT", "summary": "far", "artifacts": [{"path": str(far / f"runs/r{n}/R.md")} for n in range(17)]}))
+        (self.d / "project.md").write_text(f"- [P1] 결과는 {far}/runs/에 둔다\n")
+        use(self.root, session="c1", tool="claude")
+        ctx = json.loads(hook(self.root, "hook", session="c1")[1])["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f"경로 별칭(글자 그대로 바꿔 읽는다): «A»/ = {far}/runs/", ctx)
+        self.assertIn("- «A»/r3/ · 1개 · 최근 E0001", ctx)
+        self.assertIn("- [P1] 결과는 «A»/에 둔다", ctx)
+        self.assertIn(f"- {far}/runs/r3/ · 1개", (self.d / "works/t/state.md").read_text())
+
+    def test_find_stub(self):
+        home = self.home()
+        r, out = run(self.root, "find", extra=["판정기"], env=home)
+        self.assertEqual((r, out), (0, "검색 모듈이 없습니다(worklog-global). 옛 근거는 show --closed로 찾습니다.\n"))
+        (Path(home["WL_HOME"]) / "modules.json").write_text(json.dumps({"worklog-global": {"version": "0.1.0"}}))
+        r, out = run(self.root, "find", extra=["판정기"], env=home)
+        self.assertEqual(r, 0)
+        self.assertIn("다음 버전", out)
+        self.assertNotIn('"ok": false', out)
+
+    def test_old_and_new_tags_legend(self):
+        self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "x", "quote": "q", "decisions": [{"text": "a"}], "constraints": ["c"]}))
+        self.ok(run(self.root, "save", {"type": "D_AGENT", "summary": "y", "decisions": [{"text": "b"}]}))
+        md = (self.d / "works/t/state.md").read_text()
+        self.assertIn("## 유효 결정 — [U] 사용자 발언, [M] 모델 판단\n- D1: a [U]\n- D2: b [M]\n", md)
+        self.assertIn("## 유지 제약 — [U] 제약은 사용자가 바꾸기 전까지, [M] 제약은 모델이 사유를 적고 해제할 때까지 유지\n- C1: c [U]", md)
+        self.assertNotIn("[사용자]", md)
+        rules = (WL.parents[1] / "adapters/rules.md").read_text()
+        self.assertIn("`[U]`는 사용자 발언(REQUEST·APPROVAL·D_USER), `[M]`은 모델 판단", rules)
+        self.assertNotIn("[사용자]", rules)
+        self.assertIn("\"<범위>(N건)을 <라벨>로 닫을까요? 계속 쓰는 결정은 뺍니다\"를 한 번 묻고 승인 뒤 `close`를 실행한다", rules)
+        self.assertIn("검색 모듈이 있으면 `find`, 없으면 `show --closed <label>`로 찾는다", rules)
+        help_ = load_wl().SAVE_HELP
+        self.assertIn("reopen --closed <label>", help_)
+        self.assertIn("(close로 닫은 결정은 빠진다)", help_)

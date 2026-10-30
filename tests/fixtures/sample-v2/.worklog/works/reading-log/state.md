@@ -5,12 +5,12 @@
 ※ 최초 목표의 값이 이후에 바뀌었다면 아래 '유효 결정'이 우선한다. replaces로 기록된 변경은 충돌이 아니다.
 상태: PAUSED
 
-## 유효 결정 — [사용자]는 사용자 발언, [모델]은 모델 판단
-- D2: Log for 15 minutes after dinner (대체: D1) [사용자]
+## 유효 결정 — [U] 사용자 발언, [M] 모델 판단
+- D2: Log for 15 minutes after dinner (대체: D1) [U]
 
-## 유지 제약 — [사용자] 제약은 사용자가 바꾸기 전까지, [모델] 제약은 모델이 사유를 적고 해제할 때까지 유지
-- C1: Do not add reminders or notifications [사용자]
-- C2: Keep the guide under one page [사용자]
+## 유지 제약 — [U] 제약은 사용자가 바꾸기 전까지, [M] 제약은 모델이 사유를 적고 해제할 때까지 유지
+- C1: Do not add reminders or notifications [U]
+- C2: Keep the guide under one page [U]
 
 ## 대기
 - (없음)
