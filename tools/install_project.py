@@ -26,7 +26,9 @@ reports which tools this machine seems to have (~/.claude, ~/.codex), since an a
         In a git repository .gitignore gets `.worklog/` (the whole record stays out of git: it is per-machine state and
         quotes the user; 2.18.0); the 2.11.0–2.17.x lines are dropped as redundant.
 Every target (files, backups, directories to create, .worklog) is checked and every new content prepared before the
-first write; a refusal (a link leading outside the home or --root, a .worklog link, unreadable hook settings) changes
+first write; a refusal (a link leading outside both the home or --root and, since 2.31.0, the real folder of a tool home
+such as ~/.claude that is itself a link to an existing folder elsewhere; a tool home link to a missing folder outside the
+root; a project .worklog link (~/.worklog for --user is not checked); unreadable hook settings) changes
 nothing and exits 2. An OS error in the middle of the writes (2.22.0) rolls the installer's own writes back — changed
 files are restored from their backups, new files are deleted — and exits 2 with `rolled_back`. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup)
 before change; the managed block and Worklog hooks from any earlier install path are replaced idempotently, and an
@@ -92,13 +94,28 @@ def skill(tool):
             + SKILL_ARGS + command + "\n" + SKILL_RULES)
 
 
+TOOL_HOMES = (".claude", ".codex", ".agents", ".gemini", ".pi")  # tool home folders a user may keep elsewhere behind one link (2.31.0)
+
+
 def inside(root, path):
-    """Refuse a target whose deepest existing ancestor (or itself), after links, is outside root."""
+    """Refuse a target whose deepest existing ancestor (or itself), after links, lies outside the allowed area: root, plus
+    (2.31.0) the real folder of the tool home right under root (TOOL_HOMES) that holds the target, when that home is
+    itself a link to an existing folder. So a whole home moved elsewhere is accepted; a file or subfolder inside it that
+    links back into root is accepted too (root always was); one that links outside both (e.g. .claude/CLAUDE.md or
+    .claude/skills to a third place) is refused. A home link to a missing folder is refused only when that folder lies
+    outside root: inside root the check passes and the later write fails (exit 2, rolled back)."""
     p = path
     while p != root and not os.path.lexists(p):
         p = p.parent
-    if not p.resolve().is_relative_to(root):
-        raise Refuse(f"{path}는 설치 대상 폴더 {root} 밖을 가리키는 링크")
+    real = p.resolve()
+    if real.is_relative_to(root):
+        return
+    parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+    if len(parts) > 1 and parts[0] in TOOL_HOMES:
+        home = root / parts[0]
+        if home.is_symlink() and home.is_dir() and real.is_relative_to(home.resolve()):
+            return
+    raise Refuse(f"{path}는 설치 대상 폴더 {root} 밖을 가리키는 링크")
 
 
 def backup_path(root, path, stamp):

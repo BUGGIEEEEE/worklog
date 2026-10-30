@@ -629,9 +629,11 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(outside.read_text(), "밖의 파일\n")
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["CLAUDE.md"])  # 다른 파일도 쓰지 않음
         (self.root / "CLAUDE.md").unlink()
-        (self.root / ".claude").symlink_to(outside.parent, target_is_directory=True)  # 부모 디렉터리 링크
+        (self.root / ".claude").mkdir()  # 2.31.0: .claude 자체 링크는 허용(Release2310Test). 그 안의 하위 폴더 링크는 거부
+        (self.root / ".claude" / "skills").symlink_to(outside.parent, target_is_directory=True)  # 부모 디렉터리 링크
         r, out = self.install()
         self.assertEqual(r, 2, out)
+        self.assertIn("밖을 가리키는 링크", json.loads(out)["error"])
         self.assertEqual(sorted(p.name for p in outside.parent.iterdir()), ["outside.md"])
         self.assertFalse((self.root / "CLAUDE.md").exists())
 
@@ -4825,3 +4827,121 @@ class Release2300Test(Base):
         help_ = load_wl().SAVE_HELP
         self.assertIn("reopen --closed <label>", help_)
         self.assertIn("(close로 닫은 결정은 빠진다)", help_)
+
+
+class Release2310Test(Base):
+    """2.31.0: a tool home folder (.claude, .codex, .agents, .gemini, .pi) that is itself a link to a folder outside the install root
+    is accepted; a file or subfolder inside it that links out of that folder is still refused."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.real = Path(tempfile.mkdtemp()).resolve() / "claude-home"  # 홈 밖의 실제 도구 홈
+        self.real.mkdir()
+        (self.home / ".claude").symlink_to(self.real, target_is_directory=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def tree(self, d):
+        return sorted(str(p.relative_to(d)) for p in d.rglob("*"))
+
+    def test_user_install_into_linked_tool_home(self):
+        code, out = self.script(INST, "--tool", "claude", "--user", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tree(self.real), [])                                    # dry-run은 쓰지 않는다
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 0, out)
+        for rel in ("CLAUDE.md", "settings.json", "skills/worklog/SKILL.md"):
+            self.assertTrue((self.real / rel).is_file(), rel)                          # 링크의 실제 폴더 안에 생긴다
+        self.assertTrue((self.home / ".claude").is_symlink())                          # 링크는 그대로
+        self.assertIn("worklog-shared:begin", (self.real / "CLAUDE.md").read_text())
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--no-backup")  # 제거기도 같은 inside()를 쓴다
+        self.assertEqual(code, 0, out)
+        self.assertFalse((self.real / "CLAUDE.md").exists())
+        self.assertFalse((self.real / "skills/worklog").exists())
+        self.assertTrue((self.home / ".claude").is_symlink())
+
+    def test_project_install_into_linked_dot_claude(self):
+        proj = self.root / "proj"
+        proj.mkdir()
+        (proj / ".claude").symlink_to(self.real, target_is_directory=True)
+        code, out = self.script(INST, "--tool", "claude", "--root", str(proj))
+        self.assertEqual(code, 0, out)
+        self.assertTrue((self.real / "settings.local.json").is_file())
+        self.assertTrue((self.real / "skills/worklog/SKILL.md").is_file())
+        self.assertTrue((proj / "CLAUDE.md").is_file())
+
+    def test_link_inside_linked_tool_home_refused(self):
+        elsewhere = Path(tempfile.mkdtemp()).resolve()
+        (elsewhere / "CLAUDE.md").write_text("밖의 지침\n")
+        (self.real / "CLAUDE.md").symlink_to(elsewhere / "CLAUDE.md")                   # 파일 단위 밖 링크
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 2, out)
+        self.assertIn("밖을 가리키는 링크", out["error"])
+        self.assertEqual((elsewhere / "CLAUDE.md").read_text(), "밖의 지침\n")
+        self.assertEqual(self.tree(self.real), ["CLAUDE.md"])                          # 아무것도 쓰지 않았다
+        (self.real / "CLAUDE.md").unlink()
+        (self.real / "skills").symlink_to(elsewhere, target_is_directory=True)        # 하위 폴더 단위 밖 링크
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 2, out)
+        self.assertIn("밖을 가리키는 링크", out["error"])
+        self.assertEqual(self.tree(elsewhere), ["CLAUDE.md"])
+        self.assertEqual(self.tree(self.real), ["skills"])
+        (self.real / "skills").unlink()
+        (self.home / ".claude").unlink()
+        (self.home / ".claude").symlink_to(self.root / "missing", target_is_directory=True)  # 끊긴 링크는 거부
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 2, out)
+        self.assertIn("밖을 가리키는 링크", out["error"])
+
+    def test_codex_user_install_into_linked_agents(self):
+        real = Path(tempfile.mkdtemp()).resolve() / "agents-home"   # 홈 밖의 실제 .agents
+        real.mkdir()
+        (self.home / ".agents").symlink_to(real, target_is_directory=True)
+        code, out = self.script(INST, "--tool", "codex", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertTrue((real / "skills/worklog/SKILL.md").is_file())               # 링크의 실제 폴더 안에 생긴다
+        self.assertTrue((self.home / ".agents").is_symlink())
+        code, out = self.script(UNINST, "--user", "--tool", "codex", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((real / "skills/worklog").exists())
+        elsewhere = Path(tempfile.mkdtemp()).resolve()
+        if (real / "skills").exists():  # 제거기가 빈 skills를 이미 치웠을 수 있다
+            (real / "skills").rmdir()
+        (real / "skills").symlink_to(elsewhere, target_is_directory=True)          # 하위 폴더 단위 밖 링크
+        before = self.tree(self.home / ".codex") if (self.home / ".codex").exists() else []
+        code, out = self.script(INST, "--tool", "codex", "--user")
+        self.assertEqual(code, 2, out)
+        self.assertIn("밖을 가리키는 링크", out["error"])
+        self.assertEqual(self.tree(elsewhere), [])
+        self.assertEqual(self.tree(self.home / ".codex") if (self.home / ".codex").exists() else [], before)  # 아무것도 쓰지 않았다
+
+    def test_link_back_into_root_from_linked_home(self):
+        """허용 영역 = 설치 루트 ∪ 링크된 도구 홈의 실제 폴더(astra F1): 루트 안으로 되돌아오는 링크는 통과, 둘 다의 밖은 거부."""
+        (self.home / "x.md").write_text("# 루트 안 파일\n")
+        (self.real / "CLAUDE.md").symlink_to(self.home / "x.md")                     # 실제 홈 → 루트 안
+        (self.home / "other-skills").mkdir()
+        (self.real / "skills").symlink_to(self.home / "other-skills", target_is_directory=True)
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertIn("worklog-shared:begin", (self.home / "x.md").read_text())        # 링크를 따라 루트 안에 썼다
+        self.assertTrue((self.home / "other-skills/worklog/SKILL.md").is_file())
+        third = Path(tempfile.mkdtemp()).resolve()                                     # 루트 밖이고 실제 홈 밖
+        (third / "CLAUDE.md").write_text("제3의 곳\n")
+        (self.real / "CLAUDE.md").unlink()
+        (self.real / "CLAUDE.md").symlink_to(third / "CLAUDE.md")
+        before = self.tree(self.home)
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 2, out)
+        self.assertIn("밖을 가리키는 링크", out["error"])
+        self.assertEqual((third / "CLAUDE.md").read_text(), "제3의 곳\n")
+        self.assertEqual(self.tree(self.home), before)
+
