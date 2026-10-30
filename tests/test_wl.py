@@ -4512,7 +4512,7 @@ class Release2300Test(Base):
         self.assertIn("- D5: 결정 5", full)
         lim = len(full) - 100
         for tool, conf, unit in (("claude", {"claude": {"chars": lim}}, f"claude {lim:,}자"),
-                                 ("codex", {"codex": {"bytes": len(full.encode()) - 100}}, f"codex {len(full.encode()) - 100:,}B")):
+                                 ("codex", {"codex": {"chars": None, "bytes": len(full.encode()) - 100}}, f"codex {len(full.encode()) - 100:,}B")):
             use(self.root, session=f"{tool}1", tool=tool)
             self.ok(run(self.root, "save", {"type": "CHECKPOINT", "summary": f"새 {tool}"}, session="s2"))
             text = ctx(tool, self.home(inject_limit=conf), f"{tool}1")
@@ -4543,12 +4543,12 @@ class Release2300Test(Base):
             self.assertNotIn("[Worklog 생략]", ctx("claude", dict(home), sess))
         with mock.patch.object(wl, "home_json", return_value={}):
             self.assertEqual(wl.inject_limit("claude"), {"chars": 10000, "bytes": None})
-            self.assertEqual(wl.inject_limit("codex"), {"chars": None, "bytes": 10000})
-            self.assertEqual(wl.inject_limit("agy"), {"chars": 49000, "bytes": None})
-            self.assertIsNone(wl.inject_limit("pi"))
-            self.assertEqual(wl.inject_limit(None), {"chars": 10000, "bytes": None})
+            for tool in ("codex", "agy", "pi", None):                                                  # 2.32.0: 네 도구 모두 10,000자
+                self.assertEqual(wl.inject_limit(tool), {"chars": 10000, "bytes": None})
         with mock.patch.object(wl, "home_json", return_value={"inject_limit": {"codex": {"bytes": 0, "chars": 5}}}):
-            self.assertEqual(wl.inject_limit("codex"), {"chars": 5, "bytes": 10000})                  # 0·잘못된 값은 무시
+            self.assertEqual(wl.inject_limit("codex"), {"chars": 5, "bytes": None})                   # 0·잘못된 값은 무시
+        with mock.patch.object(wl, "home_json", return_value={"inject_limit": {"codex": {"bytes": 10000}}}):
+            self.assertEqual(wl.inject_limit("codex"), {"chars": 10000, "bytes": 10000})              # 바이트 단위는 config로 더한다
         self.assertTrue(wl.over_limit("가" * 4, {"chars": None, "bytes": 11}))                          # 바이트: 한글 3B
         self.assertFalse(wl.over_limit("가" * 4, {"chars": 4, "bytes": None}))
         r, out = run(self.root, "show")
@@ -4604,12 +4604,11 @@ class Release2300Test(Base):
         the size of the whole output, and keeps the decisions, constraints and waiting."""
         self.decide(*[f"결정 {i} " + "가" * 600 for i in range(1, 21)])
         self.ok(run(self.root, "save", {"type": "REQUEST", "summary": "c", "quote": "q", "constraints": ["게시 금지"], "waiting": ["답 대기"]}))
-        for tool, unit, size, cap in (("claude", "claude 10,000자", len, "10,000자"), ("codex", "codex 10,000B", lambda t: len(t.encode()), "10,000B")):
+        for tool in ("claude", "codex"):                                                                 # 2.32.0: codex도 10,000자
             use(self.root, session=f"{tool}9", tool=tool)
             text = self.hook_ctx(f"{tool}9", tool=tool)
             line = next(x for x in text.splitlines() if x.startswith("[Worklog 생략]"))
-            u = "자" if tool == "claude" else "B"
-            self.assertEqual(line, f"[Worklog 생략] 주입 상한({unit}): 생략할 절이 없어 상한 초과({size(text):,}{u}/{cap}): "
+            self.assertEqual(line, f"[Worklog 생략] 주입 상한({tool} 10,000자): 생략할 절이 없어 상한 초과({len(text):,}자/10,000자): "
                                    "긴 결정을 닫거나(close) config로 상한 조정")
             self.assertIn("- D1: 결정 1 ", text)                                                         # 20건은 그대로(N 불변)
             self.assertIn("- D20: 결정 20 ", text)
@@ -4945,3 +4944,119 @@ class Release2310Test(Base):
         self.assertEqual((third / "CLAUDE.md").read_text(), "제3의 곳\n")
         self.assertEqual(self.tree(self.home), before)
 
+
+class Release2320Test(Base):
+    """2.32.0: the injection cap is 10,000 characters for every tool, and the installer writes additionalContextLimit 10000 on
+    the Codex SessionStart hook only (an older Codex hook without it is rewritten once; one with it stays byte-for-byte)."""
+    RETRUST = "Codex: 훅 정의가 바뀌어 /hooks에서 한 번 더 신뢰해야 합니다"
+    OTHER = {"type": "command", "command": "echo other", "timeout": 5}
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.home = self.root / "home"
+        for d in (".claude", ".codex", ".gemini/config", ".pi/agent"):
+            (self.home / d).mkdir(parents=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def installed(self, *argv):
+        code, out = self.script(INST, *argv)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def handlers(self, path):
+        """{event: [handler, …]} of a Claude/Codex hook file (Worklog handlers only)."""
+        hooks = json.loads(path.read_text())["hooks"]
+        return {e: [h for g in groups for h in g["hooks"] if "core/wl.py" in h["command"]] for e, groups in hooks.items()}
+
+    def test_version_and_limits(self):
+        wl = load_wl()
+        self.assertEqual(wl.VERSION, "2.32.0")
+        self.assertTrue((WL.parents[1] / "CHANGELOG.md").read_text().split("\n## ", 1)[1].startswith("2.32.0 — 2026-10-30\n"))
+        self.assertEqual({t: wl.INJECT_LIMITS[t] for t in wl.INJECT_LIMITS}, {t: {"chars": 10000, "bytes": None} for t in ("claude", "codex", "agy", "pi")})
+
+    def test_limit_field_on_codex_sessionstart_only(self):
+        for tool in ("claude", "codex", "agy", "pi"):
+            self.installed("--tool", tool, "--user")
+        codex = self.handlers(self.home / ".codex/hooks.json")
+        self.assertEqual([h.get("additionalContextLimit") for h in codex["SessionStart"]], [10000])
+        self.assertEqual(list(codex["SessionStart"][0]), ["type", "command", "timeout", "additionalContextLimit"])
+        for event in ("UserPromptSubmit", "Stop"):
+            self.assertEqual(len(codex[event]), 1)
+            self.assertNotIn("additionalContextLimit", codex[event][0])                            # 다른 두 훅에는 없다
+        for path in (self.home / ".claude/settings.json", self.home / ".gemini/config/hooks.json", self.home / ".pi/agent/extensions/worklog.ts"):
+            self.assertNotIn("additionalContextLimit", path.read_text(), path)                    # claude·agy·pi에는 없다
+        proj = self.root / "proj"
+        proj.mkdir()
+        self.installed("--tool", "codex", "--root", str(proj))                                    # --root도 같다
+        local = self.handlers(proj / ".codex/hooks.json")
+        self.assertEqual(local["SessionStart"][0]["additionalContextLimit"], 10000)
+        self.assertNotIn("additionalContextLimit", local["Stop"][0])
+
+    def test_old_codex_hook_rewritten_once(self):
+        path = self.home / ".codex/hooks.json"
+        out = self.installed("--tool", "codex", "--user")
+        self.assertNotIn("notes", out)                                                            # 첫 설치: 다음 안내가 /hooks 신뢰를 말한다
+        data = json.loads(path.read_text())
+        data["hooks"]["Stop"].append({"hooks": [self.OTHER]})                                     # 다른 훅은 유지돼야 한다
+        del data["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"]               # 2.31.0 설치본 흉내
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        out = self.installed("--tool", "codex", "--user")
+        self.assertIn(str(path), out["changed"])                                                  # 필드 없는 옛 훅은 다시 쓴다
+        self.assertIn("/hooks", out["next"])                                                      # 재신뢰 안내는 다음 안내에 이미 있다
+        self.assertNotIn("notes", out)
+        self.assertEqual(self.handlers(path)["SessionStart"][0]["additionalContextLimit"], 10000)
+        self.assertIn(self.OTHER, [h for g in json.loads(path.read_text())["hooks"]["Stop"] for h in g["hooks"]])
+        before = path.read_bytes()
+        out = self.installed("--tool", "codex", "--user")
+        self.assertNotIn(str(path), out["changed"])                                               # 10000이면 그대로(바이트 유지)
+        self.assertEqual(path.read_bytes(), before)
+        data = json.loads(before)
+        data["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"] = 4000             # 다른 값도 다시 쓴다
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        self.assertIn(str(path), self.installed("--tool", "codex", "--user")["changed"])
+        self.assertEqual(self.handlers(path)["SessionStart"][0]["additionalContextLimit"], 10000)
+        # 프로젝트 설치: 다음 안내에 /hooks가 없으므로 다시 쓸 때만 notes에 재신뢰 한 줄
+        proj = self.root / "proj"
+        proj.mkdir()
+        local = proj / ".codex/hooks.json"
+        out = self.installed("--tool", "codex", "--root", str(proj))
+        self.assertNotIn("notes", out)                                                            # 처음 쓴 훅은 "다시 쓴" 것이 아니다
+        data = json.loads(local.read_text())
+        del data["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"]
+        local.write_text(json.dumps(data, indent=2) + "\n")
+        out = self.installed("--tool", "codex", "--root", str(proj), "--dry-run")
+        self.assertEqual(out["notes"], [self.RETRUST])
+        out = self.installed("--tool", "codex", "--root", str(proj))
+        self.assertIn(str(local), out["changed"])
+        self.assertEqual(out["notes"], [self.RETRUST])
+        out = self.installed("--tool", "codex", "--root", str(proj))
+        self.assertNotIn(str(local), out["changed"])
+        self.assertNotIn("notes", out)
+        claude = self.installed("--tool", "claude", "--root", str(proj))                          # 다른 도구에는 notes가 없다
+        self.assertNotIn("notes", claude)
+
+    def test_uninstall_round_trip(self):
+        path = self.home / ".codex/hooks.json"
+        original = json.dumps({"hooks": {"Stop": [{"hooks": [self.OTHER]}]}}, indent=2) + "\n"
+        path.write_text(original)
+        self.installed("--tool", "codex", "--user")
+        self.assertEqual(self.handlers(path)["SessionStart"][0]["additionalContextLimit"], 10000)
+        code, out = self.script(UNINST, "--user", "--tool", "codex", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(path.read_text()), json.loads(original))                     # 새 필드가 붙은 훅도 지운다
+        self.assertNotIn("additionalContextLimit", path.read_text())
+        proj = self.root / "proj"
+        proj.mkdir()
+        self.installed("--tool", "codex", "--root", str(proj))
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "codex", "--keep-records", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertFalse((proj / ".codex/hooks.json").exists())                                   # 비게 된 파일은 삭제

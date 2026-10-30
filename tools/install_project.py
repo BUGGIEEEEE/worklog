@@ -45,6 +45,10 @@ WL_HOOK = re.compile(r"""python3 -B (['"]?)(.*/)?core/wl\.py\1 (hook|turn-start|
 TOOLS = ("claude", "codex", "agy", "pi")
 AGY_FRONT = "---\ntrigger: always_on\n---\n"  # agy rule file: loaded unconditionally (2.24.0)
 BEGIN, END = "<!-- worklog-shared:begin -->", "<!-- worklog-shared:end -->"
+# 2.32.0: Codex SessionStart hook's additionalContextLimit (tokens; Codex estimates bytes ÷ 4, default about 2,500 ≈ 10,000B).
+# The core's injection cap is 10,000 characters for every tool; a character is at most 4B in UTF-8, so 40,000B ≈ 10,000 tokens
+# (a smaller value left emoji-heavy injections over budget in the 2.32.0 review). Only that one handler gets it: the other hooks print nothing to the model.
+CODEX_CONTEXT_LIMIT = 10000
 
 
 def load_core():
@@ -179,13 +183,22 @@ def is_worklog_hook(command):
     return bool(WL_HOOK.fullmatch(command))
 
 
+def context_limit(command, tool):
+    """additionalContextLimit this hook should carry, or None for none (2.32.0: Codex SessionStart only)."""
+    return CODEX_CONTEXT_LIMIT if tool == "codex" and command == "hook" else None
+
+
 def is_current_hook(hook, command, tool):
-    """Same install (this wl.py, this subcommand, this tool) in any quoting style."""
+    """Same install (this wl.py, this subcommand, this tool) in any quoting style, with the expected additionalContextLimit
+    (2.32.0: exactly CODEX_CONTEXT_LIMIT on the Codex SessionStart hook, absent everywhere else)."""
     try:
         argv = shlex.split(hook.get("command", ""))
     except ValueError:
         return False
-    return hook.get("type") == "command" and hook.get("timeout") == 10 and \
+    want = context_limit(command, tool)
+    have = hook.get("additionalContextLimit")
+    limit_ok = "additionalContextLimit" not in hook if want is None else type(have) is int and have == want
+    return hook.get("type") == "command" and hook.get("timeout") == 10 and limit_ok and \
         argv == ["python3", "-B", str(WL), command, "--tool", tool]
 
 
@@ -220,6 +233,8 @@ def hook_settings(path, tool):
             raise Refuse(f"{path}의 {event} Hook 형식이 예상과 다릅니다. 고친 뒤 다시 설치하세요.")
         if not kept:
             hook = {"type": "command", "command": f"{WL_CMD} {command} --tool {tool}", "timeout": 10}
+            if context_limit(command, tool):
+                hook["additionalContextLimit"] = context_limit(command, tool)
             group = {"hooks": [hook]}
             if matcher:
                 group["matcher"] = matcher
@@ -414,6 +429,9 @@ def main():
                 migrations = migration_plans(a.tool, left, stamp())
         files, worklog = plan(root, a.tool, not a.no_worklog_dir, stamp(), user=a.user)
         config = user_config() if a.user else None
+        hook_path = targets(a.tool, root, a.user)[1]
+        # 2.32.0: a Codex hook file that already had Worklog hooks is rewritten → Codex asks for trust again in /hooks
+        retrust = a.tool == "codex" and any(p == hook_path for p, _, _ in files) and uninstaller().has_worklog_hook(hook_path)
     except Refuse as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         sys.exit(2)
@@ -473,6 +491,8 @@ def main():
         else:  # 2.26.0: the connected, empty project gets EMPTY + "create without asking" (auto=on), not "say 새 작업:"
             out["next"] = ("다음: 첫 세션의 첫 기록 대상 요청(결과를 원하는 요청)이 묻지 않고 새 작업을 만듭니다(auto=on). "
                            "제목을 정하려면 `새 작업: <제목>`이라 하세요")
+    if retrust and "/hooks" not in out.get("next", ""):
+        out["notes"] = ["Codex: 훅 정의가 바뀌어 /hooks에서 한 번 더 신뢰해야 합니다"]
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
