@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.31.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.32.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -55,10 +55,13 @@ DONE_MAX = 3      # SessionStart 목록 뒤에 보여 주는 최근 COMPLETED �
 UNSEEN_MAX = 20   # show·use·주입의 "못 본 사건" 절에 보이는 최대 사건 수(2.23.0, 가정값)
 UNSEEN_SUMMARY_MAX = 80  # 그 절의 summary 표시 글자 상한(2.23.0부터 80. U28 B9의 "200자 상한"보다 좁아 그대로 둔다). 전문은 show --json
 ART_MAX = 15      # state.md: 산출물이 이보다 많으면 폴더별 요약
-# 2.30.0 (U28 B5): SessionStart 주입 상한(훅 출력 하나마다). chars = 글자, bytes = UTF-8 바이트, None = 검사 안 함. 실측 2026-10-28
-# (Claude 9,731자 통과·10,312자 잘림, Codex 약 10KB, agy 약 49KB, pi 없음). WL_HOME/config.json "inject_limit"로 도구별 재정의·끄기
-INJECT_LIMITS = {"claude": {"chars": 10000, "bytes": None}, "codex": {"chars": None, "bytes": 10000},
-                 "agy": {"chars": 49000, "bytes": None}, "pi": {"chars": None, "bytes": None}}
+# 2.30.0 (U28 B5): SessionStart 주입 상한(훅 출력 하나마다). chars = 글자, bytes = UTF-8 바이트, None = 검사 안 함.
+# 2.32.0 (2026-10-30 사용자 결정, 도구 간 통일성·결과 안정성): 네 도구 모두 Claude 기준 10,000자. Claude Code는 훅 출력마다 10,000자
+# 고정(설정으로 못 올림). Codex는 기본 약 2,500토큰(≈10,000B)이라 설치기가 SessionStart 훅에 additionalContextLimit 10000을 써서
+# 10,000자(UTF-8 최대 4B/자 → 40,000B ≈ 10,000토큰)를 받친다. agy는 약 49,000자 관측값을, pi는 상한 없음을 10,000자에 맞췄다.
+# WL_HOME/config.json "inject_limit"로 도구별 재정의·끄기
+INJECT_LIMITS = {"claude": {"chars": 10000, "bytes": None}, "codex": {"chars": 10000, "bytes": None},
+                 "agy": {"chars": 10000, "bytes": None}, "pi": {"chars": 10000, "bytes": None}}
 KEEP_OPEN = 20    # 상한을 넘을 때 주입에 남기는 최근 열린 결정 수(Map: 결정은 따로 보호)
 ALIAS_MAX = 2     # 주입의 경로 별칭 수(②⑧, D142)
 NEW_WORK_PREFIX = re.compile(r"^\s*새\s*작업\s*[:：]\s*")
