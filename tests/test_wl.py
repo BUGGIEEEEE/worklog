@@ -4979,8 +4979,7 @@ class Release2320Test(Base):
 
     def test_version_and_limits(self):
         wl = load_wl()
-        self.assertEqual(wl.VERSION, "2.32.0")
-        self.assertTrue((WL.parents[1] / "CHANGELOG.md").read_text().split("\n## ", 1)[1].startswith("2.32.0 — 2026-10-30\n"))
+        self.assertIn("\n## 2.32.0 — 2026-10-30\n", (WL.parents[1] / "CHANGELOG.md").read_text())  # VERSION = 첫 제목은 VersionTest가 본다(2.33.0)
         self.assertEqual({t: wl.INJECT_LIMITS[t] for t in wl.INJECT_LIMITS}, {t: {"chars": 10000, "bytes": None} for t in ("claude", "codex", "agy", "pi")})
 
     def test_limit_field_on_codex_sessionstart_only(self):
@@ -5060,3 +5059,158 @@ class Release2320Test(Base):
         code, out = self.script(UNINST, "--root", str(proj), "--tool", "codex", "--keep-records", "--no-backup")
         self.assertEqual(code, 0, out)
         self.assertFalse((proj / ".codex/hooks.json").exists())                                   # 비게 된 파일은 삭제
+
+
+class Release2330Test(Base):
+    """2.33.0 (U31): installer and uninstaller results carry `resolved` ({surface path: real path} for each link on the way, a
+    linked tool home once, {} without links); a --root install whose project tool home links out of the project gets a warning
+    in `notes`. What is allowed, refused and written is unchanged."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.outside = Path(tempfile.mkdtemp()).resolve()  # 설치 루트 밖
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+
+    def script(self, path, *argv):
+        p = subprocess.run([sys.executable, "-B", str(path), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertIn(p.returncode, (0, 2), p.stderr)
+        return p.returncode, json.loads(p.stdout)
+
+    def link_home(self, base, name):
+        real = self.outside / name.strip(".")
+        real.mkdir()
+        (base / name).symlink_to(real, target_is_directory=True)
+        return real
+
+    def warning(self, home, real):
+        return f"{home}는 {real}(프로젝트 밖)를 가리키는 링크입니다. 프로젝트 설치가 그 폴더에 씁니다"
+
+    def test_no_links_empty(self):
+        for argv in (("--tool", "claude", "--user"), ("--tool", "codex", "--root", str(self.root / "home"))):
+            code, out = self.script(INST, *argv)
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out["resolved"], {})
+            self.assertNotIn("notes", out)
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--no-backup")
+        self.assertEqual(out["user"]["resolved"], {})
+
+    def test_user_manifest_file_link_kept_after_removal(self):
+        real = self.wl_home / "real.json"                                                # install.json 자체가 파일 링크(astra F1)
+        real.write_text("{}")
+        (self.wl_home / "install.json").symlink_to(real)
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["resolved"], {str(self.wl_home / "install.json"): str(real)})
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--no-backup")    # 마지막 항목 제거: 링크가 지워진 뒤에도 적힌다
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.lexists(self.wl_home / "install.json"))
+        self.assertEqual(out["user"]["resolved"], {str(self.wl_home / "install.json"): str(real)})
+        self.assertIn(str(self.wl_home / "install.json"), out["user"]["removed"])
+
+    def test_user_manifest_link_loop_does_not_stop_removal(self):
+        code, out = self.script(INST, "--tool", "claude", "--user")                     # astra F2: install.json → install.json
+        self.assertEqual(code, 0, out)
+        (self.wl_home / "install.json").unlink()
+        (self.wl_home / "install.json").symlink_to("install.json")
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--no-backup")
+        self.assertEqual(code, 0, out)                                                  # 3.9도 중단하지 않는다(resolve의 Symlink loop)
+        self.assertEqual(out["user"]["resolved"], {})                                   # 순환 링크는 적지 않고, 읽지 못한 매니페스트는 전처럼 둔다
+        self.assertFalse((self.home / ".claude/CLAUDE.md").exists())
+        self.assertTrue(os.path.islink(self.wl_home / "install.json"))
+        (self.wl_home / "install.json").unlink()                                       # 순환 링크를 걷고 다시 설치
+        code, out = self.script(INST, "--tool", "claude", "--user")                     # astra R2: 없는 중간 경로를 거쳐 자기로 돌아오는 링크
+        self.assertEqual(code, 0, out)
+        (self.wl_home / "install.json").unlink()
+        (self.wl_home / "install.json").symlink_to("missing/../install.json")
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--no-backup")
+        self.assertEqual(code, 0, out)                                                  # 비엄격 fallback의 루프도 삼킨다
+        self.assertEqual(out["user"]["resolved"], {})
+        self.assertFalse((self.home / ".claude/CLAUDE.md").exists())
+        spec = importlib.util.spec_from_file_location("install_project_2330", INST)   # 수집 함수 자체: 루프는 {}(3.14 돌연변이 검출)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.resolved_links([str(self.wl_home / "install.json")], [self.root]), {})
+        (self.wl_home / "install.json").unlink()
+        (self.wl_home / "install.json").symlink_to("install.json")
+        self.assertEqual(mod.resolved_links([str(self.wl_home / "install.json")], [self.root]), {})
+        (self.wl_home / "install.json").unlink()
+        (self.wl_home / "install.json").symlink_to("gone.json")                         # 끊긴 링크는 여전히 대상을 적는다
+        self.assertEqual(mod.resolved_links([str(self.wl_home / "install.json")], [self.root]),
+                         {str(self.wl_home / "install.json"): str(self.wl_home / "gone.json")})
+
+    def test_user_linked_home_listed_once(self):
+        real = self.link_home(self.home, ".codex")
+        code, out = self.script(INST, "--tool", "codex", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["resolved"], {str(self.home / ".codex"): str(real)})       # 파일별이 아니라 홈 하나
+        self.assertIn(str(self.home / ".codex/hooks.json"), out["changed"])             # changed는 겉 경로 그대로
+        self.assertTrue((real / "hooks.json").is_file())
+        self.assertNotIn("notes", out)                                                   # --user에는 링크 경고 없음
+        code, out = self.script(UNINST, "--user", "--tool", "codex", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["user"]["resolved"], {str(self.home / ".codex"): str(real)})
+        self.assertNotIn("resolved", out)                                               # 바깥 묶음 키는 그대로
+
+    def test_file_link_and_linked_wl_home(self):
+        (self.home / ".claude").mkdir()
+        (self.home / "x.md").write_text("# 루트 안\n")
+        (self.home / ".claude/CLAUDE.md").symlink_to(self.home / "x.md")                 # 파일 자체가 링크
+        real_wl = self.outside / "wl"
+        self.wl_home.rename(real_wl)
+        self.wl_home.symlink_to(real_wl, target_is_directory=True)                      # WL_HOME이 링크
+        code, out = self.script(INST, "--tool", "claude", "--user")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["resolved"], {str(self.home / ".claude/CLAUDE.md"): str(self.home / "x.md"),
+                                           str(self.wl_home): str(real_wl)})
+
+    def test_root_link_out_of_project_warns(self):
+        proj = self.root / "proj"
+        proj.mkdir()
+        real = self.link_home(proj, ".codex")
+        code, out = self.script(INST, "--tool", "codex", "--root", str(proj))
+        self.assertEqual(code, 0, out)                                                  # 거부하지 않는다
+        self.assertEqual(out["notes"], [self.warning(proj / ".codex", real)])
+        self.assertTrue((real / "hooks.json").is_file())                                # 실제 폴더에 쓴다
+        self.assertIn(str(proj / ".codex/hooks.json"), out["changed"])
+        self.assertEqual(out["resolved"], {str(proj / ".codex"): str(real)})
+        old = json.loads((real / "hooks.json").read_text())                             # 옛 Hook 다시 쓰기: 재신뢰 안내 뒤에 이어 붙인다
+        del old["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"]
+        (real / "hooks.json").write_text(json.dumps(old))
+        code, out = self.script(INST, "--tool", "codex", "--root", str(proj), "--dry-run")
+        self.assertEqual(out["notes"], ["Codex: 훅 정의가 바뀌어 /hooks에서 한 번 더 신뢰해야 합니다", self.warning(proj / ".codex", real)])
+        code, out = self.script(UNINST, "--root", str(proj), "--tool", "codex", "--keep-records", "--no-backup")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["projects"][0]["resolved"], {str(proj / ".codex"): str(real)})
+        self.assertFalse(any("프로젝트 밖" in n for n in out["projects"][0]["notes"]))  # 제거기는 경고하지 않는다
+
+    def test_root_link_inside_project_no_warning(self):
+        proj = self.root / "proj"
+        (proj / "inner").mkdir(parents=True)
+        (proj / ".claude").symlink_to(proj / "inner", target_is_directory=True)
+        code, out = self.script(INST, "--tool", "claude", "--root", str(proj))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("notes", out)
+        self.assertEqual(out["resolved"], {str(proj / ".claude"): str(proj / "inner")})
+
+    def test_dry_run_has_resolved(self):
+        real = self.link_home(self.home, ".claude")
+        code, out = self.script(INST, "--tool", "claude", "--user", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["resolved"], {str(self.home / ".claude"): str(real)})
+        self.assertEqual(sorted(p.name for p in real.iterdir()), [])                    # dry-run은 쓰지 않는다
+        proj = self.root / "proj"
+        proj.mkdir()
+        preal = self.link_home(proj, ".pi")
+        code, out = self.script(INST, "--tool", "pi", "--root", str(proj), "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["resolved"], {str(proj / ".pi"): str(preal)})
+        self.assertEqual(out["notes"], [self.warning(proj / ".pi", preal)])
+        self.script(INST, "--tool", "claude", "--user")
+        code, out = self.script(UNINST, "--user", "--tool", "claude", "--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["user"]["resolved"], {str(self.home / ".claude"): str(real)})

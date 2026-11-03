@@ -36,7 +36,7 @@ import argparse, json, os, shutil, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from install_project import AGY_FRONT, BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, stamp, targets  # noqa: E402
+from install_project import AGY_FRONT, BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, resolved_links, stamp, targets  # noqa: E402
 
 HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
 REGISTRY = HOME / "installs.json"
@@ -363,11 +363,15 @@ def uninstall_user(a, when):
         plan_files(plan, home, tool, *targets(tool, home, True))
     if a.purge_backups:
         plan_backups(plan, home, sorted({p.parent for t in tools for p in targets(t, home, True) if p}))
+    resolved = resolved_links(plan.removed + plan.changed, [home, HOME.parent])  # 2.33.0: before the run removes file links
+    mf_links = resolved_links([str(HOME / "install.json")], [home, HOME.parent])  # also before: the last entry unlinks the file
     if not a.dry_run:
         plan.run()
     mf = drop_user_manifest(tools, a.dry_run)
+    if mf:
+        resolved.update({k: v for k, v in mf_links.items() if k not in resolved})
     return {"tool": a.tool, "home": str(home), "dry_run": a.dry_run, "removed": plan.removed + ([mf] if mf else []),
-            "changed": plan.changed, "backups": plan.backups, "notes": plan.notes}
+            "changed": plan.changed, "resolved": resolved, "backups": plan.backups, "notes": plan.notes}
 
 
 def plan_project(root, tools, delete_records, backup, purge_backups, when):
@@ -451,11 +455,12 @@ def uninstall_root(root, a, when, memo):
         plan = plan_project(root, tools, records_choice(a, remaining, memo), not a.no_backup, a.purge_backups, when)
     except Refuse as e:
         return {"root": str(root), "error": str(e)}
+    resolved = resolved_links(plan.removed + plan.changed, [root])  # 2.33.0: before the run removes file links
     if not a.dry_run:
         plan.run()
         unregister(root, tools)
     return {"tool": tool, "root": str(root), "dry_run": a.dry_run, "removed": plan.removed, "changed": plan.changed,
-            "kept": plan.kept, "backups": plan.backups, "notes": plan.notes}
+            "resolved": resolved, "kept": plan.kept, "backups": plan.backups, "notes": plan.notes}
 
 
 def main():
