@@ -33,6 +33,8 @@ nothing and exits 2. An OS error in the middle of the writes (2.22.0) rolls the 
 files are restored from their backups, new files are deleted — and exits 2 with `rolled_back`. Existing files are backed up to <file>.bak-worklog-<timestamp>[-N] (never overwriting a backup)
 before change; the managed block and Worklog hooks from any earlier install path are replaced idempotently, and an
 equivalent hook is left byte-for-byte so Codex does not ask for trust again. tools/uninstall_project.py reverses both modes.
+The result's `resolved` (2.33.0) maps each link on the way to the changed paths to its real path ({} without links); a --root
+install whose project tool home links outside the project gets a warning in `notes` (still written, exit 0).
 """
 import argparse, datetime, hashlib, importlib.util, json, os, re, shlex, shutil, sys
 from pathlib import Path
@@ -120,6 +122,59 @@ def inside(root, path):
         if home.is_symlink() and home.is_dir() and real.is_relative_to(home.resolve()):
             return
     raise Refuse(f"{path}는 설치 대상 폴더 {root} 밖을 가리키는 링크")
+
+
+def resolved_links(paths, bases):
+    """2.33.0 (U31): {surface path: real path} for every link on the way to the result paths, so the model sees where the
+    files really are. Walked below the first base that holds the path (root, WL_HOME's parent), so system links above it
+    (macOS /var → /private/var) are not listed; a missing file is judged by its nearest existing ancestor, as in inside().
+    A linked home (.codex → /Volumes/AI/codex) is listed once, not per file; a file that is itself a link is listed too.
+    {} when nothing is linked; a link loop is left out (the uninstaller still runs, its manifest read fails as before). Paths
+    from the uninstaller may end in "/" (a removed folder)."""
+    out = {}
+    for s in paths:
+        path = Path(str(s).rstrip("/") or "/")
+        base = next((b for b in bases if path.is_relative_to(b)), Path(path.anchor))
+        p = base
+        for part in path.relative_to(base).parts:
+            p = p / part
+            if not os.path.lexists(p):
+                break
+            if p.is_symlink():
+                real = real_path(p)
+                if real is None:
+                    break
+                out.setdefault(str(p), str(real))
+    return out
+
+
+def real_path(p):
+    """The resolved path of link p; a missing target is still followed (say where it points); None for a link loop
+    (ELOOP on 3.13+, RuntimeError before — also from the non-strict fallback, e.g. `missing/../self`), nothing real to show."""
+    try:
+        return p.resolve(strict=True)
+    except FileNotFoundError:
+        try:
+            real = p.resolve()
+        except (OSError, RuntimeError):
+            return None
+        return None if real == p else real  # 3.13+ resolves `missing/../self` to the link itself without raising
+    except (OSError, RuntimeError):
+        return None
+
+
+def link_notes(root, tool):
+    """2.33.0 (U31), --root only: one note per tool home this tool's targets use (.claude, .codex, .agents, .pi) that is a
+    link out of the project — e.g. committed to the repository — since the install then writes there. Never a refusal."""
+    notes, seen = [], set()
+    for t in targets(tool, root, False):
+        parts = t.relative_to(root).parts if t else ()
+        if len(parts) > 1 and parts[0] in TOOL_HOMES and parts[0] not in seen:
+            seen.add(parts[0])
+            home = root / parts[0]
+            if home.is_symlink() and not home.resolve().is_relative_to(root):
+                notes.append(f"{home}는 {home.resolve()}(프로젝트 밖)를 가리키는 링크입니다. 프로젝트 설치가 그 폴더에 씁니다")
+    return notes
 
 
 def backup_path(root, path, stamp):
@@ -469,7 +524,8 @@ def main():
             sys.exit(2)
         if not a.user:
             registry = register(root, a.tool)
-    out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes}
+    out = {"tool": a.tool, "scope": "user" if a.user else "project", "root": str(root), "dry_run": a.dry_run, "changed": changes,
+           "resolved": resolved_links(changes, [root, HOME.parent])}  # 2.33.0: where the changed paths really are ({} without links)
     if a.user:
         out["migrated"] = migrated
         if config:
@@ -491,8 +547,11 @@ def main():
         else:  # 2.26.0: the connected, empty project gets EMPTY + "create without asking" (auto=on), not "say 새 작업:"
             out["next"] = ("다음: 첫 세션의 첫 기록 대상 요청(결과를 원하는 요청)이 묻지 않고 새 작업을 만듭니다(auto=on). "
                            "제목을 정하려면 `새 작업: <제목>`이라 하세요")
-    if retrust and "/hooks" not in out.get("next", ""):
-        out["notes"] = ["Codex: 훅 정의가 바뀌어 /hooks에서 한 번 더 신뢰해야 합니다"]
+    notes = ["Codex: 훅 정의가 바뀌어 /hooks에서 한 번 더 신뢰해야 합니다"] if retrust and "/hooks" not in out.get("next", "") else []
+    if not a.user:
+        notes += link_notes(root, a.tool)  # 2.33.0: a project tool home linking out of the project (warning only)
+    if notes:
+        out["notes"] = notes
     print(json.dumps(out, ensure_ascii=False, indent=1))
 
 
