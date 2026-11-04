@@ -11,6 +11,9 @@ Mode (~/.worklog/config.json, key "update"): notify (default when this folder is
   --mode M     set the mode. After apply/rollback the user-level install (tools in ~/.worklog/install.json) is
                reinstalled; --root DIR also reinstalls the project-level rules copy of that project (tools listed in
                its .worklog/install.json without scope "user").
+               reinstall_notes (2.34.0, always present after a reinstall) lists what the installers said, one string per
+               line "<tool> --user: <text>" / "<tool> --root <root>: <text>": their notes, their next (only when a hook file —
+               hooks.json, settings.json or the pi extension — changed) and the error of a refused run (not in reinstalled*).
 Prints the cache as JSON. A newer major version (3.0.0) is reported but never applied: the ledger structure changes.
 check and background also look up the newest semver tag of every extension module in ~/.worklog/modules.json
 (git ls-remote, written by the module installers) and record it under "modules"; nothing here ever updates a module.
@@ -173,27 +176,60 @@ def rollback(cache):
 
 
 def run_installer(tool, *where):
+    """(exit 0, the installer's result JSON or {} when stdout is not a JSON object). A refusal (exit 2) has "error"."""
     p = subprocess.run([sys.executable, "-B", str(REPO / "tools" / "install_project.py"), "--tool", tool, *where],
                        capture_output=True, text=True, timeout=30)
-    return p.returncode == 0
+    try:
+        result = json.loads(p.stdout)
+    except ValueError:
+        result = {}
+    return p.returncode == 0, result if isinstance(result, dict) else {}
+
+
+HOOK_FILES = {"hooks.json", "settings.json", "settings.local.json", "worklog.ts"}  # the installer's hook file of every tool
+
+
+def installer_notes(label, ok, result, notes):
+    """2.34.0 (U33): append what one installer run said to notes as "<label>: <text>", each text once: its notes, its next
+    (only when a hook file changed — the installer always prints next, which is first-install guidance, and every update
+    rewrites the rules block because it carries the version; the user needs next only when a hook must be re-trusted or
+    re-read, e.g. Codex /hooks) and the error of a refused run."""
+    texts = [n for n in result.get("notes", []) if isinstance(n, str)] if isinstance(result.get("notes"), list) else []
+    changed = result.get("changed") if isinstance(result.get("changed"), list) else []
+    if ok and isinstance(result.get("next"), str) and any(Path(str(c)).name in HOOK_FILES for c in changed):
+        texts.append(result["next"])
+    if not ok and isinstance(result.get("error"), str):
+        texts.append(result["error"])
+    for text in texts:
+        line = f"{label}: {text}"
+        if line not in notes:
+            notes.append(line)
 
 
 def reinstall(root):
     """Reinstall the project-level rules copy of one project for every tool its install.json lists with a project install
-    (an entry with scope "user" only records the connection and has no copy there). Returns the tools done."""
-    done = []
+    (an entry with scope "user" only records the connection and has no copy there). Returns (tools done, notes)."""
+    done, notes = [], []
     for tool, entry in read_json(root / ".worklog" / "install.json").items():
         if isinstance(entry, dict) and entry.get("scope") == "user":
             continue
-        if run_installer(tool, "--root", str(root)):
+        ok, result = run_installer(tool, "--root", str(root))
+        if ok:
             done.append(tool)
-    return done
+        installer_notes(f"{tool} --root {root}", ok, result, notes)
+    return done, notes
 
 
 def reinstall_user():
     """Reinstall the user-level rules copy for every tool in ~/.worklog/install.json (an unchanged hook stays byte-for-byte,
-    so Codex does not ask for trust again). Returns the tools done."""
-    return [tool for tool in read_json(HOME / "install.json") if run_installer(tool, "--user")]
+    so Codex does not ask for trust again). Returns (tools done, notes)."""
+    done, notes = [], []
+    for tool in read_json(HOME / "install.json"):
+        ok, result = run_installer(tool, "--user")
+        if ok:
+            done.append(tool)
+        installer_notes(f"{tool} --user", ok, result, notes)
+    return done, notes
 
 
 def main():
@@ -214,9 +250,11 @@ def main():
     elif a.action == "rollback":
         cache = rollback(cache)
     if a.action in ("apply", "rollback") and cache.get("current") != before:
-        cache["reinstalled_user"] = reinstall_user()
+        cache["reinstalled_user"], notes = reinstall_user()
         if a.root:
-            cache["reinstalled"] = reinstall(Path(a.root).resolve())
+            cache["reinstalled"], more = reinstall(Path(a.root).resolve())
+            notes += [n for n in more if n not in notes]
+        cache["reinstall_notes"] = notes  # 2.34.0 (U33): output only, like reinstalled*; [] when the installers said nothing
     print(json.dumps(cache, ensure_ascii=False))
 
 

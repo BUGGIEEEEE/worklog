@@ -2140,8 +2140,10 @@ class UserScopeTest(Base):
             spec = importlib.util.spec_from_file_location("upd", WL.parents[1] / "tools" / "update.py")
             upd = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(upd)
-            self.assertEqual(upd.reinstall_user(), ["claude"])
-            self.assertEqual(upd.reinstall(self.proj.resolve()), [])  # scope user 항목은 프로젝트 재설치 대상이 아니다
+            done, notes = upd.reinstall_user()
+            self.assertEqual(done, ["claude"])
+            self.assertEqual(notes, [])  # 2.34.0: 블록은 다시 썼지만 Hook은 그대로 → next 없음
+            self.assertEqual(upd.reinstall(self.proj.resolve()), ([], []))  # scope user 항목은 프로젝트 재설치 대상이 아니다
         text = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertTrue(text.startswith("# 사용자 글") and text.count("worklog-shared:begin") == 1)
         self.assertFalse((self.proj / "CLAUDE.md").exists())
@@ -5214,3 +5216,158 @@ class Release2330Test(Base):
         code, out = self.script(UNINST, "--user", "--tool", "claude", "--dry-run")
         self.assertEqual(code, 0, out)
         self.assertEqual(out["user"]["resolved"], {str(self.home / ".claude"): str(real)})
+
+
+class Release2340Test(Base):
+    """2.34.0: update.py's result carries reinstall_notes (what each reinstall's installer said: notes, next when a hook
+    file changed, the error of a refused run), and the installer leaves a Claude/Codex/agy hook file whose
+    JSON is already current byte-for-byte (key order, indentation, final newline)."""
+    OTHER = {"type": "command", "command": "echo other", "timeout": 5}
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.home = self.root / "home"
+        for d in (".claude", ".codex", ".gemini/config"):
+            (self.home / d).mkdir(parents=True)
+        self.wl_home = self.root / "wl_home"
+        self.wl_home.mkdir()
+        (self.wl_home / "config.json").write_text('{"update": "off"}')
+        self.env = dict(clean_env(), HOME=str(self.home), WL_HOME=str(self.wl_home))
+
+    def installed(self, *argv):
+        p = subprocess.run([sys.executable, "-B", str(INST), *argv], capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return json.loads(p.stdout)
+
+    def update_module(self):
+        spec = importlib.util.spec_from_file_location("upd_2340", WL.parents[1] / "tools" / "update.py")
+        upd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(upd)
+        return upd
+
+    def old_codex_hook(self):
+        """A 2.31.0-style ~/.codex/hooks.json: current install minus additionalContextLimit."""
+        path = self.home / ".codex/hooks.json"
+        self.installed("--tool", "codex", "--user")
+        data = json.loads(path.read_text())
+        del data["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"]
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        return path
+
+    def test_reinstall_user_notes_carry_next(self):                                        # (a)
+        path = self.old_codex_hook()
+        with mock.patch.dict(os.environ, self.env):
+            done, notes = self.update_module().reinstall_user()
+        self.assertEqual(done, ["codex"])
+        self.assertEqual(len(notes), 1, notes)
+        self.assertTrue(notes[0].startswith("codex --user: 다음: Codex는 /hooks에서 Hook 3개를 신뢰하고"), notes)
+        self.assertEqual(json.loads(path.read_text())["hooks"]["SessionStart"][0]["hooks"][0]["additionalContextLimit"], 10000)
+
+    def test_reinstall_notes_empty_when_nothing_changed(self):                            # (b)
+        self.installed("--tool", "codex", "--user")
+        self.installed("--tool", "claude", "--user")
+        before = (self.home / ".codex/hooks.json").read_bytes()
+        with mock.patch.dict(os.environ, self.env):
+            self.assertEqual(self.update_module().reinstall_user(), (["codex", "claude"], []))  # 매니페스트만 다시 썼다
+        self.assertEqual((self.home / ".codex/hooks.json").read_bytes(), before)
+
+    def test_reinstall_notes_empty_when_only_rules_block_changed(self):                   # (b2) 실제 갱신: 블록의 버전만 옛것
+        self.installed("--tool", "codex", "--user")
+        version = load_wl().VERSION
+        rules = self.home / ".codex/AGENTS.md"
+        self.assertIn(f"worklog core {version}", rules.read_text())
+        rules.write_text(rules.read_text().replace(f"worklog core {version}", "worklog core 2.33.0"))
+        before = (self.home / ".codex/hooks.json").read_bytes()
+        with mock.patch.dict(os.environ, self.env):
+            self.assertEqual(self.update_module().reinstall_user(), (["codex"], []))  # 블록은 다시 썼지만 Hook은 그대로 → next 없음
+        self.assertIn(f"worklog core {version}", rules.read_text())
+        self.assertEqual((self.home / ".codex/hooks.json").read_bytes(), before)
+
+    def test_refused_reinstall_reports_error(self):                                        # (c)
+        proj = self.root / "proj"
+        real = self.root / "real_worklog"
+        real.mkdir()
+        (real / "install.json").write_text(json.dumps({"claude": {"version": "0"}}))
+        proj.mkdir()
+        (proj / ".worklog").symlink_to(real, target_is_directory=True)
+        with mock.patch.dict(os.environ, self.env):
+            done, notes = self.update_module().reinstall(proj)
+        self.assertEqual(done, [])
+        self.assertEqual(len(notes), 1, notes)
+        self.assertTrue(notes[0].startswith(f"claude --root {proj}: "), notes)
+        self.assertIn("심볼릭 링크", notes[0])
+        self.assertFalse((proj / "CLAUDE.md").exists())
+
+    def test_main_prints_reinstall_notes(self):                                            # (d)
+        self.old_codex_hook()
+        proj = self.root / "proj"
+        real = self.root / "real_worklog"
+        real.mkdir()
+        (real / "install.json").write_text(json.dumps({"claude": {"version": "0"}}))
+        proj.mkdir()
+        (proj / ".worklog").symlink_to(real, target_is_directory=True)
+        with mock.patch.dict(os.environ, self.env):
+            upd = self.update_module()
+            cache_file = upd.CACHE
+            outputs = {}
+            for action in ("apply", "rollback", "check"):
+                with mock.patch.object(upd, "check", return_value={"current": "2.33.0"}), \
+                        mock.patch.object(upd, "read_json", side_effect=lambda p, real_read=upd.read_json: {"current": "2.33.0"} if p == upd.CACHE else real_read(p)), \
+                        mock.patch.object(upd, "apply", side_effect=lambda c: dict(c, current="2.34.0")), \
+                        mock.patch.object(upd, "rollback", side_effect=lambda c: dict(c, current="2.32.0")), \
+                        mock.patch.object(sys, "argv", ["update.py", action, "--root", str(proj)]), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    upd.main()
+                outputs[action] = json.loads(out.getvalue())
+        apply_out = outputs["apply"]
+        self.assertEqual(apply_out["reinstalled_user"], ["codex"])
+        self.assertEqual(apply_out["reinstalled"], [])
+        self.assertEqual([n.split(": ", 1)[0] for n in apply_out["reinstall_notes"]], ["codex --user", f"claude --root {proj}"])
+        self.assertEqual(outputs["rollback"]["reinstall_notes"], [outputs["apply"]["reinstall_notes"][1]])  # 훅은 이미 현재: 거부 사유만
+        self.assertNotIn("reinstall_notes", outputs["check"])                                  # 재설치가 돌지 않으면 키도 없다
+        self.assertFalse(cache_file.exists())                                                   # 캐시 파일에는 쓰지 않는다(check·apply를 막았다)
+
+    def assert_kept(self, tool, path, text):
+        path.write_text(text)
+        out = self.installed("--tool", tool, "--user", "--dry-run")
+        self.assertNotIn(str(path), out["changed"])
+        out = self.installed("--tool", tool, "--user")
+        self.assertNotIn(str(path), out["changed"])
+        self.assertNotIn("notes", out)
+        self.assertEqual(path.read_text(), text)
+
+    def test_codex_hooks_without_final_newline_kept(self):                                 # (e)
+        path = self.home / ".codex/hooks.json"
+        self.installed("--tool", "codex", "--user")
+        self.assert_kept("codex", path, path.read_text().rstrip("\n"))
+
+    def test_codex_hooks_reordered_kept(self):                                             # (f)
+        path = self.home / ".codex/hooks.json"
+        data = {"hooks": {"Stop": [{"hooks": [self.OTHER]}]}, "other": {"b": 1, "a": "한글"}}
+        path.write_text(json.dumps(data))
+        self.installed("--tool", "codex", "--user")
+        self.assert_kept("codex", path, json.dumps(json.loads(path.read_text()), sort_keys=True, indent=4))
+
+    def test_type_or_duplicate_key_change_still_rewritten(self):                           # (g) 보강: 의미 비교가 1.0·true·중복 키를 같게 보지 않는다
+        path = self.home / ".codex/hooks.json"
+        self.installed("--tool", "codex", "--user")
+        current = path.read_text()
+        for broken in (current.replace('"additionalContextLimit": 10000', '"additionalContextLimit": 10000.0'),
+                       current.replace('"timeout": 10', '"timeout": true', 1),
+                       current.replace('{\n  "hooks"', '{\n  "hooks": {},\n  "hooks"', 1)):
+            self.assertNotEqual(broken, current)
+            path.write_text(broken)
+            out = self.installed("--tool", "codex", "--user", "--dry-run")
+            self.assertIn(str(path), out["changed"], broken[:120])
+        self.installed("--tool", "codex", "--user")
+        self.assertEqual(path.read_text(), current)
+
+    def test_claude_and_agy_without_final_newline_kept(self):                              # (h)
+        claude = self.home / ".claude/settings.json"
+        claude.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+        self.installed("--tool", "claude", "--user")
+        self.assert_kept("claude", claude, json.dumps(json.loads(claude.read_text()), sort_keys=True))
+        agy = self.home / ".gemini/config/hooks.json"
+        self.installed("--tool", "agy", "--user")
+        self.assert_kept("agy", agy, agy.read_text().rstrip("\n"))

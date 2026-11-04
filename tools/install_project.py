@@ -257,9 +257,25 @@ def is_current_hook(hook, command, tool):
         argv == ["python3", "-B", str(WL), command, "--tool", tool]
 
 
+def unique_keys(pairs):
+    """json object_pairs_hook: the object, or None when a key repeats (so it never compares equal to a rewritten file)."""
+    return dict(pairs) if len({k for k, _ in pairs}) == len(pairs) else None
+
+
+def canonical(value):
+    """JSON text that differs exactly when the values differ as JSON (key order ignored; 1, 1.0 and true kept apart)."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
 def hook_settings(path, tool):
+    """Settings JSON (Claude, Codex) with our three hooks. A file whose JSON already equals the result is returned
+    byte-for-byte (2.34.0, U34): key order, indentation or a missing final newline (Codex rewrites hooks.json without one
+    when the user trusts it) are no reason to rewrite it, and a rewrite changes the hash Codex asks trust for. Equal means
+    the same canonical JSON, so 10000.0 or true is not 10000 or 1, and a file with a duplicate key is still rewritten."""
     try:
-        settings = json.loads(path.read_text()) if path.exists() else {}
+        text = path.read_text() if path.exists() else None
+        settings = json.loads(text) if text is not None else {}
+        original = json.loads(text, object_pairs_hook=unique_keys) if text is not None else None  # settings is edited in place
     except (OSError, ValueError) as e:
         raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 설치하세요.")
     if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
@@ -295,6 +311,8 @@ def hook_settings(path, tool):
                 group["matcher"] = matcher
             groups.append(group)
         hooks[event] = groups
+    if original is not None and canonical(original) == canonical(settings):
+        return text
     return json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
 
 
