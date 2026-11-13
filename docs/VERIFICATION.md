@@ -4,6 +4,20 @@
 >
 > **기준 변경 (2026-10-09).** 다음 시험부터 3b는 "`self_quoted` 0건, 모든 `미반영`에 이유 있음"으로 바꿉니다. 옛 3b("미반영 0건")는 규칙 문장을 산출물에 써 넣고 그대로 인용하는 행동을 보상했고, 이제 `wl.py`가 그것을 `self_quoted`로 표시합니다. 아래 결과는 옛 기준으로 측정한 것입니다.
 
+## Task list (2.35.0, 2026-11-12/13, 28 model runs + 3 independent reviews)
+
+2.35.0 ships U23: a save can carry `tasks` (`T#` numbered per work, `after` for predecessors inside the same work, status `open`/`done`/`cancelled`/`deferred`), `state.md`, `show` and the injection gain a task section with the computed "blocked / can start" mark, `reassign` moves the tasks created in the moved events, `verify` checks numbering and the `after` graph, and the rules gain two lines. The ledger format stays `worklog/2` (`tasks` is an optional `changes` field).
+
+Gate 3 ran against this branch before the commit, with the answer key fixed before any model run ([m-20261113-v2350.md](verification/m-20261113-v2350.md)). The new cell M21 (two turns: record three tasks, one waiting on another and one put off; then finish one and drop one) passed 7/7 runs across four tools — claude sonnet 5.5 and opus 5.5, codex luna and sol 6.1, agy 3.8 flash, pi luna and sol 6.1 — and all seven ledgers ended in the same state. A regression sample on each tool's lower model (M5 plain save, M13 choosing a work, M18 remaining limits at completion, M19b close question) passed 13/14; the one failure, M18 on codex luna, was repeated four times per core and failed 2/4 under 2.35.0 and 2/4 under 2.34.0 with the same shape (it asks whether to close the decisions instead of completing the work), so it is recorded as that model's existing variance, not a 2.35.0 regression. Reviews: astra (first pass, two findings fixed), astra again on the fix, argon (second pass, no defect; one hardening for hand-edited ledgers followed and was checked by the unit tests only).
+
+Limits: one run per tool and model; agy argon was not run (quota) and is to be run after the reset; the second new rule line (re-entering the open tasks when a work moves to another project) was not exercised by a model; four runs per core cannot show that the two cores fail M18 at the same rate, only that there is no large difference; pi does not run M18/M19b (no call capture); the fix made after the second review had no independent review.
+
+2.35.0은 U23을 담는다: save가 `tasks`를 받고(`T#`은 작업별 번호, `after`는 같은 작업 안의 선행, 상태 `open`/`done`/`cancelled`/`deferred`), `state.md`·`show`·주입에 "막힘 / 시작 가능" 표시가 붙은 할 일 절이 생기며, `reassign`은 옮기는 사건에서 만든 할 일을 함께 옮기고, `verify`는 번호와 `after` 그래프를 검사하고, 규칙에 두 줄이 더해진다. 원장 형식은 `worklog/2` 그대로다(`tasks`는 `changes`의 선택 필드).
+
+게이트 3은 커밋 전 이 브랜치를 대상으로, 모델 실행 전에 고정한 정답표로 돌렸다([m-20261113-v2350.md](verification/m-20261113-v2350.md)). 새 셀 M21(두 턴: 할 일 셋을 적되 하나는 다른 하나를 기다리고 하나는 미룸 → 하나를 끝내고 하나를 안 하기로 함)은 네 도구 7/7 PASS다 — claude sonnet 5.5·opus 5.5, codex luna·sol 6.1, agy 3.8 flash, pi luna·sol 6.1. 일곱 원장의 끝 상태가 같았다. 도구별 낮은 모델의 회귀 표본(M5 기본 save, M13 작업 선택, M18 완료와 남은 한계, M19b 닫기 질문)은 13/14다. 실패 1건인 codex luna의 M18은 코어별로 4회씩 돌려 2.35.0에서 2/4, 2.34.0에서 2/4 실패했고 모양이 같아(작업을 완료하지 않고 결정을 닫을지 묻기만 함) 2.35.0의 회귀가 아니라 그 모델의 기존 편차로 기록했다. 검토: astra(1차, 지적 2건 수정), 수정분 astra 재검증, argon(2차, 결함 없음. 뒤이은 손 편집 원장 보강 1건은 단위 테스트로만 확인).
+
+한계: 도구·모델당 1회. agy argon은 한도 소진으로 미실행이며 리셋 뒤 돌린다. 둘째 새 규칙 줄(작업을 다른 프로젝트로 옮길 때 남은 할 일을 다시 적기)은 모델로 시험하지 않았다. 코어당 4회로는 두 코어의 M18 실패율이 같다고 할 수 없고 큰 차이가 없다는 정도다. pi는 M18·M19b를 돌리지 않는다(호출 미포착). 2차 검토 뒤의 수정은 독립 검토를 받지 않았다.
+
 ## Closing finished sub-work, injection size limit, close-candidate line (2.30.0, 2026-10-29/30, 92 model runs + 4 independent reviews)
 
 2.30.0 ships U28: `close` / `reopen --closed` / `show --closed` / the `find` stub, a per-tool size limit for the SessionStart injection with a fixed omission order, `[U]`/`[M]` source tags, one new rule item (ask once when a sub-work ends whether to close its range, then `close` after approval), and the **close-candidate line** `[Worklog 닫기 후보] … D2–D4(3건) …` under the current work in the injection, `use` and `show` (candidates = open decisions after the last REQUEST before the last RESULT/CHECKPOINT, up to it; non-contiguous candidates are written as runs, `D2, D4`).
