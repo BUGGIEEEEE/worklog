@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 FORMAT = "worklog/2"
-VERSION = "2.34.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
+VERSION = "2.35.0"  # 코어·규칙 버전(CHANGELOG.md와 같아야 한다). FORMAT은 원장 구조 전용
 TYPES = ["REQUEST", "APPROVAL", "D_USER", "D_AGENT", "ASSUMPTION", "RESULT", "VERIFICATION",
          "BLOCKER", "CORRECTION", "CHECKPOINT", "HANDOFF", "CHANGE", "Q",
          "WRITER_ACQUIRED", "WRITER_RELEASED"]
@@ -97,6 +97,7 @@ SAVE_HELP = """save: 턴마다 한 번, stdin으로 JSON 하나를 넣는다.  �
   "artifacts": [{"path": "note-guide.md"}],
   "artifacts_moved": {"note-guide.md": "docs/note-guide.md"},  # 기록한 산출물 파일을 옮겼을 때 옛 경로 → 새 경로(새 경로 파일이 있어야 한다)
   "artifacts_gone": [{"path": "draft.md", "reason": "사용자가 지웠다고 확인"}],  # 기록한 산출물을 영구히 지웠을 때(사용자 확인 뒤). 누락 보고·verify missing에서 빠진다
+  "tasks": [{"id": "T1", "text": "초안 작성", "done_when": "3장까지 씀"}, {"id": "T2", "text": "검토 반영", "after": ["T1"]}],  # 할 일. 새 번호는 다음 번호(최대+1, 적힌 순서대로), 있는 번호는 준 키만 갱신. status open done cancelled deferred(생략 시 open). after는 같은 작업의 번호만([]면 비움). check 대상 아님
   "check": {"D1": "'저녁 식사 후 11분'", "C1": "미반영: 알림은 만들지 않았고 본문에 넣을 내용이 아님"}
                                            # 텍스트 산출물이 있으면 모든 유효 결정·제약 ID 필수(close로 닫은 결정은 빠진다). 값은 둘 중 하나:
                                            # ① 규칙이 지켜졌음을 보여 주는 산출물 본문 구절(4자 이상)을 따옴표로 인용(본문에서 대조, 공백 무시)
@@ -940,6 +941,210 @@ def close_groups(s, c, ev):
         s.pop("closed_groups", None)
 
 
+# --- 할 일 (2.35.0, U23): changes.tasks [{id, text?, after?, done_when?, status?}] — optional field, readers 2.35.0+ ---
+TASK_ID = re.compile(r"T([1-9]\d{0,5})", re.ASCII)
+TASK_STATUSES = ("open", "done", "cancelled", "deferred")
+TASK_KEYS = ("text", "after", "done_when", "status")
+TASK_OPEN = ("open", "deferred")  # an open or deferred predecessor blocks; done·cancelled ones do not
+TASK_FORM = ('tasks는 [{"id": "T1", "text": "...", "after": ["T2"], "done_when": "...", "status": "open"}] 형식입니다'
+             f"(id는 T+양의 정수, status는 {'·'.join(TASK_STATUSES)}).")
+
+
+def t_num(tid):
+    return int(tid[1:])
+
+
+def task_input(p):
+    """save input tasks → the normalized items of changes.tasks ([] without it). Text is stripped of source tags (the core adds
+    them, as for decisions), after is de-duplicated in order, done_when "" or null clears it. Shape only; numbering, references and
+    cycles are apply_tasks(strict=True)'s."""
+    items = p.get("tasks")
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise Reject(TASK_FORM)
+    out = []
+    for x in items:
+        if not isinstance(x, dict) or not isinstance(x.get("id"), str) or not TASK_ID.fullmatch(x["id"]):
+            raise Reject(TASK_FORM + f" 받은 항목: {json.dumps(x, ensure_ascii=False)}")
+        unknown = set(x) - {"id", *TASK_KEYS}
+        if unknown:
+            raise Reject(f"tasks {x['id']}: 알 수 없는 키 {sorted(unknown)}. 쓸 수 있는 키: id·{'·'.join(TASK_KEYS)}")
+        item = {"id": x["id"]}
+        if "text" in x:
+            if not isinstance(x["text"], str) or not strip_source_tag(x["text"]):
+                raise Reject(f"tasks {x['id']}: text는 비어 있지 않은 문자열입니다(출처 태그 [U]/[M]는 코어가 붙인다).")
+            item["text"] = strip_source_tag(x["text"])
+        if "after" in x:
+            if not isinstance(x["after"], list) or not all(isinstance(a, str) and TASK_ID.fullmatch(a) for a in x["after"]):
+                raise Reject(f'tasks {x["id"]}: after는 ["T1"]처럼 같은 작업의 할 일 번호 목록입니다([]면 선행을 비운다).')
+            item["after"] = list(dict.fromkeys(x["after"]))
+        if "done_when" in x:
+            if x["done_when"] is not None and not isinstance(x["done_when"], str):
+                raise Reject(f"tasks {x['id']}: done_when은 문자열입니다(\"\"나 null이면 지운다).")
+            item["done_when"] = (x["done_when"] or "").strip() or None
+        if "status" in x:
+            if x["status"] not in TASK_STATUSES:
+                raise Reject(f"tasks {x['id']}: status는 {'·'.join(TASK_STATUSES)} 중 하나입니다.")
+            item["status"] = x["status"]
+        if len(item) == 1:
+            raise Reject(f"tasks {x['id']}: 바꿀 키가 없습니다({'·'.join(TASK_KEYS)} 중 하나 이상).")
+        out.append(item)
+    ids = [x["id"] for x in out]
+    dup = sorted({i for i in ids if ids.count(i) > 1}, key=t_num)
+    if dup:
+        raise Reject(f"tasks: 같은 번호가 한 save에 두 번 있습니다: {dup}")
+    return out
+
+
+def task_graph_problem(tasks):
+    """The first after problem of a task map {id: task}: a reference to itself or to a task not in the work, or a cycle. None."""
+    for tid in sorted(tasks, key=t_num):
+        for a in tasks[tid]["after"]:
+            if a == tid:
+                return f"{tid}의 after에 자기 자신이 있습니다"
+            if a not in tasks:
+                return f"{tid}의 after {a}: 이 작업에 없는 할 일입니다. 현재: {sorted(tasks, key=t_num)}"
+    state = {}
+    for start in sorted(tasks, key=t_num):  # depth-first, iterative: 0 = on the path, 1 = done
+        if start in state:
+            continue
+        path, stack = [], [(start, iter(tasks[start]["after"]))]
+        state[start] = 0
+        path.append(start)
+        while stack:
+            node, it = stack[-1]
+            nxt = next(it, None)
+            if nxt is None:
+                state[node] = 1
+                stack.pop()
+                path.pop()
+            elif state.get(nxt) == 0:
+                cyc = path[path.index(nxt):] + [nxt]
+                return "after가 순환합니다: " + " → ".join(cyc)
+            elif nxt not in state:
+                state[nxt] = 0
+                path.append(nxt)
+                stack.append((nxt, iter(tasks[nxt]["after"])))
+    return None
+
+
+def task_after(value, tid, strict):
+    """An item's after as a list of strings. None is []. Anything else that is not a list of strings (a hand-edited ledger):
+    strict → Reject naming the task; not strict → [] for a non-list, the string entries of a list."""
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(a, str) for a in value):
+        return list(value)
+    if strict:
+        raise Reject(f"tasks {tid}: after는 할 일 번호(문자열) 목록이어야 합니다. 받은 값: {json.dumps(value, ensure_ascii=False)[:80]}")
+    return [a for a in value if isinstance(a, str)] if isinstance(value, list) else []
+
+
+def apply_tasks(tasks, ev, strict=False):
+    """One event's changes.tasks over the task map {id: task} (a new map; the same map when the event has none). A known id is
+    updated with the keys given; an unknown one is created (status open unless given, source from the event type — or the item's
+    own "source", written only by reassign — created = updated = the event id). strict (save, reassign, verify): a new id must be
+    the next number (max + 1, in the order written), a new task needs text, and after the whole save the after graph must name
+    only tasks of the work, never the task itself, and have no cycle — else Reject. Not strict (fold): applied as far as it goes,
+    so a ledger a reader cannot fully check is still shown. 2.35.0 fix (argon): a hand-edited ledger never raises a TypeError here —
+    not strict, a tasks value that is not a list, an item that is not an object or has no T# id is skipped, an after that is not a
+    list counts as [] (its non-string entries are dropped) and a source that is not a string is the event's; strict (verify)
+    reports such an event as one Reject line instead."""
+    items = (ev.get("changes") or {}).get("tasks")
+    if items is None or items == []:
+        return tasks
+    if not isinstance(items, list):
+        if strict:
+            raise Reject(f"tasks는 목록이어야 합니다. 받은 값: {json.dumps(items, ensure_ascii=False)[:80]}")
+        return tasks
+    out = {k: dict(v, after=list(v["after"])) for k, v in tasks.items()}
+    nxt = max((t_num(i) for i in out), default=0) + 1
+    source = "user" if ev.get("type") in USER_TYPES else "model"
+    for x in items:
+        tid = x.get("id") if isinstance(x, dict) else None
+        if not (isinstance(tid, str) and TASK_ID.fullmatch(tid)):
+            if strict:
+                raise Reject(TASK_FORM)
+            continue
+        if tid in out:
+            t = out[tid]
+            for k in TASK_KEYS:
+                if k in x:
+                    t[k] = task_after(x[k], tid, strict) if k == "after" else x[k]
+            t["updated"] = ev["id"]
+            continue
+        if strict and t_num(tid) != nxt:
+            raise Reject(f"tasks {tid}: 이 작업에 없는 번호입니다. 새 할 일은 다음 번호 T{nxt}여야 합니다"
+                         f"(현재 최대 {'T' + str(nxt - 1) if nxt > 1 else '없음'}, 같은 save 안에서는 적힌 순서대로 이어진다).")
+        if not x.get("text"):
+            if strict:
+                raise Reject(f"tasks {tid}: 새 할 일에는 text가 필요합니다.")
+            continue
+        own = x.get("source")
+        out[tid] = {"id": tid, "text": x["text"], "after": task_after(x.get("after"), tid, strict), "done_when": x.get("done_when"),
+                    "status": x.get("status") or "open", "source": own if isinstance(own, str) and own else source,
+                    "created": ev["id"], "updated": ev["id"]}
+        nxt = max(nxt, t_num(tid) + 1)
+    if strict:
+        bad = task_graph_problem(out)
+        if bad:
+            raise Reject(f"tasks: {bad}.")
+    return out
+
+
+def task_map(s):
+    return {t["id"]: t for t in s.get("tasks") or []}
+
+
+def task_problems(events):
+    """verify (2.35.0): every event's tasks checked as save checks them (next number, text, after references, cycle), then the
+    whole list: T1..Tn without a gap. Returns ["E0004: <problem>", ...] ([] for a clean ledger or one without tasks)."""
+    tasks, out = {}, []
+    for ev in events:
+        try:
+            tasks = apply_tasks(tasks, ev, strict=True)
+        except Reject as e:
+            out.append(f"{ev.get('id')}: {e}")
+            tasks = apply_tasks(tasks, ev)
+    gaps = [f"T{n}" for n in range(1, max((t_num(i) for i in tasks), default=0) + 1) if f"T{n}" not in tasks]
+    if gaps:
+        out.append(f"할 일 번호가 빠졌습니다: {gaps}")
+    bad = task_graph_problem(tasks)
+    if bad and not any(bad in x for x in out):
+        out.append(bad)
+    return out
+
+
+def task_flag(t, by):
+    """'open·시작 가능', 'open·막힘(T1, T2)' or the stored status (deferred, done, cancelled). Computed, never stored."""
+    if t["status"] != "open":
+        return t["status"]
+    blockers = [a for a in t["after"] if (by.get(a) or {}).get("status") in TASK_OPEN]
+    return f"open·막힘({', '.join(blockers)})" if blockers else "open·시작 가능"
+
+
+def task_line(t, by):
+    return f"- {t['id']} [{task_flag(t, by)}] {t['text']}" + (f" — {t['done_when']}" if t.get("done_when") else "") + tag(t)
+
+
+def task_section(s, ended=True):
+    """state.md's '## 할 일' lines ([] without tasks): open·deferred first, then done·cancelled, each by number. ended=False (the
+    SessionStart safety net) folds the done·cancelled lines into one count line."""
+    tasks = s.get("tasks") or []
+    if not tasks:
+        return []
+    by = {t["id"]: t for t in tasks}
+    live = [t for t in tasks if t["status"] in TASK_OPEN]
+    done = [t for t in tasks if t["status"] not in TASK_OPEN]
+    out = ["", "## 할 일"] + [task_line(t, by) for t in live]
+    if ended:
+        out += [task_line(t, by) for t in done]
+    elif done:
+        out.append(f"- 끝난 할 일 {len(done)}건(done·cancelled) 접음 → show")
+    return out
+
+
 STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", re.ASCII)  # now()'s UTC form: the only form save --ts takes and the sort
 # reads. ASCII digits only: other Unicode digits (\u0662\u0660\u0662\u0666-…) pass strptime and would sort after every ASCII time
 
@@ -979,6 +1184,11 @@ def fold(events):
     s = empty_state()
     for i in time_order(events):
         s = apply(s, dict(events[i], **starts[i]))
+    tasks = {}
+    for ev in events:  # 2.35.0: tasks in append order (their numbers are checked in that order, like the E ids), never by time
+        tasks = apply_tasks(tasks, ev)
+    if tasks:  # only when there is one, so a work without tasks keeps its state.json byte for byte
+        s["tasks"] = [tasks[k] for k in sorted(tasks, key=t_num)]
     if events:
         last = events[-1]
         s["seq"], s["updated_at"], s["updated_by"] = last["seq"], last["at"], {"tool": last["tool"], "session_id": last["session_id"]}
@@ -1062,10 +1272,11 @@ def open_decisions(s):
     return [d for d in s["decisions"] if not d.get("closed")]
 
 
-def render(s, wid, title, keep=None, artifacts=True):
+def render(s, wid, title, keep=None, artifacts=True, ended_tasks=True):
     """state.md (and the state part of show, use and SessionStart). 2.30.0 (U28): only open decisions are listed; closed groups
     are one line each. keep/artifacts are the SessionStart safety net only (B5): keep = the most recent open decisions kept
-    (Map: decisions always stay), artifacts=False leaves the artifacts section out."""
+    (Map: decisions always stay), artifacts=False leaves the artifacts section out. 2.35.0: the '## 할 일' section before
+    '## 대기', only when the work has a task; ended_tasks=False (safety net) folds its done·cancelled lines into a count."""
     by = s["updated_by"] or {}
     out = [f"# Worklog 현재 상태 — {wid} · {title} (seq {s['seq']}, {s['updated_at']}, {by.get('tool')}:{by.get('session_id')})", "",
            f"최초 목표(원문): {s['goal'] or '(미정)'}"]
@@ -1088,6 +1299,7 @@ def render(s, wid, title, keep=None, artifacts=True):
         out += ["", "## 닫힌 묶음(끝난 하위 작업) — 전문은 show --closed <label>"] + [group_line(g, s) for g in live_groups(s)]
     out += ["", "## 유지 제약 — [U] 제약은 사용자가 바꾸기 전까지, [M] 제약은 모델이 사유를 적고 해제할 때까지 유지"]
     out += [f"- {c['id']}: {c['text']}{tag(c)}" for c in s["constraints"]] or ["- (없음)"]
+    out += task_section(s, ended_tasks)
     out += ["", "## 대기"] + ([f"- {w}" for w in s["waiting"]] or ["- (없음)"])
     out += ["", f"## 다음 행동", s["next_action"] or "(미정)"]
     arts = [a for a in s["artifacts"] if not a.get("closed")]
@@ -1174,7 +1386,7 @@ def validate(p, root, state):
         raise Reject("입력은 JSON 객체여야 합니다. `wl.py help` 참고.")
     unknown = set(p) - {"work", "type", "summary", "quote", "goal", "decisions", "constraints", "constraints_remove",
                         "waiting", "next_action", "status", "artifacts", "artifacts_moved", "artifacts_gone", "check", "refs", "takeover",
-                        "occurred_at", "source"}
+                        "occurred_at", "source", "tasks"}
     if unknown:
         raise Reject(f"알 수 없는 필드: {sorted(unknown)}. `wl.py help` 참고.")
     if p.get("type") not in TYPES:
@@ -1229,6 +1441,7 @@ def validate(p, root, state):
                                                                     or not isinstance(g.get("path"), str) or not g["path"]
                                                                     or not isinstance(g.get("reason", ""), str) for g in gone_in)):
         raise Reject('artifacts_gone은 [{"path": "기록된 경로", "reason": "지운 이유 한 구절"}] 형식이어야 합니다.')
+    task_input(p)  # 2.35.0: shape only here (numbers, references and cycles: apply_tasks strict, in cmd_save)
     empty = [g["path"] for g in gone_in or [] if not str(g.get("reason") or "").strip()]
     if empty:
         raise Reject(f"artifacts_gone: reason이 비어 있습니다: {empty}. 사용자가 지웠다고 확인한 내용을 한 구절로 적으세요.")
@@ -1464,6 +1677,9 @@ def save_changes(p, root, state, events, title, arts):
     gone = gone_artifacts(p, root, state)
     if gone:
         changes["artifacts_gone"] = gone
+    tasks = task_input(p)
+    if tasks:  # 2.35.0: [] or no tasks → no key, so the event is as before
+        changes["tasks"] = tasks
     return changes, ignored
 
 
@@ -1514,6 +1730,7 @@ def cmd_save(args):
                 ev[k] = p[k]
         if acquired:
             ev["writer_acquired"] = acquired
+        apply_tasks(task_map(state), ev, strict=True)  # 2.35.0: next number, after references, no cycle — the whole save or nothing
         try:  # 상태 계산·렌더링 실패는 원장 추가 전에 거부로 바꾼다. 2.28.0 (U19): 시각순 fold라 원장 전체로 계산한다
             new_state, _ = fold(events + [ev])
             render(new_state, wid, title)
@@ -1937,7 +2154,7 @@ def cmd_find(args):
 
 
 # --- 잘못 고른 작업의 정정 (2.25.0). 원장은 작업별 추가 전용: 사건을 옮기지 않고 양쪽에 서로를 가리키는 CORRECTION을 남긴다 ---
-# 바깥 의존 함수(26, 2.28.0 정리 뒤): clean_title commit connected_store create_work entry fold identity index_or_new locked mark_seen_if_current need_quote new_event new_work_refusal norm other_constraints others_notice project projection_ok read_events rule_lines session_or_new sha title_slug update_session work_dir write_index (+ 상수 REASSIGNED_MAX, 예외 Reject·SessionCorrupt)
+# 바깥 의존 함수(29, 2.35.0: apply_tasks task_map t_num 추가): apply_tasks clean_title commit connected_store create_work entry fold identity index_or_new locked mark_seen_if_current need_quote new_event new_work_refusal norm other_constraints others_notice project projection_ok read_events rule_lines session_or_new sha t_num task_map title_slug update_session work_dir write_index (+ 상수 REASSIGNED_MAX·TASK_KEYS, 예외 Reject·SessionCorrupt)
 # 이 구역은 `import wl`·형제 파일 분리를 전제하지 않는다(분리는 보류, 2026-10-22 결정). 위 목록은 경계 표시이며 옮길 때의 비용 기준이다.
 
 EVENT_ID = re.compile(r"E(\d{1,6})")
@@ -2119,6 +2336,35 @@ def new_work_probe(d, who, origin, wrong, ids):
         return wid, None
 
 
+def refile_tasks(wevents, before, sel):
+    """reassign (2.35.0): (moved, touched). moved = the tasks the selected events created, as they stand in `before` (the wrong
+    work's state before its misfiled CORRECTION), by number; touched = {id: [keys]} for tasks made outside the selection that a
+    selected event updated (the keys it gave, in TASK_KEYS order)."""
+    have = task_map(before)
+    moved = [t for t in before.get("tasks") or [] if t["created"] in sel]
+    ids, touched = {t["id"] for t in moved}, {}
+    for e in wevents:
+        if e.get("id") not in sel:
+            continue
+        items = (e.get("changes") or {}).get("tasks")
+        for x in items if isinstance(items, list) else []:  # a hand-edited item that is not an object or has no string id is skipped
+            tid = x.get("id") if isinstance(x, dict) else None
+            if isinstance(tid, str) and tid in have and tid not in ids:
+                keys = touched.setdefault(tid, [])
+                keys += [k for k in TASK_KEYS if k in x and k not in keys]
+    return moved, {tid: [k for k in TASK_KEYS if k in keys] for tid, keys in sorted(touched.items(), key=lambda kv: t_num(kv[0]))}
+
+
+def refuse_task_boundary(before, sel):
+    """reassign (2.35.0), before anything is written: refuse when an after joins a task that moves (made by the selected events)
+    and one that stays, either way — the numbers would point at the wrong work afterwards."""
+    moved = {t["id"] for t in before.get("tasks") or [] if t["created"] in sel}
+    pairs = [f"{t['id']} after {a}" for t in before.get("tasks") or [] for a in t["after"] if (t["id"] in moved) != (a in moved)]
+    if moved and pairs:
+        raise Reject(f"옮기는 할 일과 남는 할 일 사이에 after가 걸려 있습니다: {', '.join(pairs)}. 아무것도 쓰지 않았습니다. "
+                     "먼저 save의 tasks로 그 after를 풀거나(after: []) 사건 범위를 바꾼 뒤 다시 실행하세요.")
+
+
 def cmd_reassign(args):
     """reassign <wrong> <right> --events E0003-E0005 --quote (2.26.0 order): ⒜ CORRECTION in the right work that records the
     decisions and constraints those events added (new D/C ids, their source kept or upgraded, artifacts rehashed, original quotes
@@ -2126,7 +2372,9 @@ def cmd_reassign(args):
     naming the id ⒜ really got, ⒞ the right work becomes this session's current work. One .lock. A failure anywhere is reported as
     partial with the steps that are done; the same command run again finds the steps on disk and does only the missing ones.
     2.27.0 (U15): `--new "<title>"` in place of <right> first creates the right work like new-work (same id rule, same same-turn
-    refusal and marker, same notice; ⒜ carries goal = title) inside the same lock; a re-run finds that work by its title."""
+    refusal and marker, same notice; ⒜ carries goal = title) inside the same lock; a re-run finds that work by its title.
+    2.35.0: tasks the events created move under the right work's next numbers (⒜ tasks, ⒝ cancels them; tasks_moved), an after
+    across the boundary is refused before anything is written, and a task the range only updated stays (tasks_touched)."""
     wrong, right = args.arg, getattr(args, "arg2", None)
     new = getattr(args, "new", None)
     title = clean_title(new) if new is not None else None
@@ -2159,6 +2407,8 @@ def cmd_reassign(args):
             entry(index, right)
         span, sel = event_span(ids), set(ids)
         refuse_refiled_twice(d, index, wrong, right, wevents, sel)
+        if title and not right:  # 2.35.0: the after boundary is checked before the new work is made
+            refuse_task_boundary(fold(wevents)[0], sel)
         if title and not right:  # N02 (2.27.0): a failure from here on has changed the disk, so it is reported as partial
             try:
                 right = created = create_work(d, index, who, sess, title, origin=origin)
@@ -2177,10 +2427,20 @@ def cmd_reassign(args):
         decs = [x for x in before["decisions"] if x["event"] in sel]
         cons = [x for x in before["constraints"] if x["event"] in sel]
         arts = [x for x in before["artifacts"] if x["event"] in sel]
+        moved_t, touched_t = refile_tasks(wevents, before, sel)  # 2.35.0
+        if not ev_b:  # nothing written to the right work yet: an after across the boundary is refused here
+            refuse_task_boundary(before, sel)
         corrected = None
         try:
             if not ev_b:  # ⒜ the right work first
-                changes = refile_changes(fold(revents)[0], decs, cons)[0]
+                rstate = fold(revents)[0]
+                changes = refile_changes(rstate, decs, cons)[0]
+                base = max((t_num(i) for i in task_map(rstate)), default=0)  # 2.35.0: the moved tasks get the next numbers there
+                renum = {t["id"]: f"T{base + n}" for n, t in enumerate(moved_t, 1)}
+                if moved_t:
+                    changes["tasks"] = [dict({"id": renum[t["id"]], "text": t["text"], "after": [renum[a] for a in t["after"]]},
+                                             **({"done_when": t["done_when"]} if t.get("done_when") else {}),
+                                             status=t["status"], source=t["source"]) for t in moved_t]
                 if title and not revents:  # --new: the new work's first event sets its goal like a first save would
                     changes["goal"] = title
                 new_a = [{"path": a["path"], "sha256": sha((d.parent / a["path"]).read_bytes())} for a in arts if (d.parent / a["path"]).is_file()]
@@ -2190,6 +2450,7 @@ def cmd_reassign(args):
                 refs = [dict({"kind": "refiled_from", "work": wrong, "id": i}, **({"quote": by_id[i]["quote"]} if isinstance(by_id[i].get("quote"), str) else {}))
                         for i in ids] + ([{"kind": "correction", "work": wrong, "id": ev_a["id"]}] if ev_a else [])  # ev_a: a 2.25.0 partial run
                 ev_b = new_event(revents, rprev, "CORRECTION", tool, sid, f"[refiled ← {wrong}] {span}", args.quote, refs, changes)
+                apply_tasks(task_map(rstate), ev_b, strict=True)
                 commit(d, index, right, ev_b)
             elif not steps["refiled_state"]:
                 repair_state(d, index, right)
@@ -2197,8 +2458,15 @@ def cmd_reassign(args):
                 why = f"{right}로 옮김(reassign)"
                 changes = {k: v for k, v in (("decisions_remove", {x["id"]: why for x in decs}),
                                              ("constraints_remove", {x["id"]: why for x in cons})) if v}
+                have = task_map(before)  # 2.35.0: the tasks ⒜ really carries are cancelled here (⒜ from an older core carries none);
+                carried = len((ev_b.get("changes") or {}).get("tasks") or [])  # a task the range only updated keeps that update,
+                tasks_a = ([{"id": t["id"], "status": "cancelled"} for t in moved_t[:carried]]  # written again with its values now
+                           + [dict({"id": tid}, **{k: have[tid][k] for k in keys}) for tid, keys in touched_t.items()])
+                if tasks_a:
+                    changes["tasks"] = tasks_a
                 refs = [{"kind": "misfiled", "id": i} for i in ids] + [{"kind": "refiled_to", "work": right, "id": ev_b["id"]}]
                 ev_a = new_event(wevents, wprev, "CORRECTION", tool, sid, f"[misfiled → {right}] {span}", args.quote, refs, changes)
+                apply_tasks(task_map(fold(wevents)[0]), ev_a, strict=True)
                 commit(d, index, wrong, ev_a)
                 mark_seen_if_current(d, tool, sid, wrong, len(wevents), ev_a["seq"])
             elif not reassign_progress(d, wrong, right, ids, who)["steps"]["misfiled"]:
@@ -2228,6 +2496,9 @@ def cmd_reassign(args):
             gone = [a["path"] for a in arts if a["path"] not in moved_paths]
             rebuilt = fold(revents)[0]
             resumed = [k for k in REASSIGN_STEPS if steps[k]]
+            new_ids = [x.get("id") for x in (ev_b.get("changes") or {}).get("tasks") or []]  # from ⒜ itself, so a re-run says the same
+            tasks_moved = dict(zip([t["id"] for t in moved_t], new_ids))
+            tasks_left = [t["id"] for t in moved_t[len(new_ids):]]  # ⒜ from an older core (2.34.0 partial) carries no tasks: not moved
             result = {"ok": True, "from": wrong, "to": right, "events": ids, "misfiled": ev_a["id"], "refiled": ev_b["id"],
                       "moved": {"decisions": [x["id"] for x in decs], "constraints": [x["id"] for x in cons], "artifacts": moved_paths},
                       **({"artifacts_missing": gone} if gone else {}),
@@ -2236,11 +2507,18 @@ def cmd_reassign(args):
                       **({"resumed": resumed} if resumed else {}),        # 2.26.0: steps an earlier run had done (this run did the rest)
                       **({"corrected_ref": True, "ref_correction": corrected["id"]} if corrected else {}),  # 2.26.0 (F05)
                       **({"created": created} if created else {}),  # 2.27.0: --new made this work in this run
+                      **({"tasks_moved": tasks_moved} if tasks_moved else {}),     # 2.35.0: old number → new number in the right work
+                      **({"tasks_touched": list(touched_t)} if touched_t else {}),  # 2.35.0: made outside the range, only updated in it: stay
+                      **({"tasks_left": tasks_left} if tasks_left else {}),        # 2.35.0: an older core's partial run: these stayed behind
                       "current_work": right,
                       "decisions": rule_lines(rebuilt["decisions"]), "constraints": rule_lines(rebuilt["constraints"])}
             others = other_constraints(d, index, right) if title else []
             if others:  # 2.27.0: the same notice as new-work
                 result["notice"] = others_notice(others)
+            if tasks_left:  # 2.35.0: no automatic move for an older core's ⒜; the model re-records them (rules: tasks, cancelled)
+                left = (f"옮기지 않은 할 일: {', '.join(tasks_left)}(옛 코어가 시작한 reassign을 이어서 끝냄). "
+                        f"맞는 작업 {right}에 save의 tasks로 다시 적은 뒤 잘못된 작업 {wrong}의 그 할 일을 cancelled로 바꾸세요.")
+                result["notice"] = f"{result['notice']} {left}" if result.get("notice") else left
     if failed:
         reassign_partial(failed, after, created, title)
     print(json.dumps(result, ensure_ascii=False))
@@ -2423,8 +2701,9 @@ def check_work(d, wid, title):
     arts, gone = artifacts_check(d, state), gone_list(events, state, d.parent)
     if gone:  # 2.27.0: shown apart from missing, only when there is one (older results unchanged)
         arts["gone"] = gone
-    return {"work": wid, "ok": ok_json and ok_md, "events": len(events), "status": state["status"],
-            "state_json": ok_json, "state_md": ok_md, "artifacts": arts, **core_report(events)}
+    tasks = task_problems(events)  # 2.35.0: numbers T1..Tn, after references, no cycle; the key only when there is a problem
+    return {"work": wid, "ok": ok_json and ok_md and not tasks, "events": len(events), "status": state["status"],
+            "state_json": ok_json, "state_md": ok_md, "artifacts": arts, **({"tasks": tasks} if tasks else {}), **core_report(events)}
 
 
 def cmd_verify(args):
@@ -2682,9 +2961,11 @@ def over_note(tool, lim, omitted, omit, head, text):
 
 def injection(d, who):
     """SessionStart text → (status, build, mark_seen). build(level) → (body, omitted): level 0 is the whole text; the safety net
-    (2.30.0, U28 B5) asks for 1 = the open decisions down to the most recent KEEP_OPEN, 2 = also no artifacts section (only when
-    some are open), 3 = also no unseen events. Map: decisions, closed group lines, constraints and waiting are never left out.
-    mark_seen(level) marks the current work as seen once the level is chosen: at level 3 the unseen events were left out of the
+    (2.30.0, U28 B5) asks for 1 = the open decisions down to the most recent KEEP_OPEN, 2 = also the done·cancelled task lines
+    folded into a count (2.35.0, only when there is one), 3 = also no artifacts section (only when some are open), 4 = also no
+    unseen events. Map: decisions, closed group lines, constraints, open·deferred tasks and waiting are never left out. A step
+    with nothing to leave out gives the text of the step before, so a work without tasks gets the 2.34.0 text.
+    mark_seen(level) marks the current work as seen once the level is chosen: at level 4 the unseen events were left out of the
     text, so they stay unseen and show·use·the next injection list them again (2.30.0 fix: before, they were marked first)."""
     index = load_index(d) or {"works": {}}
     works, project_part = index["works"], []
@@ -2730,11 +3011,14 @@ def injection(d, who):
                 out += [x for x in (artifacts_note(missing).rstrip("\n"),) if x]
                 scope = [x for x in open_decisions(st) if not is_map(x)]
                 cut = max(0, len(scope) - KEEP_OPEN) if level >= 1 else 0
+                ended = sum(1 for t in st.get("tasks") or [] if t["status"] not in TASK_OPEN) if level >= 2 else 0
                 open_arts = sum(1 for a in st["artifacts"] if not a.get("closed"))
-                drop = level >= 2 and open_arts > 0  # all closed: the section is the one "닫힘" line, kept
-                text = render(st, cur, title, keep=KEEP_OPEN if cut else None, artifacts=not drop).rstrip("\n")
+                drop = level >= 3 and open_arts > 0  # all closed: the section is the one "닫힘" line, kept
+                text = render(st, cur, title, keep=KEEP_OPEN if cut else None, artifacts=not drop, ended_tasks=not ended).rstrip("\n")
                 if cut:
                     omitted.append(f"오래된 열린 결정 {cut}건(최근 {KEEP_OPEN}건만 남김)")
+                if ended:
+                    omitted.append(f"끝난 할 일 {ended}건(done·cancelled)")
                 if drop:
                     omitted.append(f"산출물 절(열린 산출물 {open_arts}개)")
                 if "\n## 산출물" in text:
@@ -2753,14 +3037,14 @@ def injection(d, who):
         out = (["경로 별칭(글자 그대로 바꿔 읽는다): " + " · ".join(f"{a} = {p}" for p, a in aliases)] if aliases else []) + proj + out
         if text:
             out.append(text)
-        if unseen and level < 3:
+        if unseen and level < 4:
             out.append(unseen.rstrip("\n"))
         elif unseen:
             omitted.append(f"못 본 사건 {unseen_n}건({unseen_ids})")
         return "\n".join(out) + "\n", omitted
 
     def mark_seen(level):
-        if not (who and cur) or (unseen and level >= 3):  # left out → not read: last_seen stays where it was
+        if not (who and cur) or (unseen and level >= 4):  # left out → not read: last_seen stays where it was
             return
         with locked(d):
             done = session_or_new(d, *who)["last_seen"].get(cur, 0)
@@ -2881,7 +3165,7 @@ def cmd_hook(args):
     omit = lambda parts: (f"[Worklog 생략] 주입 상한({limit_name(args.tool, lim)})을 넘어 " + "·".join(parts)
                           + " 생략 → show로 확인\n") if parts else ""
     level = 0
-    while build and level < 3 and over_limit(head + omit(omitted) + text, lim):  # 2.30.0 (U28 B5): SessionStart only
+    while build and level < 4 and over_limit(head + omit(omitted) + text, lim):  # 2.30.0 (U28 B5): SessionStart only
         try:
             text, omitted = build(level + 1)
         except (Reject, OSError, ValueError):

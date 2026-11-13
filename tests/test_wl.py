@@ -5371,3 +5371,452 @@ class Release2340Test(Base):
         agy = self.home / ".gemini/config/hooks.json"
         self.installed("--tool", "agy", "--user")
         self.assert_kept("agy", agy, agy.read_text().rstrip("\n"))
+
+
+def old_core(tag="v2.34.0"):
+    """`git show <tag>:core/wl.py` in a new temporary folder (its own core/ so the old core finds nothing of this tree), or None."""
+    try:
+        p = subprocess.run(["git", "-C", str(WL.parents[1]), "show", f"{tag}:core/wl.py"], capture_output=True)
+    except OSError:
+        return None
+    if p.returncode or not p.stdout:
+        return None
+    dest = Path(tempfile.mkdtemp()) / "core"
+    dest.mkdir()
+    (dest / "wl.py").write_bytes(p.stdout)
+    return dest / "wl.py"
+
+
+class Release2350Test(Base):
+    """2.35.0 (U23): save tasks (next number, given keys only, after references and cycles), the computed blocked/ready flag and
+    source, the '## 할 일' section and state.json tasks, show --json, verify, reassign (move, renumber, boundary, touched, --new,
+    re-run), the injection safety-net step, the two rule lines, and the 2.34.0 reader on a ledger with tasks."""
+    TASK_RULE = ("- 할 일은 save의 `tasks`에 적는다(`T#`은 다음 번호, 선행 `after`는 같은 작업 안에서만). 미룬 일: 기다릴 할 일이 있으면 `after`, "
+                 "없으면 `deferred`, 안 할 일은 `cancelled`. 끝난 일은 `done`.")
+    MOVE_RULE = ("- 작업을 다른 프로젝트로 옮기면 새 작업 첫 save에 남은 할 일을 다시 적고 옛 작업의 남은 할 일은 `cancelled`로 바꾸며 "
+                 "summary에 포인터(`worklog:<프로젝트>/<작업>#E…`)를 적는다.")
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.root.resolve()
+        self.d = self.root / ".worklog"
+        self.wl = load_wl()
+        self.ok(new_work(self.root, "t"))
+        self.n = 0
+
+    def save(self, tasks=None, kind="REQUEST", session="s1", **extra):
+        self.n += 1
+        p = dict({"type": kind, "summary": f"s{self.n}"}, **extra)
+        if kind in ("REQUEST", "APPROVAL", "D_USER"):
+            p.setdefault("quote", "q")
+        if tasks is not None:
+            p["tasks"] = tasks
+        return run(self.root, "save", p, session=session)
+
+    def state(self, wid="t"):
+        return json.loads((self.d / "works" / wid / "state.json").read_text())
+
+    def events(self, wid="t"):
+        return [json.loads(x) for x in (self.d / "works" / wid / "events.jsonl").read_text().splitlines()]
+
+    def md(self, wid="t"):
+        return (self.d / "works" / wid / "state.md").read_text()
+
+    def section(self, wid="t"):
+        md = self.md(wid)
+        return md.split("\n## 할 일\n", 1)[1].split("\n\n", 1)[0].split("\n") if "\n## 할 일\n" in md else None
+
+    def home(self, **config):
+        h = Path(tempfile.mkdtemp())
+        (h / "config.json").write_text(json.dumps(dict({"update": "off"}, **config)))
+        return {"WL_HOME": str(h)}
+
+    def ledgers(self):
+        return {p.name: (p / "events.jsonl").read_bytes() for p in sorted((self.d / "works").iterdir()) if (p / "events.jsonl").exists()}
+
+    # (a)
+    def test_next_number_required(self):
+        self.refused(self.save([{"id": "T2", "text": "x"}]), "새 할 일은 다음 번호 T1여야 합니다")
+        self.refused(self.save([{"id": "T2", "text": "x"}, {"id": "T1", "text": "y"}]), "다음 번호 T1")   # 적힌 순서대로
+        self.assertFalse((self.d / "works/t/events.jsonl").exists())                                 # 거부: 원장 없음
+        self.ok(self.save([{"id": "T1", "text": "a"}, {"id": "T2", "text": "b"}]))                  # 같은 save 안 연속
+        before = self.ledgers()
+        self.refused(self.save([{"id": "T4", "text": "x"}]), "다음 번호 T3여야 합니다(현재 최대 T2")
+        self.refused(self.save([{"id": "T3", "text": "x"}, {"id": "T5", "text": "y"}]), "다음 번호 T4")  # 한 항목이 틀리면 전체 거부
+        self.refused(self.save([{"id": "T3"}]), "바꿀 키가 없습니다")
+        self.refused(self.save([{"id": "T3", "status": "open"}]), "새 할 일에는 text가 필요합니다")
+        self.refused(self.save([{"id": "T0", "text": "x"}]), "tasks는")
+        self.refused(self.save([{"id": "T3", "text": "x"}, {"id": "T3", "status": "done"}]), "같은 번호가 한 save에 두 번")
+        self.assertEqual(self.ledgers(), before)
+        self.ok(self.save([{"id": "T3", "text": "c"}]))
+        self.assertEqual([t["id"] for t in self.state()["tasks"]], ["T1", "T2", "T3"])
+
+    # (b)
+    def test_update_changes_given_keys_only(self):
+        self.ok(self.save([{"id": "T1", "text": "초안 [M]", "done_when": "3장까지"}, {"id": "T2", "text": "검토", "after": ["T1"]}]))
+        first = self.events()[-1]
+        self.assertEqual(first["changes"]["tasks"][0], {"id": "T1", "text": "초안", "done_when": "3장까지"})  # 정규화(출처 태그 제거)
+        self.ok(self.save([{"id": "T1", "status": "done"}], kind="RESULT"))
+        t1, t2 = self.state()["tasks"]
+        self.assertEqual(t1, {"id": "T1", "text": "초안", "after": [], "done_when": "3장까지", "status": "done", "source": "user",
+                              "created": "E0001", "updated": "E0002"})
+        self.assertEqual(self.events()[-1]["changes"], {"tasks": [{"id": "T1", "status": "done"}]})
+        self.ok(self.save([{"id": "T2", "after": [], "done_when": "표 완성"}, {"id": "T1", "done_when": ""}], kind="RESULT"))
+        t1, t2 = self.state()["tasks"]
+        self.assertEqual((t1["text"], t1["done_when"], t1["status"]), ("초안", None, "done"))
+        self.assertEqual((t2["text"], t2["after"], t2["done_when"], t2["status"]), ("검토", [], "표 완성", "open"))
+        self.refused(self.save([{"id": "T1", "priority": 1}]), "알 수 없는 키 ['priority']")
+        self.refused(self.save([{"id": "T1", "status": "blocked"}]), "status는 open·done·cancelled·deferred")
+        self.refused(self.save([{"id": "T1", "text": ""}]), "text는 비어 있지 않은 문자열")
+        self.refused(self.save([{"id": "T1", "after": "T2"}]), "after는")
+        self.refused(self.save({"id": "T1"}), "tasks는")
+        self.ok(self.save([], kind="CHECKPOINT"))
+        self.assertNotIn("tasks", self.events()[-1]["changes"])                                    # [] → 사건에 키 없음
+
+    # (c)
+    def test_after_missing_or_self_refused(self):
+        self.ok(self.save([{"id": "T1", "text": "a"}]))
+        before = self.ledgers()
+        self.refused(self.save([{"id": "T2", "text": "b", "after": ["T9"]}]), "T2의 after T9: 이 작업에 없는 할 일입니다")
+        self.refused(self.save([{"id": "T2", "text": "b", "after": ["T2"]}]), "T2의 after에 자기 자신이 있습니다")
+        self.refused(self.save([{"id": "T1", "after": ["T1"]}]), "T1의 after에 자기 자신")
+        self.assertEqual(self.ledgers(), before)
+
+    # (d)
+    def test_cycle_refused(self):
+        self.ok(self.save([{"id": "T1", "text": "a"}, {"id": "T2", "text": "b", "after": ["T1"]}]))
+        before = self.ledgers()
+        self.refused(self.save([{"id": "T1", "after": ["T2"]}]), "after가 순환합니다: T1 → T2 → T1")
+        self.refused(self.save([{"id": "T3", "text": "c", "after": ["T4"]}, {"id": "T4", "text": "d", "after": ["T3"]}]),
+                     "after가 순환합니다: T3 → T4 → T3")                                               # 같은 save의 새 번호끼리
+        self.refused(self.save([{"id": "T3", "text": "c", "after": ["T2"]}, {"id": "T1", "after": ["T3"]}]), "순환")  # 새 번호와 기존 번호
+        self.assertEqual(self.ledgers(), before)
+        self.ok(self.save([{"id": "T3", "text": "c", "after": ["T4"]}, {"id": "T4", "text": "d", "after": ["T2"]}]))  # 앞 번호가 뒤 새 번호를 기다림
+        self.assertEqual(self.state()["tasks"][2]["after"], ["T4"])
+
+    # (e)
+    def test_blocked_and_ready_computed(self):
+        self.ok(self.save([{"id": "T1", "text": "a"}, {"id": "T2", "text": "b", "status": "deferred"},
+                           {"id": "T3", "text": "c", "after": ["T1", "T2"]}]))
+        self.assertEqual(self.section()[2], "- T3 [open·막힘(T1, T2)] c [U]")
+        self.ok(self.save([{"id": "T1", "status": "done"}], kind="RESULT"))
+        self.assertIn("- T3 [open·막힘(T2)] c [U]", self.section())                                  # deferred 선행도 막는다
+        self.ok(self.save([{"id": "T2", "status": "cancelled"}], kind="RESULT"))
+        self.assertIn("- T3 [open·시작 가능] c [U]", self.section())                                  # 선행이 모두 done·cancelled
+        self.assertNotIn("blocked", json.dumps(self.state()["tasks"]))                              # 계산만, 저장하지 않는다
+
+    # (f)
+    def ledger_without_tasks(self):
+        (self.root / "r.md").write_text("결과 본문입니다\n")
+        self.ok(self.save(decisions=[{"text": "3장까지"}], constraints=["게시 금지"], waiting=["답 대기"]))
+        self.ok(self.save(kind="RESULT", artifacts=[{"path": "r.md"}], check={"D1": "미반영: 시험", "C1": "미반영: 시험"}))
+        self.ok(self.save([], kind="CHECKPOINT", next_action="다음"))
+
+    def test_projection_bytes_match_2340_without_tasks(self):
+        old = old_core()
+        if not old:
+            self.skipTest("git show v2.34.0:core/wl.py 불가")
+        self.ledger_without_tasks()
+        spec = importlib.util.spec_from_file_location("wl_2340", old)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        st = mod.fold(self.events())[0]                                                             # 할 일 없는 원장: 2.34.0과 바이트 동일
+        self.assertEqual((self.d / "works/t/state.json").read_text(), json.dumps(st, ensure_ascii=False, indent=1) + "\n")
+        self.assertEqual(self.md(), mod.render(st, "t", "t"))
+
+    def test_section_shape_and_order(self):
+        self.ledger_without_tasks()
+        self.assertNotIn("## 할 일", self.md())
+        self.assertNotIn("tasks", self.state())
+        self.ok(self.save([{"id": "T1", "text": "끝낸 일", "done_when": "표 완성"}, {"id": "T2", "text": "미룬 일", "status": "deferred"},
+                           {"id": "T3", "text": "다음 일", "after": ["T1"]}, {"id": "T4", "text": "안 할 일", "status": "cancelled"},
+                           {"id": "T5", "text": "기다리는 일", "after": ["T3"]}]))
+        self.ok(self.save([{"id": "T1", "status": "done"}], kind="RESULT"))
+        self.assertEqual(self.section(), ["- T2 [deferred] 미룬 일 [U]", "- T3 [open·시작 가능] 다음 일 [U]", "- T5 [open·막힘(T3)] 기다리는 일 [U]",
+                                          "- T1 [done] 끝낸 일 — 표 완성 [U]", "- T4 [cancelled] 안 할 일 [U]"])
+        md = self.md()
+        self.assertLess(md.index("## 유지 제약"), md.index("## 할 일"))
+        self.assertLess(md.index("## 할 일"), md.index("## 대기"))
+        self.assertTrue(md.split("## 할 일")[0].endswith("- C1: 게시 금지 [U]\n\n"))
+        self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
+
+    # (g)
+    def test_show_json_has_tasks(self):
+        self.ok(self.save([{"id": "T1", "text": "a"}]))
+        r, out = run(self.root, "show", extra=["--json"])
+        self.assertEqual(r, 0, out)
+        self.assertEqual(json.loads(out)["state"]["tasks"], self.state()["tasks"])
+        r, out = run(self.root, "show")
+        self.assertIn("## 할 일\n- T1 [open·시작 가능] a [U]\n", out)
+
+    # (h)
+    def test_source_from_creating_event(self):
+        self.ok(self.save([{"id": "T1", "text": "사용자 일"}]))
+        self.ok(self.save([{"id": "T2", "text": "모델 일"}], kind="RESULT"))
+        self.ok(self.save([{"id": "T2", "text": "모델 일 고침"}, {"id": "T1", "status": "done"}], kind="D_USER"))  # 갱신은 출처를 바꾸지 않는다
+        self.assertEqual([(t["id"], t["source"]) for t in self.state()["tasks"]], [("T1", "user"), ("T2", "model")])
+        self.assertIn("- T2 [open·시작 가능] 모델 일 고침 [M]", self.section())
+        self.refused(self.save([{"id": "T3", "text": "x", "source": "user"}]), "알 수 없는 키 ['source']")
+
+    def two_works(self):
+        """b: T1, T2 (b's own). a (current): E0001 T1, E0002 T2·T3 (T3 after T2), E0003 T4."""
+        self.ok(new_work(self.root, "b"))
+        self.ok(self.save([{"id": "T1", "text": "b1"}, {"id": "T2", "text": "b2"}]))
+        self.used(use(self.root, "t"), "t")
+        self.ok(self.save([{"id": "T1", "text": "남을 일"}]))
+        self.ok(self.save([{"id": "T2", "text": "옮길 일", "done_when": "초안"}, {"id": "T3", "text": "옮길 다음", "after": ["T2"], "status": "deferred"}]))
+        self.ok(self.save([{"id": "T4", "text": "남을 둘"}], kind="RESULT"))
+
+    # (i)
+    def test_reassign_moves_and_renumbers(self):
+        self.two_works()
+        out = self.ok(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]))
+        self.assertEqual(out["tasks_moved"], {"T2": "T3", "T3": "T4"})
+        self.assertNotIn("tasks_touched", out)
+        self.assertNotIn("tasks_left", out)
+        self.assertNotIn("notice", out)
+        self.assertEqual([(t["id"], t["text"], t["after"], t["done_when"], t["status"], t["source"]) for t in self.state("b")["tasks"]],
+                         [("T1", "b1", [], None, "open", "user"), ("T2", "b2", [], None, "open", "user"),
+                          ("T3", "옮길 일", [], "초안", "open", "user"), ("T4", "옮길 다음", ["T3"], None, "deferred", "user")])
+        self.assertEqual([(t["id"], t["status"]) for t in self.state("t")["tasks"]], [("T1", "open"), ("T2", "cancelled"), ("T3", "cancelled"), ("T4", "open")])
+        self.assertEqual(self.events("t")[-1]["changes"]["tasks"], [{"id": "T2", "status": "cancelled"}, {"id": "T3", "status": "cancelled"}])
+        self.assertIn("- T3 [open·시작 가능] 옮길 일 — 초안 [U]", self.section("b"))
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+        self.refused(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]), "이미 옮겼습니다")
+        self.assertEqual(len(self.state("b")["tasks"]), 4)
+
+    def test_reassign_partial_rerun_moves_tasks_once(self):                                    # (i) partial
+        self.two_works()
+        real, calls = self.wl.commit, [0]
+        def commit(*a, **kw):  # b(맞는 작업)는 쓰고 t(잘못된 작업)에서 실패
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("commit 실패(시험)")
+            return real(*a, **kw)
+        buf, code = io.StringIO(), 0
+        with mock.patch("sys.stdout", buf), mock.patch.object(self.wl, "commit", commit):
+            try:
+                self.wl.cmd_reassign(Namespace(arg="t", arg2="b", events="E0002", quote="b야", root=str(self.root), tool="codex", session="s1"))
+            except SystemExit as e:
+                code = e.code
+        res = json.loads(buf.getvalue())
+        self.assertEqual((code, res["partial"], res["done"]), (2, True, ["refiled", "refiled_state"]), res)
+        self.assertEqual(len(self.state("b")["tasks"]), 4)
+        out = self.ok(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]))
+        self.assertEqual((out["tasks_moved"], out["resumed"]), ({"T2": "T3", "T3": "T4"}, ["refiled", "refiled_state"]))
+        self.assertNotIn("tasks_left", out)                                                       # 새 코어 partial: 다 옮겼다
+        self.assertNotIn("notice", out)
+        self.assertEqual(len(self.state("b")["tasks"]), 4)                                         # 두 번 옮기지 않는다
+        self.assertEqual([e["type"] for e in self.events("b")].count("CORRECTION"), 1)
+        self.assertEqual([t["status"] for t in self.state("t")["tasks"]], ["open", "cancelled", "cancelled", "open"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+
+    def test_reassign_resumes_older_core_partial_reports_tasks_left(self):              # (i) 2.34.0 partial(F1)
+        old = old_core()
+        if not old:
+            self.skipTest("git show v2.34.0:core/wl.py 불가")
+        self.ok(new_work(self.root, "b"))
+        self.used(use(self.root, "t"), "t")
+        self.ok(self.save([{"id": "T1", "text": "옮길 일", "status": "done"}, {"id": "T2", "text": "옮길 둘"}], decisions=[{"text": "3장까지"}]))
+        spec = importlib.util.spec_from_file_location("wl_2340_partial", old)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        real, calls = mod.commit, [0]
+        def commit(*a, **kw):  # 옛 코어: b(맞는 작업)는 쓰고 t(잘못된 작업)에서 실패
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("commit 실패(시험)")
+            return real(*a, **kw)
+        buf, code = io.StringIO(), 0
+        with mock.patch("sys.stdout", buf), mock.patch.object(mod, "commit", commit):
+            try:
+                mod.cmd_reassign(Namespace(arg="t", arg2="b", events="E0001", quote="b야", root=str(self.root), tool="codex", session="s1"))
+            except SystemExit as e:
+                code = e.code
+        res = json.loads(buf.getvalue())
+        self.assertEqual((code, res["partial"], res["done"]), (2, True, ["refiled", "refiled_state"]), res)
+        self.assertNotIn("tasks", self.events("b")[-1]["changes"])                                  # 옛 코어의 ⒜에는 할 일이 없다
+        out = self.ok(run(self.root, "reassign", extra=["t", "b", "--events", "E0001", "--quote", "b야"]))
+        self.assertEqual((out["resumed"], out["tasks_left"]), (["refiled", "refiled_state"], ["T1", "T2"]))
+        self.assertEqual(out["notice"], "옮기지 않은 할 일: T1, T2(옛 코어가 시작한 reassign을 이어서 끝냄). "
+                                        "맞는 작업 b에 save의 tasks로 다시 적은 뒤 잘못된 작업 t의 그 할 일을 cancelled로 바꾸세요.")
+        self.assertNotIn("tasks_moved", out)
+        self.assertNotIn("tasks", self.state("b"))
+        self.assertEqual([(t["id"], t["status"]) for t in self.state("t")["tasks"]], [("T1", "done"), ("T2", "open")])  # 그대로 남는다
+        self.assertNotIn("tasks", self.events("t")[-1]["changes"])
+        self.assertEqual([x["text"] for x in self.state("b")["decisions"]], ["3장까지"])              # 결정 이동은 전과 같다
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+
+    # (j)
+    def test_reassign_refuses_after_across_boundary(self):
+        self.ok(self.save([{"id": "T1", "text": "남을 일"}]))
+        self.ok(self.save([{"id": "T2", "text": "옮길 일", "after": ["T1"]}]))
+        self.ok(new_work(self.root, "b"))
+        self.used(use(self.root, "t"), "t")
+        before = self.ledgers()
+        self.refused(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]),
+                     "옮기는 할 일과 남는 할 일 사이에 after가 걸려 있습니다: T2 after T1")
+        self.refused(run(self.root, "reassign", extra=["t", "--new", "새 곳", "--events", "E0002", "--quote", "새 곳", "--force"]), "T2 after T1")
+        self.assertNotIn("sae-gos", self.index()["works"])
+        self.assertEqual(sorted(self.index()["works"]), ["b", "t"])                               # --new도 작업을 만들기 전에 거부
+        self.ok(self.save([{"id": "T2", "after": []}, {"id": "T1", "after": ["T2"]}], kind="RESULT"))  # 반대 방향: 남는 T1이 옮기는 T2를 기다림
+        before = self.ledgers()
+        self.refused(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]), "T1 after T2")
+        self.assertEqual(self.ledgers(), before)
+
+    # (k)
+    def test_reassign_touched_tasks_kept_and_rewritten(self):
+        self.ok(self.save([{"id": "T1", "text": "먼저 만든 일"}]))
+        self.ok(self.save([{"id": "T1", "status": "deferred", "done_when": "답 받음"}, {"id": "T2", "text": "옮길 일"}]))
+        self.ok(self.save([{"id": "T1", "status": "open"}], kind="RESULT"))                         # 범위 뒤 갱신: 지금 값이 open
+        self.ok(new_work(self.root, "b"))
+        self.used(use(self.root, "t"), "t")
+        out = self.ok(run(self.root, "reassign", extra=["t", "b", "--events", "E0002", "--quote", "b야"]))
+        self.assertEqual((out["tasks_moved"], out["tasks_touched"]), ({"T2": "T1"}, ["T1"]))
+        self.assertEqual(self.events("t")[-1]["changes"]["tasks"],
+                         [{"id": "T2", "status": "cancelled"}, {"id": "T1", "done_when": "답 받음", "status": "open"}])  # 키 순서 TASK_KEYS, 지금 값
+        self.assertEqual([t["id"] for t in self.state("b")["tasks"]], ["T1"])
+        self.assertEqual(self.state("b")["tasks"][0]["text"], "옮길 일")                             # 맞는 작업에는 갱신 항목이 없다
+        self.assertEqual([x["id"] for x in self.events("b")[-1]["changes"]["tasks"]], ["T1"])
+        t1 = self.state("t")["tasks"][0]
+        self.assertEqual((t1["text"], t1["status"], t1["done_when"]), ("먼저 만든 일", "open", "답 받음"))
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+
+    # (l)
+    def test_reassign_new_numbers_from_t1(self):
+        self.ok(self.save([{"id": "T1", "text": "남을 일"}]))
+        self.ok(self.save([{"id": "T2", "text": "옮길 일"}, {"id": "T3", "text": "옮길 둘", "after": ["T2"]}]))
+        out = self.ok(run(self.root, "reassign", extra=["t", "--new", "guide", "--events", "E0002", "--quote", "새 작업이야", "--force"]))
+        self.assertEqual((out["created"], out["tasks_moved"]), ("guide", {"T2": "T1", "T3": "T2"}))
+        self.assertEqual([(t["id"], t["after"]) for t in self.state("guide")["tasks"]], [("T1", []), ("T2", ["T1"])])
+        self.assertEqual(self.state("guide")["goal"], "guide")
+        self.assertEqual([t["status"] for t in self.state("t")["tasks"]], ["open", "cancelled", "cancelled"])
+        self.assertEqual(self.ok(run(self.root, "verify", extra=["--all"]))["ok"], True)
+
+    # (m)
+    def test_verify_checks_tasks(self):
+        self.ok(self.save([{"id": "T1", "text": "a"}]))
+        self.assertNotIn("tasks", self.ok(run(self.root, "verify")))                               # 문제 없으면 키 없음
+        wd = self.d / "works/t"
+        wl = self.wl
+        for changes in ({"tasks": [{"id": "T3", "text": "건너뜀"}]}, {"tasks": [{"id": "T1", "after": ["T3"]}, {"id": "T3", "after": ["T1"]}]}):
+            events, prev = wl.read_events(wd)
+            ev = wl.new_event(events, prev, "RESULT", "codex", "s1", f"손으로 {len(events)}", None, [], changes)
+            with open(wd / "events.jsonl", "ab") as f:                                               # save를 거치지 않은 사건(손 편집 가정)
+                f.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+        r, out = run(self.root, "show")                                                              # fold는 거부하지 않고 보인다
+        self.assertEqual(r, 0, out)
+        self.assertIn("- T3 [open·막힘(T1)] 건너뜀 [M]", out)
+        r, out = run(self.root, "verify")
+        res = json.loads(out)
+        self.assertEqual((r, res["ok"], res["state_json"]), (1, False, True))
+        self.assertEqual(res["tasks"][0], "E0002: tasks T3: 이 작업에 없는 번호입니다. 새 할 일은 다음 번호 T2여야 합니다(현재 최대 T1, 같은 save 안에서는 적힌 순서대로 이어진다).")
+        self.assertTrue(res["tasks"][1].startswith("E0003: tasks: after가 순환합니다: T1 → T3 → T1"), res["tasks"])
+        self.assertEqual(res["tasks"][2], "할 일 번호가 빠졌습니다: ['T2']")
+        self.assertEqual(len(res["tasks"]), 3, res["tasks"])                                         # 끝 그래프의 같은 순환은 다시 적지 않는다
+        r, out = run(self.root, "verify", extra=["--all"])
+        self.assertEqual((r, json.loads(out)["works"][0]["ok"]), (1, False))
+        self.refused(self.save([{"id": "T4", "text": "x"}]), "after가 순환합니다")                    # 순환이 남아 있으면 save도 거부
+
+    def test_hand_edited_malformed_tasks_do_not_crash(self):                                # (m) argon: 손 편집 원장
+        self.ok(self.save([{"id": "T1", "text": "a"}, {"id": "T2", "text": "b", "status": "done"}]))
+        wd, wl = self.d / "works/t", self.wl
+        for changes in ({"tasks": [{"id": "T1", "after": 123}]}, {"tasks": ["T3"]}, {"tasks": {"id": "T3"}},
+                        {"tasks": [{"id": "T3", "text": "c", "after": [{"x": 1}], "source": [1]}]}):
+            events, prev = wl.read_events(wd)
+            ev = wl.new_event(events, prev, "RESULT", "codex", "s1", f"손으로 {len(events)}", None, [], changes)
+            with open(wd / "events.jsonl", "ab") as f:
+                f.write(json.dumps(ev, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+        def call(cmd, *extra):
+            p = subprocess.run([sys.executable, "-B", str(WL), cmd, *extra, "--root", str(self.root)], capture_output=True, text=True,
+                               env=dict(clean_env(), WL_TOOL="codex", WL_SESSION_ID="s1"))
+            self.assertNotIn("Traceback", p.stderr)
+            return p.returncode, p.stdout
+        r, out = call("show")
+        self.assertEqual(r, 0, out)
+        self.assertIn("- T1 [open·시작 가능] a [U]\n- T3 [open·시작 가능] c [M]\n- T2 [done] b [U]\n", out)  # after 123 → [], {"x": 1} 버림
+        r, out = call("verify")
+        res = json.loads(out)
+        self.assertEqual((r, res["ok"], res["state_json"]), (1, False, True))
+        self.assertEqual(res["tasks"], ["E0002: tasks T1: after는 할 일 번호(문자열) 목록이어야 합니다. 받은 값: 123",
+                                        "E0003: " + wl.TASK_FORM,
+                                        'E0004: tasks는 목록이어야 합니다. 받은 값: {"id": "T3"}',
+                                        'E0005: tasks T3: after는 할 일 번호(문자열) 목록이어야 합니다. 받은 값: [{"x": 1}]'])
+        self.assertEqual(self.state()["tasks"][2]["source"], "model")                                # 문자열 아닌 source → 사건 종류
+        self.used(use(self.root, session="c1", tool="claude"), "t")
+        for home in (self.home(), self.home(inject_limit={"claude": {"chars": 300}})):                # Hook: 전체·안전망 모두
+            r, out = hook(self.root, "hook", session="c1", tool="claude", env=home)
+            self.assertEqual(r, 0, out)
+            self.assertIn("- T1 [open·시작 가능] a [U]", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+        self.ok(new_work(self.root, "b"))
+        self.used(use(self.root, "t"), "t")
+        out = self.ok(run(self.root, "reassign", extra=["t", "b", "--events", "E0003-E0005", "--quote", "b야"]))  # 손 편집 사건을 옮겨도 실패하지 않는다
+        self.assertEqual(out["tasks_moved"], {"T3": "T1"})
+
+    # (n)
+    def test_injection_folds_ended_tasks_after_decisions(self):
+        self.ok(self.save(decisions=[{"text": f"결정 {i}"} for i in range(1, 26)]))                 # D1~D25: 1단계에서 5건
+        self.ok(self.save([{"id": f"T{i}", "text": f"끝난 일 {i} " + "나" * 30, "status": "done" if i % 2 else "cancelled"} for i in range(1, 31)]
+                          + [{"id": "T31", "text": "열린 일"}, {"id": "T32", "text": "미룬 일", "status": "deferred"}]))
+        (self.root / "a.bin").write_bytes(b"\x00")
+        self.ok(self.save(kind="RESULT", artifacts=[{"path": "a.bin"}]))
+        def ctx(session, home):
+            self.used(use(self.root, session=session, tool="claude"), "t")
+            r, out = hook(self.root, "hook", session=session, tool="claude", env=home)
+            self.assertEqual(r, 0, out)
+            return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        full = ctx("c0", self.home())
+        self.assertNotIn("[Worklog 생략]", full)
+        self.assertIn("- T1 [done] 끝난 일 1 ", full)
+        lim = len(full) - 300                                                                        # 결정 5건(≈80자)으로는 모자라다
+        text = ctx("c1", self.home(inject_limit={"claude": {"chars": lim}}))
+        line = next(x for x in text.splitlines() if x.startswith("[Worklog 생략]"))
+        self.assertEqual(line, f"[Worklog 생략] 주입 상한(claude {lim:,}자)을 넘어 오래된 열린 결정 5건(최근 20건만 남김)·끝난 할 일 30건(done·cancelled) 생략 → show로 확인")
+        self.assertIn("## 할 일\n- T31 [open·시작 가능] 열린 일 [U]\n- T32 [deferred] 미룬 일 [U]\n- 끝난 할 일 30건(done·cancelled) 접음 → show\n", text)
+        self.assertNotIn("- T1 [done]", text)
+        self.assertIn("## 산출물", text)                                                              # 산출물 절보다 먼저 접는다
+        text = ctx("c2", self.home(inject_limit={"claude": {"chars": 300}}))
+        self.assertIn("·끝난 할 일 30건(done·cancelled)·산출물 절(열린 산출물 1개) 생략 → show로 확인. 생략 후에도 상한 초과", text)
+        self.assertIn("- T31 [open·시작 가능] 열린 일 [U]", text)                                      # 열린 할 일은 빼지 않는다
+        self.assertIn("- T1 [done] 끝난 일 1 ", self.md())                                            # state.md는 언제나 전부
+
+    # (o)
+    def test_rules_block_task_lines(self):
+        lines = (WL.parents[1] / "adapters/rules.md").read_text().split("\n")
+        self.assertEqual(len(lines), 28)                                                             # 2.34.0: 26(끝 빈 줄 포함) + 2
+        i = lines.index(self.TASK_RULE)
+        self.assertEqual(lines[i + 1], self.MOVE_RULE)
+        self.assertTrue(lines[i - 1].startswith("- 무엇으로 기록할지는 세 질문으로 정한다."))
+        self.assertTrue(lines[i + 2].startswith("- `status`는 사용자가 작업이 끝났다고 말하기 전까지"))
+        help_ = self.wl.SAVE_HELP
+        self.assertIn('  "tasks": [{"id": "T1", "text": "초안 작성", "done_when": "3장까지 씀"}, {"id": "T2", "text": "검토 반영", "after": ["T1"]}],  # 할 일.', help_)
+        self.assertIn('"artifacts_gone": [{"path": "draft.md", "reason": "사용자가 지웠다고 확인"}],  # 기록한 산출물을 영구히 지웠을 때(사용자 확인 뒤). '
+                      '누락 보고·verify missing에서 빠진다\n  "tasks": [', help_)                       # 기존 줄 그대로, 바로 다음 줄
+
+    # (p)
+    def test_old_reader_on_ledger_with_tasks(self):
+        old = old_core()
+        if not old:
+            self.skipTest("git show v2.34.0:core/wl.py 불가")
+        self.ok(self.save([{"id": "T1", "text": "a"}, {"id": "T2", "text": "b", "after": ["T1"]}], decisions=[{"text": "3장까지"}]))
+        def run_old(cmd):
+            p = subprocess.run([sys.executable, "-B", str(old), cmd, "--work", "t", "--root", str(self.root)], capture_output=True, text=True,
+                               env=dict(clean_env(), WL_TOOL="codex", WL_SESSION_ID="old"))
+            self.assertNotIn("Traceback", p.stderr)
+            return p.returncode, p.stdout
+        r, out = run_old("verify")                                                                   # 2.34.0 verify: 투영 불일치로 exit 1(거부·오류 아님)
+        res = json.loads(out)
+        self.assertEqual((r, res["ok"], res["state_json"], res["state_md"], res["events"]), (1, False, False, False, 1))
+        self.assertIn("2.35.0", res["warning_core"])
+        r, out = run_old("show")
+        self.assertEqual(r, 0, out)
+        self.assertIn("- D1: 3장까지 [U]", out)
+        self.assertNotIn("## 할 일", out)
+        self.assertNotIn("tasks", self.state())                                                     # 옛 show가 할 일 없이 다시 씀
+        r, out = run_old("verify")
+        self.assertEqual((r, json.loads(out)["ok"]), (0, True))
+        self.assertEqual(len(self.events()), 1)                                                     # 원장은 그대로
+        r, out = run(self.root, "show")
+        self.assertIn("(현재 상태가 원장과 달라 원장에서 다시 만들었다)", out)
+        self.assertIn("- T2 [open·막힘(T1)] b [U]", out)
+        self.assertEqual(self.ok(run(self.root, "verify"))["ok"], True)
