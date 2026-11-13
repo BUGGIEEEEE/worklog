@@ -3178,6 +3178,28 @@ class LongLedgerTest(unittest.TestCase):
         self.assertLessEqual(len(ctx.encode()), 8192)
 
 
+
+class Release2360Test(Base):
+    """2.36.0 (U35): on an explicit request to complete the whole work the model saves the completion first and ends with the
+    completion item's numbered questions only; the close-question item itself is as in 2.35.0."""
+
+    def test_completion_item_orders_whole_work_completion(self):
+        lines = (WL.parents[1] / "adapters/rules.md").read_text().split("\n")
+        self.assertEqual(len(lines), 28)                                                             # 문장만 더했다(행 수 불변)
+        done = [l for l in lines if l.startswith("- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채")]
+        self.assertEqual(len(done), 1)
+        self.assertTrue(done[0].endswith('아래 project.md 권유도 하는 턴이면 "2. project.md에 넣을까요?"를 같은 목록에 더한다. '
+                                         "사용자가 작업 전체의 완료를 명시적으로 요청한 턴에는 완료 save를 먼저 하고, 답변 끝 질문은 이 번호 목록만 쓴다"
+                                         "(아래의 닫기 질문은 넣지 않는다. 닫기 후보 줄이 있어도 같다)."), done[0][-160:])
+        close = [l for l in lines if l.startswith("- 하위 작업이 끝난 턴(배포·PR 병합·'끝났어'·'끝난 걸로')에는 다른 일을 하기 전에 먼저")]
+        self.assertEqual(len(close), 1)
+        self.assertTrue(close[0].endswith("를 한 번 묻고 승인 뒤 `close`를 실행한다(여러 작업 공통 규칙은 project.md 권유와 한 질문으로). "
+                                          "옛 결정의 근거는 검색 모듈이 있으면 `find`, 없으면 `show --closed <label>`로 찾는다."), close[0][-120:])
+        self.assertNotIn("작업 전체", close[0])                                                       # 닫기 질문 항목은 2.35.0 그대로(예외 문장은 여기 없다)
+        self.assertEqual((lines.index(done[0]), lines.index(close[0])), (16, 18))                    # 17행·19행: '아래의 닫기 질문'이 실제로 아래에 있다
+        self.assertEqual(load_wl().VERSION, "2.36.0")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -4282,11 +4304,11 @@ class Release2290Test(Base):
         lines = (WL.parents[1] / "adapters/rules.md").read_text().split("\n")
         status = next(i for i, l in enumerate(lines) if l.startswith("- `status`는 사용자가 작업이 끝났다고 말하기 전까지"))
         u26 = lines[status + 1]
-        self.assertEqual(u26, "- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채 '남은 한계: …' 항목을 따로 더한다"
+        self.assertTrue(u26.startswith("- COMPLETED·HANDOFF save의 waiting에는 기존 대기 항목을 글자 그대로 둔 채 '남은 한계: …' 항목을 따로 더한다"
                               "(기존 항목을 '남은 한계'로 바꿔 적거나 합치지 않는다). 그 항목은 해소되거나 사용자가 그대로 두기로 할 때까지 "
                               "지우지 않고, 그대로 두기로 하면 그 항목만 빼고 decisions에 수용으로 남긴다(waiting은 전체 교체이므로 나머지 "
                               "대기 항목은 다시 적는다). 남은 한계를 둔 채 완료하면 답변 끝에 \"1. 이어 갈 작업이 있나요?\"처럼 번호를 붙인 "
-                              "질문문으로 한 번 묻는다. 아래 project.md 권유도 하는 턴이면 \"2. project.md에 넣을까요?\"를 같은 목록에 더한다.")
+                              "질문문으로 한 번 묻는다. 아래 project.md 권유도 하는 턴이면 \"2. project.md에 넣을까요?\"를 같은 목록에 더한다."), u26)  # 2.36.0: 끝에 한 문장이 더해졌다(Release2360Test가 고정). 2.29.0 문장은 그대로
         self.assertTrue(lines[status + 2].startswith("- 작업을 COMPLETED로 바꾸는 턴이나"))          # project.md 권유 줄은 바로 다음
         u27 = ("확인되지 않은 가정·결과는 `waiting`에 `확인 필요: <무엇>(무엇으로 확인되는지)`로 둔다. "
                "사용자가 자료·권한을 지금 줄 수 없다고 해서 범위를 좁혀 일했으면(예: 실제 자료 대신 예시, 운영 환경 대신 로컬) 그 사실은 제약이 아니고, "
@@ -5393,8 +5415,8 @@ class Release2350Test(Base):
     re-run), the injection safety-net step, the two rule lines, and the 2.34.0 reader on a ledger with tasks."""
     TASK_RULE = ("- 할 일은 save의 `tasks`에 적는다(`T#`은 다음 번호, 선행 `after`는 같은 작업 안에서만). 미룬 일: 기다릴 할 일이 있으면 `after`, "
                  "없으면 `deferred`, 안 할 일은 `cancelled`. 끝난 일은 `done`.")
-    MOVE_RULE = ("- 작업을 다른 프로젝트로 옮기면 새 작업 첫 save에 남은 할 일을 다시 적고 옛 작업의 남은 할 일은 `cancelled`로 바꾸며 "
-                 "summary에 포인터(`worklog:<프로젝트>/<작업>#E…`)를 적는다.")
+    MOVE_RULE = ("- 작업을 다른 프로젝트로 옮기면 새 작업 첫 save에 남은 할 일을 다시 적고 옛 작업의 남은 할 일은 `cancelled`로 바꾸며, "
+                 "두 작업의 summary에 서로를 가리키는 포인터(`worklog:<프로젝트>/<작업>#E…`)를 적는다.")  # 2.36.0: 어느 summary인지 명시(M22)
 
     def setUp(self):
         super().setUp()
@@ -5807,7 +5829,7 @@ class Release2350Test(Base):
         r, out = run_old("verify")                                                                   # 2.34.0 verify: 투영 불일치로 exit 1(거부·오류 아님)
         res = json.loads(out)
         self.assertEqual((r, res["ok"], res["state_json"], res["state_md"], res["events"]), (1, False, False, False, 1))
-        self.assertIn("2.35.0", res["warning_core"])
+        self.assertIn(load_wl().VERSION, res["warning_core"])                                      # 2.36.0: 쓴 코어의 번호(고정값 "2.35.0"이던 단언)
         r, out = run_old("show")
         self.assertEqual(r, 0, out)
         self.assertIn("- D1: 3장까지 [U]", out)
