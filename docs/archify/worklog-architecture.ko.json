@@ -1,0 +1,515 @@
+{
+ "schema_version": 1,
+ "diagram_type": "architecture",
+ "meta": {
+  "title": "Worklog 런타임 아키텍처",
+  "locale": "ko",
+  "output": ".archify/architecture-worklog-readme-ko-20261016-143000/worklog-architecture.ko.html",
+  "quality_profile": "showcase",
+  "repository": {
+   "url": "https://github.com/BUGGIEEEEE/worklog.git",
+   "revision": "0e52f427b17a26be03ad84e580b77b3a2472f9d0"
+  },
+  "legend": {
+   "entries": {
+    "backend": {
+     "label": "실행 코드(wl.py)"
+    },
+    "database": {
+     "label": "기록 파일(.worklog/)"
+    },
+    "external": {
+     "label": "외부"
+    }
+   }
+  }
+ },
+ "components": [
+  {
+   "id": "host",
+   "type": "external",
+   "label": "Codex / Claude Code",
+   "sublabel": "사용자 선택 · 명령·Hook 실행",
+   "pos": [
+    40,
+    40
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "adapters/rules.md",
+     "line": 3,
+     "end_line": 11,
+     "label": "작업 선택·save/skip 지침"
+    },
+    {
+     "path": "tools/install_project.py",
+     "line": 170,
+     "end_line": 197,
+     "label": "호스트 이벤트 등록"
+    },
+    {
+     "path": "README.ko.md",
+     "line": 9,
+     "end_line": 9,
+     "label": "지침 파일의 규칙 블록·도구별 설치 위치"
+    }
+   ]
+  },
+  {
+   "id": "core",
+   "type": "backend",
+   "label": "기록 도구",
+   "sublabel": "검증 · 원장 I/O · 상태 계산",
+   "pos": [
+    440,
+    260
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 854,
+     "end_line": 887,
+     "label": "저장 요청·신선도 검증"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 771,
+     "label": "원장 저장과 상태 재구성"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1143,
+     "end_line": 1159,
+     "label": "조회·투영 복구·읽은 seq"
+    }
+   ]
+  },
+  {
+   "id": "ledger",
+   "type": "database",
+   "label": "작업별 원장",
+   "sublabel": "works/<id>/events.jsonl",
+   "pos": [
+    860,
+    260
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 623,
+     "end_line": 639,
+     "label": "seq·prev 해시 연결"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 765,
+     "label": "append·fsync·재조회"
+    }
+   ]
+  },
+  {
+   "id": "projection",
+   "type": "database",
+   "label": "계산된 현재 상태",
+   "sublabel": "state.json / state.md",
+   "pos": [
+    860,
+    40
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 736,
+     "end_line": 750,
+     "label": "상태 파일 생성과 대조"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1143,
+     "end_line": 1152,
+     "label": "show/use에서 투영 복구"
+    }
+   ]
+  },
+  {
+   "id": "index",
+   "type": "database",
+   "label": "작업 목록·메타데이터",
+   "sublabel": "index.json · 손상 시 중단",
+   "pos": [
+    860,
+    480
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 526,
+     "end_line": 542,
+     "label": "index 읽기·검사·손상 거부"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1044,
+     "end_line": 1060,
+     "label": "제목·생성 시각·작업 등록"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 753,
+     "end_line": 770,
+     "label": "저장 후 index 갱신"
+    }
+   ]
+  },
+  {
+   "id": "sessions",
+   "type": "database",
+   "label": "세션별 작업 선택",
+   "sublabel": "sessions/<tool>_<session>.json",
+   "pos": [
+    440,
+    480
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 151,
+     "end_line": 202,
+     "label": "현재 작업·턴·last_seen"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 882,
+     "end_line": 887,
+     "label": "오래된 읽기 상태 저장 거부"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 975,
+     "end_line": 977,
+     "label": "저장한 턴·읽은 seq 갱신"
+    }
+   ]
+  },
+  {
+   "id": "artifact",
+   "type": "database",
+   "label": "작업 산출물",
+   "sublabel": "본문 읽기 · SHA-256",
+   "pos": [
+    440,
+    40
+   ],
+   "size": [
+    220,
+    72
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 839,
+     "end_line": 851,
+     "label": "산출물 바이트 읽기"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 954,
+     "end_line": 970,
+     "label": "인용·자기 인용 검사"
+    }
+   ]
+  },
+  {
+   "id": "hooks",
+   "type": "backend",
+   "label": "Hook 진입점",
+   "sublabel": "hook / turn-start / stop-hook",
+   "pos": [
+    40,
+    260
+   ],
+   "size": [
+    200,
+    72
+   ],
+   "sources": [
+    {
+     "path": "tools/install_project.py",
+     "line": 170,
+     "end_line": 197,
+     "label": "호스트 이벤트와 명령 등록"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1339,
+     "end_line": 1376,
+     "label": "목록·원장 조회와 맥락 구성"
+    },
+    {
+     "path": "core/wl.py",
+     "line": 1379,
+     "end_line": 1444,
+     "label": "주입·턴 갱신·한 번 차단"
+    }
+   ]
+  },
+  {
+   "id": "updater",
+   "type": "backend",
+   "label": "선택적 갱신 확인",
+   "sublabel": "update.py background",
+   "pos": [
+    40,
+    480
+   ],
+   "size": [
+    180,
+    56
+   ],
+   "sources": [
+    {
+     "path": "core/wl.py",
+     "line": 292,
+     "end_line": 319,
+     "label": "notify·주기 조건의 별도 실행"
+    },
+    {
+     "path": "tools/update.py",
+     "line": 169,
+     "end_line": 183,
+     "label": "background는 확인만 수행"
+    }
+   ]
+  },
+  {
+   "id": "origin",
+   "type": "external",
+   "label": "Git origin",
+   "sublabel": "태그 조회 · Git 의존",
+   "pos": [
+    40,
+    680
+   ],
+   "size": [
+    180,
+    56
+   ],
+   "sources": [
+    {
+     "path": "tools/update.py",
+     "line": 67,
+     "end_line": 95,
+     "label": "Git subprocess·원격 태그 fetch"
+    }
+   ]
+  }
+ ],
+ "connections": [
+  {
+   "id": "save",
+   "from": "host",
+   "to": "core",
+   "label": "save / show",
+   "variant": "emphasis"
+  },
+  {
+   "id": "ledger-io",
+   "from": "core",
+   "to": "ledger",
+   "label": "읽기·추가",
+   "variant": "emphasis"
+  },
+  {
+   "id": "project",
+   "from": "core",
+   "to": "projection",
+   "label": "상태 재생성",
+   "variant": "default"
+  },
+  {
+   "id": "index-io",
+   "from": "core",
+   "to": "index",
+   "label": "목록 읽기·갱신",
+   "variant": "default"
+  },
+  {
+   "id": "session-io",
+   "from": "core",
+   "to": "sessions",
+   "label": "선택·seq·턴",
+   "variant": "default"
+  },
+  {
+   "id": "artifact-read",
+   "from": "core",
+   "to": "artifact",
+   "label": "본문 읽기",
+   "variant": "default"
+  },
+  {
+   "id": "dispatch",
+   "from": "host",
+   "to": "hooks",
+   "label": "이벤트 호출",
+   "variant": "default"
+  },
+  {
+   "id": "hook-result",
+   "from": "hooks",
+   "to": "host",
+   "label": "기록 맥락·차단 응답",
+   "variant": "default"
+  },
+  {
+   "id": "hook-call",
+   "from": "hooks",
+   "to": "core",
+   "label": "조회·턴 기록",
+   "variant": "default"
+  },
+  {
+   "id": "core-result",
+   "from": "core",
+   "to": "hooks",
+   "label": "계산 결과",
+   "variant": "default"
+  },
+  {
+   "id": "update-check",
+   "from": "hooks",
+   "to": "updater",
+   "label": "허용·주기 충족",
+   "variant": "dashed"
+  },
+  {
+   "id": "remote-tags",
+   "from": "updater",
+   "to": "origin",
+   "label": "git fetch",
+   "variant": "dashed"
+  }
+ ],
+ "boundaries": [
+  {
+   "kind": "region",
+   "label": "호스트 정책·도구 실행 권한",
+   "wraps": [
+    "host"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "입력 검증 · OS 격리 아님",
+   "wraps": [
+    "core"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "작업 공용 기록 · OS 파일 권한",
+   "wraps": [
+    "ledger",
+    "projection",
+    "index"
+   ],
+   "pad": 20
+  },
+  {
+   "kind": "region",
+   "label": "원격 신뢰 경계",
+   "wraps": [
+    "origin"
+   ],
+   "pad": 16
+  }
+ ],
+ "cards": [
+  {
+   "dot": "slate",
+   "title": "모델 입력",
+   "items": [
+    "지침 파일의 규칙 블록: AGENTS.md / CLAUDE.md · 작업 선택·저장 절차",
+    "기록 주입: 최근 작업 목록 + 선택 작업의 계산된 현재 상태",
+    "공통 자료: .worklog/project.md가 있을 때 함께 주입",
+    "작업 미선택: 목록·선택 안내 / 사용자 지정 후 use"
+   ]
+  },
+  {
+   "dot": "cyan",
+   "title": "저장·맥락 재구성 경로",
+   "items": [
+    "선의 방향: 호출자 → 실행 대상 / 접근자 → 파일 / 응답 → 호출자",
+    "저장: 요청 검증 → 원장 추가·재조회 → 상태·목록 갱신",
+    "맥락 재구성: 원장 → 현재 상태 계산 → Hook 주입 / show·use 조회"
+   ]
+  },
+  {
+   "dot": "emerald",
+   "title": "기록의 역할",
+   "items": [
+    "events.jsonl: 작업별 누적 사건 / state.json·state.md: 계산된 현재 상태",
+    "현재 상태의 핵심: 목표·유효 결정·제약·대기·다음 행동",
+    "index.json: 작업 목록·메타데이터 / 손상 시 중단",
+    "같은 .worklog/의 작업 기록 공유 / 현재 작업 선택은 도구·세션별",
+    "sessions/<tool>_<session>.json: 현재 작업·읽은 seq·턴 상태"
+   ]
+  },
+  {
+   "dot": "amber",
+   "title": "실행 조건",
+   "items": [
+    "주입 시점: 시작·재개·초기화·압축·분기",
+    "미연결·OFF: 작업 상태 대신 상태 안내만 주입",
+    "저장: flock 배타 잠금 / 읽은 사건 번호(seq)가 오래되면 거부",
+    "Stop: save·skip·작업 선택 확인 / 미충족 시 한 번 차단"
+   ]
+  },
+  {
+   "dot": "rose",
+   "title": "책임·신뢰 경계",
+   "items": [
+    "호스트: 지침·Hook 등록·실행 권한 / 과거 기록 ≠ 새 승인",
+    "기록 도구: 입력·참조·인용·seq 검증 / 내용 진위 미보증",
+    "테두리: 책임·파일 접근·네트워크 경계 / OS 격리 없음"
+   ]
+  },
+  {
+   "dot": "violet",
+   "title": "실행 기반·외부 의존성",
+   "items": [
+    "Hook·기록 도구: 같은 wl.py의 진입점·공용 함수 / Python·POSIX 기반",
+    "산출물: 에이전트 생성 → 기록 도구의 파일 읽기·해시 검사",
+    "갱신 확인: notify·주기 충족 → 별도 프로세스 → Git origin 조회 / 자동 적용 없음"
+   ]
+  }
+ ]
+}

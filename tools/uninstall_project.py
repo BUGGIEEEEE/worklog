@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""Undo install_project.py: for a project (--root) the rules block, the three hooks, the skill, the install manifest and
+this tool's session files, and, when asked, the records in .worklog and the .gitignore line; for the machine (--user,
+2.21.0) the user-level block, hooks, skill and WL_HOME/install.json entry. Writes only inside --root or the home folder,
+plus the install registry and (with --home) the state folder ~/.worklog (WL_HOME).
+
+usage: uninstall_project.py --root <project> --tool claude|codex|pi|all (--keep-records | --delete-records)
+                            [--no-backup] [--purge-backups] [--dry-run]
+       uninstall_project.py --user --tool claude|codex|all [--home] [--no-backup] [--purge-backups] [--dry-run]
+       uninstall_project.py --all-projects (--keep-records | --delete-records) [--home] [--no-backup] [--purge-backups] [--dry-run]
+       uninstall_project.py --home [--dry-run]
+--user removes what `install_project.py --user` wrote for the tool(s); every project's .worklog/ stays (a folder with a
+.worklog/ is still "connected" and records there once the hooks are installed again). To drop a project's record use
+--root <project> --tool all --delete-records; to pause it, `wl.py off`.
+--tool is required with --root: without it nothing is written and the refusal lists which tools are installed in that
+project, so the agent can ask the user what to remove (one tool, or all). --all-projects means every tool. A single tool
+leaves what the other tools share (.worklog/.lock, off marker, the .gitignore line, records) while another tool is still
+installed there, and then the records choice is not needed.
+--keep-records   keeps .worklog/works/, index.json and project.md (a later reinstall continues them). Everything else of
+                 Worklog in .worklog (sessions, lock, off marker, install.json) goes once no tool remains installed. The
+                 .gitignore line stays with the records (2.21.0: a kept record must not become a commit), and with
+                 user-level hooks the folder is still connected.
+--delete-records removes .worklog entirely and the .gitignore line. Refused while another tool is still installed (use --tool all).
+Neither flag: asks on a terminal, otherwise refuses — an agent must ask the user first. Only needed when the last tool goes.
+Files it edits or deletes (CLAUDE.md/AGENTS.md, hook settings, .gitignore) are backed up as <file>.bak-worklog-<stamp>
+unless --no-backup. Earlier backups left by the installer stay unless --purge-backups (every *.bak-worklog-* the installer
+can have made: project root, .claude/, .codex/, the three skill folders).
+--all-projects   every project in the registry ~/.worklog/installs.json (kept by installs since 2.17.0; older installs
+                 are not listed: run the installer once more or pass --root).
+--home           removes ~/.worklog (update mode, update cache, registry) once the registry lists no project.
+Every target is checked and every new content prepared before the first write; a refusal (a link leading outside --root,
+unreadable hook settings) changes nothing and exits 2. Never touched: Codex hook trust in ~/.codex/config.toml, Claude
+Code folder trust, the clone itself (the command to delete it is printed at the end).
+"""
+import argparse, json, os, shutil, sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from install_project import AGY_FRONT, BEGIN, END, GITIGNORE_LINES, GITIGNORE_OLD, SHARED, Refuse, WL_HOOK, backup_path, inside, resolved_links, stamp, targets  # noqa: E402
+
+HOME = Path(os.environ.get("WL_HOME") or Path.home() / ".worklog")
+REGISTRY = HOME / "installs.json"
+TOOLS = ("claude", "codex", "agy", "pi")
+USER_TOOLS = TOOLS  # 2.24.0: every tool has a user-level install
+RECORDS = ("works", "index.json", "project.md")  # kept by --keep-records
+STATE = ("sessions", ".lock", "off", "install.json")  # Worklog's own state: removed once no tool remains
+
+
+def paths(root, tool):
+    """(guide, hook settings or None, SKILL.md) as the installer writes them in a project."""
+    return targets(tool, root, False)
+
+
+def without_block(text):
+    """Guide text without the managed block; "" when nothing else was there. None when there is no block."""
+    if BEGIN not in text:
+        return None
+    head, rest = text.split(BEGIN, 1)
+    tail = rest.split(END, 1)[1] if END in rest else ""
+    head, tail = head.rstrip(), tail.lstrip("\n")
+    if head.strip() and tail.strip():
+        return head + "\n\n" + tail
+    return head + "\n" if head.strip() else tail
+
+
+def is_worklog_hook(hook):
+    try:
+        return bool(WL_HOOK.fullmatch(hook.get("command", "")))
+    except (AttributeError, TypeError):
+        return False
+
+
+def without_hooks(path, text):
+    """(new settings text, or "" when the file would be empty) after dropping every Worklog hook; None when there is none."""
+    try:
+        settings = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 실행하세요.")
+    if not isinstance(settings, dict) or not isinstance(settings.get("hooks", {}), dict):
+        raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위와 hooks는 JSON 객체). 고친 뒤 다시 실행하세요.")
+    hooks, changed = settings.get("hooks", {}), False
+    for event in list(hooks):
+        groups = []
+        try:
+            for group in hooks[event]:
+                remaining = [h for h in group.get("hooks", []) if not is_worklog_hook(h)]
+                if len(remaining) != len(group.get("hooks", [])):
+                    changed = True
+                if remaining or not group.get("hooks"):
+                    groups.append({**group, "hooks": remaining} if remaining else group)
+        except (AttributeError, TypeError):
+            raise Refuse(f"{path}의 {event} Hook 형식이 예상과 다릅니다. 고친 뒤 다시 실행하세요.")
+        if groups:
+            hooks[event] = groups
+        elif changed:
+            del hooks[event]
+    if not changed:
+        return None
+    if not hooks:
+        del settings["hooks"]
+    return json.dumps(settings, ensure_ascii=False, indent=2) + "\n" if settings else ""
+
+
+def walk_hooks(value):
+    """Every dict with a "command" anywhere in a hooks file: Claude/Codex groups and agy's named hooks alike."""
+    if isinstance(value, dict):
+        if "command" in value:
+            yield value
+        for v in value.values():
+            yield from walk_hooks(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from walk_hooks(v)
+
+
+def has_worklog_hook(path):
+    try:
+        return any(is_worklog_hook(h) for h in walk_hooks(json.loads(path.read_text())))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def without_agy_hooks(path, text):
+    """agy hooks.json without the named hooks whose handlers are all Worklog's; None when there is none, "" when empty."""
+    try:
+        data = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise Refuse(f"{path}를 읽을 수 없습니다({e}). 고친 뒤 다시 실행하세요.")
+    if not isinstance(data, dict):
+        raise Refuse(f"{path}의 형식이 예상과 다릅니다(최상위는 JSON 객체). 고친 뒤 다시 실행하세요.")
+    ours = [name for name, spec in data.items() if isinstance(spec, dict)
+            and (handlers := list(walk_hooks(spec))) and all(is_worklog_hook(h) for h in handlers)]
+    if not ours:
+        return None
+    for name in ours:
+        del data[name]
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n" if data else ""
+
+
+def manifest_tools(worklog):
+    try:
+        data = json.loads((worklog / "install.json").read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, dict) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def installed(root, tool):
+    """Whether `tool` still has a hook, a skill or a manifest entry here (the guide block is shared by codex and pi)."""
+    _, settings, sk = paths(root, tool)
+    hooked = settings is not None and (settings.exists() if settings.suffix == ".ts" else has_worklog_hook(settings))
+    return hooked or (sk is not None and sk.exists()) or tool in manifest_tools(root / ".worklog")
+
+
+class Plan:
+    """Actions collected before any write, keyed by path so that a file two steps touch (AGENTS.md shared by codex and pi,
+    install.json emptied by the last tool and then removed with the state) is planned once. Reads go through the plan so
+    later steps see earlier planned changes."""
+
+    def __init__(self, root, backup, when):
+        self.root, self.backup, self.when = root, backup, when
+        self.order, self.pending, self.prunes = [], {}, []  # pending[path] = ("write", text, backup) | ("delete", backup) | ("rmtree",)
+        self.kept, self.notes = [], []
+
+    def exists(self, path):
+        if path in self.pending:
+            return self.pending[path][0] == "write"
+        if any(a[0] == "rmtree" and path.is_relative_to(p) for p, a in self.pending.items()):
+            return False
+        return os.path.lexists(path)
+
+    def read(self, path):
+        a = self.pending.get(path)
+        return a[1] if a and a[0] == "write" else path.read_text()
+
+    def _backup(self, path):
+        if not self.backup or path in self.pending:
+            return None
+        return backup_path(self.root, path, self.when)
+
+    def _set(self, path, action):
+        if path not in self.pending:
+            self.order.append(path)
+        self.pending[path] = action
+
+    def edit(self, path, text):
+        """Replace a file's content; "" deletes it. Backed up either way (the file was not entirely Worklog's)."""
+        inside(self.root, path)
+        b = self.pending[path][-1] if path in self.pending else self._backup(path)
+        self._set(path, ("write", text, b) if text else ("delete", b))
+
+    def delete(self, path):
+        """Remove a file that is entirely Worklog's (no backup). A path planned as a write earlier in this run (install.json
+        with one tool's entry removed) becomes a delete, keeping the backup that write had planned, if any."""
+        inside(self.root, path)
+        a = self.pending.get(path)
+        if a is None:
+            self._set(path, ("delete", None))
+        elif a[0] == "write":
+            self._set(path, ("delete", a[-1]))
+
+    def rmtree(self, path):
+        inside(self.root, path)
+        for p in [p for p in self.pending if p.is_relative_to(path)]:
+            self.pending.pop(p)
+            self.order.remove(p)
+        self._set(path, ("rmtree",))
+
+    def prune(self, path):
+        """Remove a directory afterwards if it is empty by then."""
+        self.prunes.append(path)
+
+    @property
+    def removed(self):
+        return [str(p) + ("/" if self.pending[p][0] == "rmtree" else "") for p in self.order if self.pending[p][0] != "write"]
+
+    @property
+    def changed(self):
+        return [str(p) for p in self.order if self.pending[p][0] == "write"]
+
+    @property
+    def backups(self):
+        return [str(a[-1]) for p, a in self.pending.items() if a[0] != "rmtree" and a[-1]]
+
+    def run(self):
+        for path in self.order:
+            action = self.pending[path]
+            if action[0] == "rmtree":
+                shutil.rmtree(path)
+                continue
+            if action[-1]:
+                shutil.copy2(path, action[-1])
+            if action[0] == "write":
+                path.write_text(action[1])
+            else:
+                path.unlink()
+        for path in self.prunes:
+            try:
+                if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+                    path.rmdir()
+            except OSError:
+                pass
+
+
+def plan_files(plan, root, tool, guide, settings, sk):
+    """The block, the hooks and the skill of one tool (project or user level)."""
+    for p in (guide, settings, sk):
+        if p:
+            inside(root, p)
+    if plan.exists(guide):
+        text = without_block(plan.read(guide))
+        if text is not None:
+            if tool == "agy" and text.strip() == AGY_FRONT.strip():  # our own rule file: only its frontmatter would remain
+                text = ""
+            plan.edit(guide, text)
+    if settings and plan.exists(settings):
+        if tool == "pi":  # the extension file is entirely Worklog's
+            plan.delete(settings)
+        else:
+            text = (without_agy_hooks if tool == "agy" else without_hooks)(settings, plan.read(settings))
+            if text is not None:
+                plan.edit(settings, text)
+                if tool == "codex" and text:
+                    plan.notes.append(f"Codex: {settings.name}에 다른 Hook이 남아 있어 다음 /hooks에서 다시 신뢰해야 합니다. ~/.codex/config.toml의 신뢰 기록은 건드리지 않았습니다.")
+    if sk and plan.exists(sk):
+        plan.delete(sk)
+    for d in ((sk.parent, sk.parent.parent, sk.parent.parent.parent) if sk else ()) + ((guide.parent,) if tool == "agy" else ()) \
+            + ((settings.parent,) if settings else ()):  # worklog/, skills/, .claude|.agents|.pi; agy's rules/; .codex|.agents|extensions
+        plan.prune(d)
+
+
+def plan_tool(plan, root, tool, keep_sessions=False):
+    """One tool's project-level install. keep_sessions (installer --migrate): the session files stay so a running
+    session keeps its current work."""
+    plan_files(plan, root, tool, *paths(root, tool))
+    worklog = root / ".worklog"
+    if worklog.is_symlink():
+        raise Refuse(f"{worklog}는 심볼릭 링크입니다. 손대지 않습니다.")
+    if worklog.is_dir():
+        inside(root, worklog)
+        if not keep_sessions:
+            for s in sorted((worklog / "sessions").glob(f"{tool}_*.json")) if (worklog / "sessions").is_dir() else []:
+                plan.delete(s)
+        mf = worklog / "install.json"
+        if plan.exists(mf):
+            try:
+                data = json.loads(plan.read(mf))
+            except (OSError, ValueError):
+                data = None
+            if isinstance(data, dict) and tool in data:
+                data.pop(tool)
+                if data:
+                    plan._set(mf, ("write", json.dumps(data, ensure_ascii=False, indent=1) + "\n", None))
+                else:
+                    plan.delete(mf)
+
+
+def plan_state(plan, root, delete_records):
+    """What every tool shares in .worklog: state, records, and (only when the records go) the .gitignore lines."""
+    worklog = root / ".worklog"
+    if worklog.is_dir():
+        if delete_records:
+            plan.rmtree(worklog)
+        else:
+            for name in STATE:
+                p = worklog / name
+                if p.is_dir() and not p.is_symlink():
+                    plan.rmtree(p)
+                elif plan.exists(p):
+                    plan.delete(p)
+            plan.kept.extend(str(worklog / n) for n in RECORDS if os.path.lexists(worklog / n))
+            plan.prune(worklog)
+            if plan.kept:
+                plan.notes.append("기록이 남은 .worklog/는 여전히 연결된 폴더입니다(--user 설치의 Hook이 여기서 기록합니다). "
+                                  "잠시 멈추려면 `wl.py off`, 끊으려면 --delete-records. .gitignore의 .worklog/ 줄은 기록과 함께 남깁니다.")
+    gi = root / ".gitignore"
+    if delete_records and gi.is_file():
+        inside(root, gi)
+        try:
+            lines = gi.read_text().splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            return
+        rest = [ln for ln in lines if ln.strip() not in GITIGNORE_LINES + GITIGNORE_OLD]  # `.worklog/` (2.18.0) and the 2.11.0–2.17.x lines; a `.worklog/` line the user wrote themselves is indistinguishable and goes too
+        if len(rest) != len(lines):
+            plan.edit(gi, "".join(rest) if "".join(rest).strip() else "")
+
+
+def plan_backups(plan, root, folders=None):
+    """Every *.bak-worklog-* the installer (or this tool) can have left."""
+    for folder in folders or [root, root / ".claude", root / ".codex", root / ".agents"] + [p.parent for t in TOOLS for p in paths(root, t)[1:] if p]:
+        if folder.is_dir():
+            for b in sorted(folder.glob("*.bak-worklog-*")):
+                if b.is_file():
+                    plan.delete(b)
+
+
+def drop_user_manifest(tools, dry_run):
+    """Remove the tools' entries from WL_HOME/install.json (the file goes when empty). The path when something changes."""
+    path = HOME / "install.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not any(t in data for t in tools):
+        return None
+    for t in tools:
+        data.pop(t, None)
+    if not dry_run:
+        if data:
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        else:
+            path.unlink()
+    return str(path)
+
+
+def uninstall_user(a, when):
+    """--user: the user-level block, hooks, skill (and backups with --purge-backups) of each tool, then the manifest entries.
+    Projects are not touched: their .worklog/ keeps them connected for a later install."""
+    home = Path.home().resolve()
+    tools = list(USER_TOOLS) if a.tool == "all" else [a.tool]
+    plan = Plan(home, not a.no_backup, when)
+    for tool in tools:
+        plan_files(plan, home, tool, *targets(tool, home, True))
+    if a.purge_backups:
+        plan_backups(plan, home, sorted({p.parent for t in tools for p in targets(t, home, True) if p}))
+    resolved = resolved_links(plan.removed + plan.changed, [home, HOME.parent])  # 2.33.0: before the run removes file links
+    mf_links = resolved_links([str(HOME / "install.json")], [home, HOME.parent])  # also before: the last entry unlinks the file
+    if not a.dry_run:
+        plan.run()
+    mf = drop_user_manifest(tools, a.dry_run)
+    if mf:
+        resolved.update({k: v for k, v in mf_links.items() if k not in resolved})
+    return {"tool": a.tool, "home": str(home), "dry_run": a.dry_run, "removed": plan.removed + ([mf] if mf else []),
+            "changed": plan.changed, "resolved": resolved, "backups": plan.backups, "notes": plan.notes}
+
+
+def plan_project(root, tools, delete_records, backup, purge_backups, when):
+    plan = Plan(root, backup, when)
+    for tool in tools:
+        plan_tool(plan, root, tool)
+    remaining = [t for t in TOOLS if t not in tools and installed(root, t)]
+    if remaining and delete_records:
+        raise Refuse(f"{', '.join(remaining)}가 아직 설치돼 있어 기록을 지우지 않습니다. 함께 제거하려면 --tool all.")
+    if remaining:
+        plan.notes.append(f"{', '.join(remaining)}가 아직 설치돼 있어 .worklog 상태·기록과 .gitignore 줄은 그대로 둡니다.")
+    else:
+        plan_state(plan, root, delete_records)
+    if purge_backups:
+        plan_backups(plan, root)
+    return plan
+
+
+# --- registry ~/.worklog/installs.json: {"<root>": ["claude", "codex"]} ---
+
+def load_registry():
+    try:
+        data = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {r: [t for t in ts if t in TOOLS] for r, ts in data.items() if isinstance(ts, list)} if isinstance(data, dict) else {}
+
+
+def save_registry(data):
+    data = {r: ts for r, ts in data.items() if ts}
+    if data:
+        HOME.mkdir(parents=True, exist_ok=True)
+        REGISTRY.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    elif REGISTRY.exists():
+        REGISTRY.unlink()
+
+
+def unregister(root, tools):
+    data = load_registry()
+    key = str(root)
+    if key in data:
+        data[key] = [t for t in data[key] if t not in tools]
+        save_registry(data)
+
+
+def ask_records():
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise Refuse("--keep-records 또는 --delete-records 중 하나를 지정하세요(.worklog의 기록을 남길지 지울지는 사용자가 정합니다).")
+    answer = input(".worklog의 기록(works/, index.json, project.md)도 지울까요? [k]eep / [d]elete: ").strip().lower()
+    if answer in ("d", "delete"):
+        return True
+    if answer in ("k", "keep"):
+        return False
+    raise Refuse("k 또는 d로 답하세요.")
+
+
+def records_choice(a, remaining, memo):
+    """True = delete, False = keep. Asked (or required) only when no tool remains: with another tool installed the records
+    stay anyway. The terminal answer is remembered across --all-projects roots."""
+    if a.delete_records:
+        return True
+    if a.keep_records or remaining:
+        return False
+    if "answer" not in memo:
+        memo["answer"] = ask_records()
+    return memo["answer"]
+
+
+def uninstall_root(root, a, when, memo):
+    root = Path(root).resolve()
+    if not root.is_dir():
+        return {"root": str(root), "error": "폴더가 없습니다"}
+    tool = a.tool or ("all" if a.all_projects else None)
+    try:
+        present = [t for t in TOOLS if installed(root, t)]
+        if not tool:
+            raise Refuse("사용자에게 어느 도구를 제거할지 확인한 뒤 실행하세요: --tool claude | codex | all. "
+                         f"이 프로젝트에 설치됨: {', '.join(present) or '없음'}")
+        tools = list(TOOLS) if tool == "all" else [tool]
+        remaining = [t for t in present if t not in tools]
+        plan = plan_project(root, tools, records_choice(a, remaining, memo), not a.no_backup, a.purge_backups, when)
+    except Refuse as e:
+        return {"root": str(root), "error": str(e)}
+    resolved = resolved_links(plan.removed + plan.changed, [root])  # 2.33.0: before the run removes file links
+    if not a.dry_run:
+        plan.run()
+        unregister(root, tools)
+    return {"tool": tool, "root": str(root), "dry_run": a.dry_run, "removed": plan.removed, "changed": plan.changed,
+            "resolved": resolved, "kept": plan.kept, "backups": plan.backups, "notes": plan.notes}
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="AGENT: before running this, ask the user which tool to remove (claude only / codex only / all) and, only when the last "
+                    "tool goes, whether to keep or delete the records in .worklog. Do not guess either: a wrong --tool removes another "
+                    "tool's install, and --delete-records cannot be undone. See AGENT.md 'Uninstall' in this repository.",
+        epilog="--delete-records는 .worklog를 통째로 지웁니다. 되돌릴 수 없습니다.")
+    ap.add_argument("--tool", choices=[*TOOLS, "all"], help="--root·--user와 함께 필수(없으면 거부하고 설치된 도구를 알림). --all-projects는 all")
+    ap.add_argument("--root")
+    ap.add_argument("--user", action="store_true", help="이 기기의 도구 설정에서 제거(install_project.py --user의 반대). 프로젝트 기록은 그대로")
+    ap.add_argument("--all-projects", action="store_true", help="registry에 적힌 모든 프로젝트")
+    ap.add_argument("--home", action="store_true", help="~/.worklog(WL_HOME) 삭제: registry가 비어 있을 때만")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--keep-records", action="store_true")
+    g.add_argument("--delete-records", action="store_true")
+    ap.add_argument("--no-backup", action="store_true")
+    ap.add_argument("--purge-backups", action="store_true", help="설치기가 남긴 *.bak-worklog-* 파일도 삭제")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    if not (a.root or a.user or a.all_projects or a.home):
+        ap.error("--root, --user, --all-projects, --home 중 하나는 필요합니다")
+    if a.user and a.tool is None:
+        ap.error("--user에는 --tool claude | codex | agy | pi | all이 필요합니다")
+    out = {"dry_run": a.dry_run, "projects": [], "notes": []}
+    try:
+        if a.user:
+            out["user"] = uninstall_user(a, stamp())
+        roots = [a.root] if a.root else []
+        if a.all_projects:
+            roots += [r for r in load_registry() if r not in roots]
+            if not roots:
+                out["notes"].append("registry에 프로젝트가 없습니다(2.17.0 이전 설치본은 적히지 않음: --root로 지정)")
+        when, memo = stamp(), {}
+        for r in roots:
+            out["projects"].append(uninstall_root(r, a, when, memo))
+        if a.home:
+            left = load_registry() if a.dry_run else {r: ts for r, ts in load_registry().items() if ts}
+            if a.dry_run:
+                left = {r: [t for t in ts if not (r in roots and (a.tool in ("all", None) or t == a.tool))] for r, ts in left.items()}
+                left = {r: ts for r, ts in left.items() if ts}
+            if left:
+                raise Refuse(f"registry에 아직 설치된 프로젝트가 있습니다: {', '.join(left)}. 먼저 제거하세요(--all-projects).")
+            if HOME.is_dir() and not HOME.is_symlink():
+                out["home"] = {"removed": str(HOME), "files": sorted(p.name for p in HOME.iterdir())}
+                if not a.dry_run:
+                    shutil.rmtree(HOME)
+            else:
+                out["home"] = {"removed": None}
+            out["notes"].append(f"clone 폴더는 스스로 지우지 않습니다. 더 쓰지 않으면: rm -rf {SHARED}")
+    except Refuse as e:
+        print(json.dumps({**out, "error": str(e)}, ensure_ascii=False, indent=1))
+        sys.exit(2)
+    out["notes"].append("건드리지 않은 것: Codex Hook 신뢰 기록(~/.codex/config.toml), Claude Code 폴더 신뢰"
+                        + ("." if a.user else ", 사용자 범위 설치(--user로 제거)."))
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+    if any("error" in p for p in out["projects"]):
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
