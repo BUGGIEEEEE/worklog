@@ -4,12 +4,8 @@
  "meta": {
   "title": "Worklog 런타임 아키텍처",
   "locale": "ko",
-  "output": ".archify/architecture-worklog-readme-ko-20261016-143000/worklog-architecture.ko.html",
+  "output": "docs/archify/worklog-architecture.ko.html",
   "quality_profile": "showcase",
-  "repository": {
-   "url": "https://github.com/BUGGIEEEEE/worklog.git",
-   "revision": "0e52f427b17a26be03ad84e580b77b3a2472f9d0"
-  },
   "legend": {
    "entries": {
     "backend": {
@@ -37,26 +33,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "adapters/rules.md",
-     "line": 3,
-     "end_line": 11,
-     "label": "작업 선택·save/skip 지침"
-    },
-    {
-     "path": "tools/install_project.py",
-     "line": 170,
-     "end_line": 197,
-     "label": "호스트 이벤트 등록"
-    },
-    {
-     "path": "README.ko.md",
-     "line": 9,
-     "end_line": 9,
-     "label": "지침 파일의 규칙 블록·도구별 설치 위치"
-    }
    ]
   },
   {
@@ -71,26 +47,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 854,
-     "end_line": 887,
-     "label": "저장 요청·신선도 검증"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 771,
-     "label": "원장 저장과 상태 재구성"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1143,
-     "end_line": 1159,
-     "label": "조회·투영 복구·읽은 seq"
-    }
    ]
   },
   {
@@ -105,20 +61,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 623,
-     "end_line": 639,
-     "label": "seq·prev 해시 연결"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 765,
-     "label": "append·fsync·재조회"
-    }
    ]
   },
   {
@@ -133,20 +75,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 736,
-     "end_line": 750,
-     "label": "상태 파일 생성과 대조"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1143,
-     "end_line": 1152,
-     "label": "show/use에서 투영 복구"
-    }
    ]
   },
   {
@@ -161,26 +89,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 526,
-     "end_line": 542,
-     "label": "index 읽기·검사·손상 거부"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1044,
-     "end_line": 1060,
-     "label": "제목·생성 시각·작업 등록"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 770,
-     "label": "저장 후 index 갱신"
-    }
    ]
   },
   {
@@ -195,26 +103,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 151,
-     "end_line": 202,
-     "label": "현재 작업·턴·last_seen"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 882,
-     "end_line": 887,
-     "label": "오래된 읽기 상태 저장 거부"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 975,
-     "end_line": 977,
-     "label": "저장한 턴·읽은 seq 갱신"
-    }
    ]
   },
   {
@@ -229,20 +117,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 839,
-     "end_line": 851,
-     "label": "산출물 바이트 읽기"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 954,
-     "end_line": 970,
-     "label": "인용·자기 인용 검사"
-    }
    ]
   },
   {
@@ -257,26 +131,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "tools/install_project.py",
-     "line": 170,
-     "end_line": 197,
-     "label": "호스트 이벤트와 명령 등록"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1339,
-     "end_line": 1376,
-     "label": "목록·원장 조회와 맥락 구성"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1379,
-     "end_line": 1444,
-     "label": "주입·턴 갱신·한 번 차단"
-    }
    ]
   },
   {
@@ -291,20 +145,6 @@
    "size": [
     180,
     56
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 292,
-     "end_line": 319,
-     "label": "notify·주기 조건의 별도 실행"
-    },
-    {
-     "path": "tools/update.py",
-     "line": 169,
-     "end_line": 183,
-     "label": "background는 확인만 수행"
-    }
    ]
   },
   {
@@ -319,14 +159,6 @@
    "size": [
     180,
     56
-   ],
-   "sources": [
-    {
-     "path": "tools/update.py",
-     "line": 67,
-     "end_line": 95,
-     "label": "Git subprocess·원격 태그 fetch"
-    }
    ]
   }
  ],

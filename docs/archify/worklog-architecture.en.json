@@ -4,12 +4,8 @@
  "meta": {
   "title": "Worklog runtime architecture",
   "locale": "en",
-  "output": ".archify/architecture-worklog-readme-en-20261016-143000/worklog-architecture.en.html",
+  "output": "docs/archify/worklog-architecture.en.html",
   "quality_profile": "showcase",
-  "repository": {
-   "url": "https://github.com/BUGGIEEEEE/worklog.git",
-   "revision": "0e52f427b17a26be03ad84e580b77b3a2472f9d0"
-  },
   "legend": {
    "entries": {
     "backend": {
@@ -37,26 +33,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "adapters/rules.md",
-     "line": 3,
-     "end_line": 11,
-     "label": "Work selection and save/skip rules"
-    },
-    {
-     "path": "tools/install_project.py",
-     "line": 170,
-     "end_line": 197,
-     "label": "Host event registration"
-    },
-    {
-     "path": "README.ko.md",
-     "line": 9,
-     "end_line": 9,
-     "label": "Rules block in instruction file · install paths"
-    }
    ]
   },
   {
@@ -71,26 +47,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 854,
-     "end_line": 887,
-     "label": "Save request and freshness validation"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 771,
-     "label": "Ledger write and state rebuild"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1143,
-     "end_line": 1159,
-     "label": "Lookup · projection recovery · seq read"
-    }
    ]
   },
   {
@@ -105,20 +61,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 623,
-     "end_line": 639,
-     "label": "seq · prev hash chain"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 765,
-     "label": "append · fsync · re-read"
-    }
    ]
   },
   {
@@ -133,20 +75,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 736,
-     "end_line": 750,
-     "label": "State file generation and comparison"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1143,
-     "end_line": 1152,
-     "label": "Projection recovery in show/use"
-    }
    ]
   },
   {
@@ -161,26 +89,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 526,
-     "end_line": 542,
-     "label": "Index read · check · reject if corrupt"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1044,
-     "end_line": 1060,
-     "label": "Title · created time · work registration"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 753,
-     "end_line": 770,
-     "label": "Index update after save"
-    }
    ]
   },
   {
@@ -195,26 +103,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 151,
-     "end_line": 202,
-     "label": "Current work · turn · last_seen"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 882,
-     "end_line": 887,
-     "label": "Reject save on stale read state"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 975,
-     "end_line": 977,
-     "label": "Update saved turn · read seq"
-    }
    ]
   },
   {
@@ -229,20 +117,6 @@
    "size": [
     220,
     72
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 839,
-     "end_line": 851,
-     "label": "Read artifact bytes"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 954,
-     "end_line": 970,
-     "label": "Quote and self-quote check"
-    }
    ]
   },
   {
@@ -257,26 +131,6 @@
    "size": [
     200,
     72
-   ],
-   "sources": [
-    {
-     "path": "tools/install_project.py",
-     "line": 170,
-     "end_line": 197,
-     "label": "Host event and command registration"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1339,
-     "end_line": 1376,
-     "label": "List · ledger lookup and context build"
-    },
-    {
-     "path": "core/wl.py",
-     "line": 1379,
-     "end_line": 1444,
-     "label": "Inject · update turn · block once"
-    }
    ]
   },
   {
@@ -291,20 +145,6 @@
    "size": [
     180,
     56
-   ],
-   "sources": [
-    {
-     "path": "core/wl.py",
-     "line": 292,
-     "end_line": 319,
-     "label": "Separate run on notify · interval condition"
-    },
-    {
-     "path": "tools/update.py",
-     "line": 169,
-     "end_line": 183,
-     "label": "background only checks"
-    }
    ]
   },
   {
@@ -319,14 +159,6 @@
    "size": [
     180,
     56
-   ],
-   "sources": [
-    {
-     "path": "tools/update.py",
-     "line": 67,
-     "end_line": 95,
-     "label": "Git subprocess · remote tag fetch"
-    }
    ]
   }
  ],
