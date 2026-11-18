@@ -60,7 +60,7 @@ python3 -B worklog/tools/uninstall_project.py --user --tool all
   <img alt="8. Structure — how the code (wl.py) and the record files (.worklog/) relate" src="docs/img/en-08-architecture-light.png">
 </picture>
 
-8. Structure — [open the interactive version](https://buggieeeee.github.io/worklog/archify/worklog-architecture.en.html): click a box to see its connections and the source lines (GitHub links) it is based on. Sources and the Korean version: [docs/archify/](docs/archify/)
+8. Structure — [open the interactive version](https://buggieeeee.github.io/worklog/archify/worklog-architecture.en.html): click a box to see its connections (drawn at 2.22.0, 2026-10-16). Sources and the Korean version: [docs/archify/](docs/archify/)
 
 ![9. File map](docs/img/en-09-files.png)
 
